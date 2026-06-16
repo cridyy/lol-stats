@@ -4,6 +4,7 @@ import { ClipboardCopy } from "lucide-vue-next"
 import { loadMatchDetail } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
+import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -45,6 +46,10 @@ const spellMap = computed(() => indexAssets(props.gameAssets.summonerSpells))
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
 const perkMap = computed(() => indexAssets(props.gameAssets.perks))
 const augmentMap = computed(() => indexAssets(props.gameAssets.augments))
+const ratingContext = computed(() => ({
+  items: itemMap.value,
+  champions: props.champions,
+}))
 
 function indexAssets(entries: GameAssetEntry[]) {
   return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
@@ -233,6 +238,14 @@ function detailStatLeader(game: RecentGame, kind: "damage" | "gold" | "mitigatio
   }
 }
 
+function outputRating(game: RecentGame) {
+  return calculateOutputRating(game, ratingContext.value)
+}
+
+function outputRatingHint(game: RecentGame) {
+  return outputRatingTitle(game, ratingContext.value)
+}
+
 async function copyMatchAnalysisImage() {
   const target = matchDetailCaptureRef.value
   if (!target || !matchDetail.value || detailImageCopying.value) return
@@ -410,6 +423,14 @@ async function openMatchDetail(game: RecentGame) {
         <span>伤害转化率</span>
       </div>
 
+      <div
+        :class="['score-cell', `score-${outputRating(game).level}`]"
+        :title="outputRatingHint(game)"
+      >
+        <strong>{{ outputRating(game).score }}分</strong>
+        <span>{{ outputRating(game).role.label }} · {{ outputRating(game).label }}</span>
+      </div>
+
       <div class="accolade-tags" v-if="hasAccolade(game)">
         <span
           v-for="tag in accoladeTags(game)"
@@ -470,6 +491,7 @@ async function openMatchDetail(game: RecentGame) {
               <span>承伤</span>
               <span>治疗</span>
               <span>伤转</span>
+              <span>评分</span>
             </div>
 
             <div class="record-list detail-record-list">
@@ -569,6 +591,14 @@ async function openMatchDetail(game: RecentGame) {
                     {{ damageConversion(player) }}
                   </strong>
                 </div>
+
+                <div
+                  :class="['score-cell detail-score-cell', `score-${outputRating(player).level}`]"
+                  :title="outputRatingHint(player)"
+                >
+                  <strong>{{ outputRating(player).score }}分</strong>
+                  <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
+                </div>
               </article>
             </div>
           </section>
@@ -604,8 +634,8 @@ async function openMatchDetail(game: RecentGame) {
 
 .record-row {
   display: grid;
-  grid-template-columns: 58px 64px 26px 112px 176px 86px repeat(5, 68px);
-  min-width: 952px;
+  grid-template-columns: 58px 64px 26px 112px 176px 86px repeat(5, 68px) 138px;
+  min-width: 1097px;
   align-items: center;
   gap: 7px;
   border: 1px solid #dce7e4;
@@ -644,7 +674,8 @@ async function openMatchDetail(game: RecentGame) {
 .time-cell,
 .champion-cell,
 .kda-cell,
-.stat-cell {
+.stat-cell,
+.score-cell {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -829,7 +860,8 @@ async function openMatchDetail(game: RecentGame) {
 }
 
 .kda-cell strong,
-.stat-cell strong {
+.stat-cell strong,
+.score-cell strong {
   color: #20333a;
   font-size: 15.6px;
   line-height: 1;
@@ -838,6 +870,101 @@ async function openMatchDetail(game: RecentGame) {
 
 .stat-cell strong {
   font-size: 16.8px;
+}
+
+.score-cell {
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 6px 4px;
+  text-align: center;
+}
+
+.score-cell strong {
+  position: relative;
+  z-index: 1;
+  font-size: 20px;
+  font-weight: 950;
+}
+
+.score-cell span {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.score-excellent {
+  position: relative;
+  overflow: hidden;
+  color: #5d3300;
+  border: 1px solid rgba(245, 185, 52, 0.72);
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.36),
+    0 0 16px rgba(255, 191, 58, 0.34);
+}
+
+.score-excellent::after {
+  position: absolute;
+  inset: -60% auto -60% -80%;
+  width: 58%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0.74),
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  content: "";
+  transform: rotate(18deg);
+  animation: score-shine 2.8s ease-in-out infinite;
+}
+
+@keyframes score-shine {
+  0% {
+    left: -90%;
+  }
+
+  52%,
+  100% {
+    left: 132%;
+  }
+}
+
+.score-good {
+  color: #145b3e;
+  background: rgba(204, 239, 218, 0.88);
+}
+
+.score-average {
+  color: #174d83;
+  background: rgba(205, 229, 255, 0.92);
+}
+
+.score-poor {
+  color: #8f3434;
+  background: rgba(248, 214, 213, 0.92);
+}
+
+.score-cell.score-excellent strong,
+.score-cell.score-excellent span,
+.score-cell.score-good strong,
+.score-cell.score-good span,
+.score-cell.score-average strong,
+.score-cell.score-average span,
+.score-cell.score-poor strong,
+.score-cell.score-poor span {
+  color: inherit;
 }
 
 .kda-cell span,
@@ -987,8 +1114,8 @@ async function openMatchDetail(game: RecentGame) {
 
 .match-detail-team-header {
   display: grid;
-  grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px);
-  min-width: 1094px;
+  grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px) 128px;
+  min-width: 1226px;
   align-items: center;
   gap: 4px;
   border-radius: 6px;
@@ -1040,8 +1167,8 @@ async function openMatchDetail(game: RecentGame) {
 
 .detail-row {
   box-sizing: border-box;
-  grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px);
-  min-width: 1094px;
+  grid-template-columns: 160px 22px 252px 160px 74px repeat(5, 78px) 128px;
+  min-width: 1226px;
   height: 48px;
   min-height: 48px;
   max-height: 48px;
@@ -1104,6 +1231,22 @@ async function openMatchDetail(game: RecentGame) {
 .detail-row .stat-cell strong.leader em {
   color: inherit;
   font-weight: 900;
+}
+
+.detail-score-cell {
+  height: 42px;
+  gap: 2px;
+  padding: 3px;
+}
+
+.detail-score-cell strong {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.detail-score-cell span {
+  font-size: 10.5px;
+  line-height: 1;
 }
 
 .detail-row .spell-column {

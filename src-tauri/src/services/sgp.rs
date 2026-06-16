@@ -7,7 +7,7 @@ use super::error::{AppError, AppResult};
 use super::lcu::LcuClient;
 use super::models::{
     ClientAuth, Game, IdentityPlayer, Participant, ParticipantIdentity, ParticipantStats,
-    ParticipantTimeline,
+    ParticipantTimeline, RankedQueueEntry, RankedQueueMap, RankedStatsResponse,
 };
 
 const USER_AGENT: &str = "LeagueOfLegendsClient/14.13.596.7996 (rcp-be-lol-match-history)";
@@ -22,6 +22,7 @@ pub struct SgpClient {
     http: Client,
     base_url: String,
     access_token: String,
+    league_session_token: String,
     sgp_server_id: String,
 }
 
@@ -34,6 +35,10 @@ impl SgpClient {
         let sgp_server_id = resolve_sgp_server_id(auth, sgp_server_id);
         let base_url = tencent_sgp_base_url(&sgp_server_id)?;
         let access_token = lcu.entitlements_access_token().await?;
+        let league_session_token = lcu
+            .league_session_token()
+            .await
+            .unwrap_or_else(|_| access_token.clone());
         let http = Client::builder()
             .danger_accept_invalid_certs(true)
             .no_proxy()
@@ -45,8 +50,43 @@ impl SgpClient {
             http,
             base_url: base_url.to_string(),
             access_token,
+            league_session_token,
             sgp_server_id,
         })
+    }
+
+    pub async fn ranked_stats(&self, puuid: &str) -> AppResult<RankedStatsResponse> {
+        let response = self
+            .http
+            .get(format!(
+                "{}/leagues-ledge/v2/rankedStats/puuid/{}",
+                self.base_url, puuid
+            ))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.league_session_token),
+            )
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(AppError::PlayerNotFound(puuid.to_string()));
+        }
+
+        if !response.status().is_success() {
+            return Err(AppError::SgpUnavailable(format!(
+                "SGP 段位返回 {}",
+                response.status()
+            )));
+        }
+
+        let ranked = response
+            .json::<SgpRankedStats>()
+            .await
+            .map_err(AppError::Http)?;
+
+        Ok(sgp_ranked_stats_to_ranked_response(ranked))
     }
 
     pub async fn match_history(
@@ -209,6 +249,48 @@ pub fn normalize_sgp_server_id(sgp_server_id: &str) -> String {
 struct SgpMatchHistoryResponse {
     #[serde(default)]
     games: Vec<SgpGameEnvelope>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpRankedStats {
+    #[serde(default)]
+    queues: Vec<SgpRankedQueue>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpRankedQueue {
+    #[serde(default)]
+    queue_type: String,
+    #[serde(default)]
+    tier: String,
+    #[serde(default)]
+    rank: String,
+    #[serde(default)]
+    league_points: i32,
+    #[serde(default)]
+    wins: i32,
+    #[serde(default)]
+    losses: i32,
+    #[serde(default)]
+    provisional_games_remaining: i32,
+    #[serde(default)]
+    highest_tier: String,
+    #[serde(default)]
+    highest_rank: String,
+    #[serde(default)]
+    previous_season_end_tier: String,
+    #[serde(default)]
+    previous_season_end_rank: String,
+    #[serde(default)]
+    previous_season_highest_tier: String,
+    #[serde(default)]
+    previous_season_highest_rank: String,
+    #[serde(default)]
+    previous_season_achieved_tier: String,
+    #[serde(default)]
+    previous_season_achieved_rank: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -404,6 +486,63 @@ fn sgp_game_to_lcu_game(game: SgpGameEnvelope) -> Game {
         participant_identities: identities,
         participants,
     }
+}
+
+fn sgp_ranked_stats_to_ranked_response(ranked: SgpRankedStats) -> RankedStatsResponse {
+    let mut queue_map = RankedQueueMap::default();
+
+    for queue in ranked.queues {
+        let entry = sgp_ranked_queue_to_entry(&queue);
+        match queue.queue_type.as_str() {
+            "RANKED_SOLO_5x5" => queue_map.ranked_solo_5x5 = entry,
+            "RANKED_FLEX_SR" => queue_map.ranked_flex_sr = entry,
+            _ => {}
+        }
+    }
+
+    RankedStatsResponse { queue_map }
+}
+
+fn sgp_ranked_queue_to_entry(queue: &SgpRankedQueue) -> RankedQueueEntry {
+    RankedQueueEntry {
+        queue_type: queue.queue_type.clone(),
+        tier: queue.tier.clone(),
+        division: queue.rank.clone(),
+        highest_tier: first_non_empty(&[
+            &queue.highest_tier,
+            &queue.previous_season_achieved_tier,
+            &queue.previous_season_highest_tier,
+            &queue.previous_season_end_tier,
+        ]),
+        highest_division: first_non_empty(&[
+            &queue.highest_rank,
+            &queue.previous_season_achieved_rank,
+            &queue.previous_season_highest_rank,
+            &queue.previous_season_end_rank,
+        ]),
+        previous_season_highest_tier: first_non_empty(&[
+            &queue.previous_season_highest_tier,
+            &queue.previous_season_achieved_tier,
+        ]),
+        previous_season_highest_division: first_non_empty(&[
+            &queue.previous_season_highest_rank,
+            &queue.previous_season_achieved_rank,
+        ]),
+        previous_season_end_tier: queue.previous_season_end_tier.clone(),
+        previous_season_end_division: queue.previous_season_end_rank.clone(),
+        league_points: queue.league_points,
+        wins: queue.wins,
+        losses: queue.losses,
+        is_provisional: queue.provisional_games_remaining > 0,
+    }
+}
+
+fn first_non_empty(values: &[&String]) -> String {
+    values
+        .iter()
+        .find(|value| !value.trim().is_empty())
+        .map(|value| (*value).clone())
+        .unwrap_or_default()
 }
 
 fn tencent_sgp_base_url(sgp_server_id: &str) -> AppResult<&'static str> {

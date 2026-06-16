@@ -3,6 +3,7 @@ import { computed, inject, ref } from "vue"
 import { ClipboardCopy, LoaderCircle } from "lucide-vue-next"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
+import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -36,6 +37,10 @@ const spellMap = computed(() => indexAssets(props.gameAssets.summonerSpells))
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
 const perkMap = computed(() => indexAssets(props.gameAssets.perks))
 const augmentMap = computed(() => indexAssets(props.gameAssets.augments))
+const ratingContext = computed(() => ({
+  items: itemMap.value,
+  champions: props.champions,
+}))
 
 function indexAssets(entries: GameAssetEntry[]) {
   return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
@@ -133,6 +138,14 @@ function detailStatLeader(
   }
 }
 
+function outputRating(game: RecentGame) {
+  return calculateOutputRating(game, ratingContext.value)
+}
+
+function outputRatingHint(game: RecentGame) {
+  return outputRatingTitle(game, ratingContext.value)
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
@@ -202,6 +215,7 @@ async function copyImage() {
           <span>承伤</span>
           <span>治疗</span>
           <span>伤转</span>
+          <span>评分</span>
         </div>
 
         <div class="detail-list">
@@ -302,6 +316,14 @@ async function copyImage() {
                 {{ damageConversion(player) }}
               </strong>
             </div>
+
+            <div
+              :class="['score-cell', `score-${outputRating(player).level}`]"
+              :title="outputRatingHint(player)"
+            >
+              <strong>{{ outputRating(player).score }}分</strong>
+              <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
+            </div>
           </article>
         </div>
       </section>
@@ -397,8 +419,8 @@ async function copyImage() {
 .team-header,
 .detail-row {
   display: grid;
-  grid-template-columns: 160px 22px 252px 160px 59px repeat(5, 62px);
-  min-width: 999px;
+  grid-template-columns: 160px 22px 252px 160px 59px repeat(5, 62px) 128px;
+  min-width: 1131px;
   align-items: center;
   gap: 4px;
 }
@@ -561,7 +583,8 @@ async function copyImage() {
 }
 
 .kda-cell,
-.stat-cell {
+.stat-cell,
+.score-cell {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -597,5 +620,92 @@ async function copyImage() {
   font-size: 13.5px;
   font-style: normal;
   font-weight: 700;
+}
+
+.score-cell {
+  height: 42px;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 3px;
+  text-align: center;
+}
+
+.score-cell strong {
+  position: relative;
+  z-index: 1;
+  color: inherit;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.score-cell span {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  color: inherit;
+  font-size: 10.5px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.score-excellent {
+  position: relative;
+  overflow: hidden;
+  color: #5d3300;
+  border: 1px solid rgba(245, 185, 52, 0.72);
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.36),
+    0 0 16px rgba(255, 191, 58, 0.34);
+}
+
+.score-excellent::after {
+  position: absolute;
+  inset: -60% auto -60% -80%;
+  width: 58%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0.74),
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  content: "";
+  transform: rotate(18deg);
+  animation: score-shine 2.8s ease-in-out infinite;
+}
+
+@keyframes score-shine {
+  0% {
+    left: -90%;
+  }
+
+  52%,
+  100% {
+    left: 132%;
+  }
+}
+
+.score-good {
+  color: #145b3e;
+  background: rgba(204, 239, 218, 0.88);
+}
+
+.score-average {
+  color: #174d83;
+  background: rgba(205, 229, 255, 0.92);
+}
+
+.score-poor {
+  color: #8f3434;
+  background: rgba(248, 214, 213, 0.92);
 }
 </style>

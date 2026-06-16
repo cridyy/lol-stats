@@ -106,6 +106,8 @@ export interface RecentGame {
   kills: number
   deaths: number
   assists: number
+  teamKills: number
+  teamDeaths: number
   kda: number
   cs: number
   goldEarned: number
@@ -196,6 +198,7 @@ export interface ChampionSummaryItem {
   name: string
   alias: string
   squarePortraitPath: string
+  roles: string[]
 }
 
 export interface GameAssetBundle {
@@ -208,8 +211,14 @@ export interface GameAssetBundle {
 export interface GameAssetEntry {
   id: number
   name: string
+  description: string
   iconPath: string
   rarity: string
+  categories: string[]
+  price: number
+  priceTotal: number
+  inStore: boolean
+  displayInItemSets: boolean
 }
 
 export interface StatsLoadProgress {

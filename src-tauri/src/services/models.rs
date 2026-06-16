@@ -311,6 +311,8 @@ pub struct ChampionSummaryItem {
     pub alias: String,
     #[serde(default)]
     pub square_portrait_path: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -389,6 +391,10 @@ pub struct RecentGame {
     pub kills: u32,
     pub deaths: u32,
     pub assists: u32,
+    #[serde(default)]
+    pub team_kills: u32,
+    #[serde(default)]
+    pub team_deaths: u32,
     pub kda: f64,
     pub cs: u32,
     #[serde(default)]
@@ -458,9 +464,21 @@ pub struct GameAssetBundle {
 pub struct GameAssetEntry {
     pub id: u32,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub icon_path: String,
     #[serde(default)]
     pub rarity: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub price: u32,
+    #[serde(default)]
+    pub price_total: u32,
+    #[serde(default)]
+    pub in_store: bool,
+    #[serde(default)]
+    pub display_in_item_sets: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

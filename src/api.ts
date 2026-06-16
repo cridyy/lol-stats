@@ -25,6 +25,10 @@ export function loadCurrentRankedStats() {
   return invoke<RankedStatsResponse>("load_current_ranked_stats")
 }
 
+export function loadRankedStats(puuid: string, sgpServerId?: string) {
+  return invoke<RankedStatsResponse>("load_ranked_stats", { puuid, sgpServerId })
+}
+
 export function loadLcuAsset(path: string) {
   return invoke<string>("load_lcu_asset", { path })
 }

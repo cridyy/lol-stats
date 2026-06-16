@@ -24,7 +24,7 @@ const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
-const CACHE_SCHEMA_VERSION: i64 = 8;
+const CACHE_SCHEMA_VERSION: i64 = 9;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 
 static STATS_CACHE: LazyLock<Mutex<HashMap<StatsCacheKey, StatsCacheEntry>>> =
@@ -74,6 +74,8 @@ struct TeamTotals {
     gold_earned: u32,
     damage_self_mitigated: u32,
     total_heal: u32,
+    kills: u32,
+    deaths: u32,
 }
 
 #[derive(Default)]
@@ -1037,6 +1039,8 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         kills: participant.stats.kills,
         deaths: participant.stats.deaths,
         assists: participant.stats.assists,
+        team_kills: team_totals.kills,
+        team_deaths: team_totals.deaths,
         kda,
         cs,
         gold_earned: participant.stats.gold_earned,
@@ -1129,6 +1133,8 @@ fn team_totals_for_participant(game: &Game, participant: &Participant) -> TeamTo
             totals.gold_earned += candidate.stats.gold_earned;
             totals.damage_self_mitigated += candidate.stats.damage_self_mitigated;
             totals.total_heal += candidate.stats.total_heal;
+            totals.kills += candidate.stats.kills;
+            totals.deaths += candidate.stats.deaths;
             totals
         })
 }

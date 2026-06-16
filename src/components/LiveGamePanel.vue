@@ -473,7 +473,7 @@ h2 {
 .player-card {
   display: flex;
   min-width: var(--live-player-card-min);
-  min-height: 248px;
+  min-height: 298px;
   flex-direction: column;
   gap: 8px;
   border: 1px solid #dce7e4;
@@ -615,7 +615,7 @@ h2 {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  max-height: 171px;
+  max-height: 205px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;

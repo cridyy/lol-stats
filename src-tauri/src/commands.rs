@@ -205,6 +205,25 @@ pub async fn load_current_ranked_stats() -> Result<RankedStatsResponse, String> 
 }
 
 #[tauri::command]
+pub async fn load_ranked_stats(
+    puuid: String,
+    sgp_server_id: Option<String>,
+) -> Result<RankedStatsResponse, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let sgp = crate::services::sgp::SgpClient::new(
+        &clients.lcu,
+        &clients.auth,
+        sgp_server_id.as_deref(),
+    )
+    .await
+    .map_err(app_error)?;
+
+    sgp.ranked_stats(puuid.trim())
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
 pub async fn load_lcu_asset(path: String) -> Result<String, String> {
     let clients = create_clients().map_err(app_error)?;
     clients.lcu.asset_data_url(&path).await.map_err(app_error)

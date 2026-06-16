@@ -32,9 +32,13 @@ const emit = defineEmits<{
 
 const selectedChampionId = ref<number | null>(null)
 const shareBusy = ref<"champions" | "games" | null>(null)
+const statsRootRef = ref<HTMLElement | null>(null)
+const tableWrapRef = ref<HTMLElement | null>(null)
 const championStatsCaptureRef = ref<HTMLElement | null>(null)
 const championGamesCaptureRef = ref<HTMLElement | null>(null)
 const notify = inject(notifyKey, () => 0)
+let savedTableScrollTop = 0
+let savedPageScrollTop = 0
 const selectedChampionGames = computed(() => {
   if (!selectedChampionId.value) return []
   return props.stats?.recentGames.filter((game) => game.championId === selectedChampionId.value) || []
@@ -68,7 +72,35 @@ watch(
 )
 
 function openChampionGames(championId: number) {
+  savedTableScrollTop = tableWrapRef.value?.scrollTop ?? 0
+  savedPageScrollTop = scrollParent(statsRootRef.value)?.scrollTop ?? 0
   selectedChampionId.value = championId
+}
+
+async function closeChampionGames() {
+  selectedChampionId.value = null
+  await nextTick()
+  if (tableWrapRef.value) tableWrapRef.value.scrollTop = savedTableScrollTop
+
+  const parent = scrollParent(statsRootRef.value)
+  if (parent) parent.scrollTop = savedPageScrollTop
+}
+
+function scrollParent(element: HTMLElement | null) {
+  let current = element?.parentElement || null
+  while (current) {
+    const style = window.getComputedStyle(current)
+    const overflowY = style.overflowY
+    if (
+      (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+      current.scrollHeight > current.clientHeight
+    ) {
+      return current
+    }
+    current = current.parentElement
+  }
+
+  return document.scrollingElement as HTMLElement | null
 }
 
 function queueName(game: RecentGame) {
@@ -237,7 +269,7 @@ function errorMessage(error: unknown) {
     <div class="empty-subtitle">统计面板空闲</div>
   </section>
 
-  <section class="stats" v-else>
+  <section class="stats" v-else ref="statsRootRef">
     <div class="metric-grid">
       <div class="metric">
         <span>胜率</span>
@@ -284,7 +316,7 @@ function errorMessage(error: unknown) {
             {{ shareBusy === "champions" ? "生成中" : `分享前 ${shareChampionStats.length} 个` }}
           </button>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap" ref="tableWrapRef">
           <table>
             <thead>
               <tr>
@@ -336,7 +368,7 @@ function errorMessage(error: unknown) {
       <section class="panel champion-games-panel" v-else>
         <div class="detail-header">
           <div class="detail-title-group">
-            <button @click="selectedChampionId = null">返回</button>
+            <button @click="closeChampionGames">返回</button>
             <div>
               <div class="section-title">{{ selectedChampionLabel }} · 单英雄战绩</div>
               <span>{{ selectedChampionGames.length }} 局</span>

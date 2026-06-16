@@ -16,6 +16,7 @@ import {
   cancelStatsLoad,
   connectionStatus,
   loadCurrentRankedStats,
+  loadRankedStats,
   loadChampions,
   loadGameAssets,
   loadLiveGame,
@@ -133,11 +134,13 @@ const activeSearchServerId = ref(DEFAULT_SEARCH_SERVER_ID)
 const searchHistory = ref<SearchHistoryItem[]>(loadSearchHistory())
 const searchRecentStats = ref<PlayerStatsResponse | null>(null)
 const searchFullStats = ref<PlayerStatsResponse | null>(null)
+const searchRankedStats = ref<RankedStatsResponse | null>(null)
 const searchRecentDepth = ref(RECENT_PAGE_SIZE)
 const searchRecentHasMore = ref(true)
 const searchStatsDepth = ref(DEFAULT_STATS_DEPTH)
 const searchRecentLoading = ref(false)
 const searchStatsLoading = ref(false)
+const searchRankedLoading = ref(false)
 const searchError = ref("")
 
 const liveGame = ref<LiveGameResponse | null>(null)
@@ -159,6 +162,7 @@ let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
 let searchServerTouched = false
 let searchServerInitializedFromClient = false
+let searchRankedRequestKey = ""
 let nextToastId = 0
 const pageScrollTop: Record<PageKey, number> = {
   current: 0,
@@ -659,6 +663,9 @@ function runSearch(query = searchInput.value, sgpServerId = selectedSearchServer
   searchInput.value = text
   searchRecentStats.value = null
   searchFullStats.value = null
+  searchRankedStats.value = null
+  searchRankedLoading.value = false
+  searchRankedRequestKey = ""
   searchRecentDepth.value = RECENT_PAGE_SIZE
   searchRecentHasMore.value = true
   searchError.value = ""
@@ -669,9 +676,39 @@ function returnToSearchHome() {
   activeSearchQuery.value = ""
   searchRecentStats.value = null
   searchFullStats.value = null
+  searchRankedStats.value = null
+  searchRankedLoading.value = false
+  searchRankedRequestKey = ""
   searchRecentDepth.value = RECENT_PAGE_SIZE
   searchRecentHasMore.value = true
   searchError.value = ""
+}
+
+async function loadSearchRanked(puuid: string, forceRefresh = false) {
+  const normalizedPuuid = puuid.trim()
+  if (!normalizedPuuid) return
+  if (searchRankedLoading.value) return
+  if (searchRankedStats.value && !forceRefresh) return
+
+  if (forceRefresh) searchRankedStats.value = null
+  const requestKey = `${activeSearchServerId.value}:${activeSearchQuery.value}:${normalizedPuuid}`
+  searchRankedRequestKey = requestKey
+  searchRankedLoading.value = true
+
+  try {
+    const ranked = await loadRankedStats(normalizedPuuid, activeSearchServerId.value)
+    if (searchRankedRequestKey === requestKey) {
+      searchRankedStats.value = ranked
+    }
+  } catch {
+    if (searchRankedRequestKey === requestKey) {
+      searchRankedStats.value = null
+    }
+  } finally {
+    if (searchRankedRequestKey === requestKey) {
+      searchRankedLoading.value = false
+    }
+  }
 }
 
 async function loadSearchRecent(forceRefresh = false, previousLoaded?: number) {
@@ -687,6 +724,7 @@ async function loadSearchRecent(forceRefresh = false, previousLoaded?: number) {
       forceRefresh,
     )
     searchRecentStats.value = stats
+    void loadSearchRanked(stats.summoner.puuid, forceRefresh)
     if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
       searchRecentHasMore.value = false
     } else if (stats.depthLoaded > previousLoaded! || forceRefresh) {
@@ -737,7 +775,10 @@ async function loadSearchStats(forceRefresh = false) {
       activeSearchServerId.value,
       forceRefresh,
     )
-    if (!progressOverlay.value.cancelled) searchFullStats.value = stats
+    if (!progressOverlay.value.cancelled) {
+      searchFullStats.value = stats
+      void loadSearchRanked(stats.summoner.puuid, forceRefresh)
+    }
   } catch (error) {
     if (!progressOverlay.value.cancelled) {
       searchError.value = errorMessage(error)
@@ -983,6 +1024,8 @@ onUnmounted(() => {
           v-else
           :recent-stats="searchRecentStats"
           :full-stats="searchFullStats"
+          :ranked-stats="searchRankedStats"
+          :ranked-loading="searchRankedLoading"
           :champions="championMap"
           :game-assets="gameAssets"
           :loading="searchRecentLoading || searchStatsLoading"

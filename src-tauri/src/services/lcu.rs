@@ -137,6 +137,19 @@ impl LcuClient {
         Ok(token.access_token)
     }
 
+    pub async fn league_session_token(&self) -> AppResult<String> {
+        let token: String = self
+            .get_json("/lol-league-session/v1/league-session-token")
+            .await?;
+        if token.trim().is_empty() {
+            return Err(AppError::LcuUnavailable(
+                "league session token 为空，无法读取段位".to_string(),
+            ));
+        }
+
+        Ok(token)
+    }
+
     pub async fn current_summoner(&self) -> AppResult<SummonerInfo> {
         self.get_json("/lol-summoner/v1/current-summoner").await
     }
@@ -271,6 +284,7 @@ fn game_asset_entry_from_value(value: serde_json::Value) -> Option<GameAssetEntr
     Some(GameAssetEntry {
         id,
         name: read_string_field(&value, &["name", "nameTRA", "nameCn", "displayName"]),
+        description: read_string_field(&value, &["description", "longDesc", "shortDesc"]),
         icon_path: read_string_field(
             &value,
             &[
@@ -282,6 +296,11 @@ fn game_asset_entry_from_value(value: serde_json::Value) -> Option<GameAssetEntr
             ],
         ),
         rarity: read_rarity_field(&value),
+        categories: read_string_vec_field(&value, "categories"),
+        price: read_u32_field(&value, "price").unwrap_or_default(),
+        price_total: read_u32_field(&value, "priceTotal").unwrap_or_default(),
+        in_store: read_bool_field(&value, "inStore"),
+        display_in_item_sets: read_bool_field(&value, "displayInItemSets"),
     })
 }
 
@@ -298,6 +317,31 @@ fn read_string_field(value: &serde_json::Value, fields: &[&str]) -> String {
         .find_map(|field| value.get(*field)?.as_str())
         .map(str::to_string)
         .unwrap_or_default()
+}
+
+fn read_string_vec_field(value: &serde_json::Value, field: &str) -> Vec<String> {
+    value
+        .get(field)
+        .and_then(|raw| raw.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_bool_field(value: &serde_json::Value, field: &str) -> bool {
+    value
+        .get(field)
+        .and_then(|raw| {
+            raw.as_bool().or_else(|| {
+                raw.as_str()
+                    .map(|text| matches!(text.to_ascii_lowercase().as_str(), "true" | "1"))
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn read_rarity_field(value: &serde_json::Value) -> String {

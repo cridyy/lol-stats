@@ -12,6 +12,7 @@ pub fn run() {
             commands::load_champions,
             commands::load_current_ranked_stats,
             commands::load_game_assets,
+            commands::load_ranked_stats,
             commands::load_lcu_asset,
             commands::load_lcu_assets,
             commands::load_self_stats,
