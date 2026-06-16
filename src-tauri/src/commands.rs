@@ -24,7 +24,7 @@ const STATS_PROGRESS_EVENT: &str = "stats-load-progress";
 const LIVE_QUERY_CONCURRENCY: usize = 4;
 const LIVE_SCAN_BATCH_DEPTH: usize = 20;
 const LIVE_MAX_SCAN_DEPTH: usize = 100;
-const LIVE_MATCH_LIMIT: usize = 20;
+const LIVE_MATCH_LIMIT: usize = 30;
 
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -687,7 +687,7 @@ fn player_list_contains_puuid(players: &[LivePlayerSeed], puuid: &str) -> bool {
         .any(|player| player.puuid.eq_ignore_ascii_case(puuid))
 }
 
-/// 实时战绩使用当前对局模式筛选历史记录，最多从近 100 场里凑 20 场。
+/// 实时战绩使用当前对局模式筛选历史记录，最多从近 100 场里凑 30 场。
 #[derive(Clone, Copy)]
 enum LiveQueueFilter {
     HexAram,
@@ -912,9 +912,7 @@ async fn load_live_player_stats(
     display_depth: usize,
     queue_filter: LiveQueueFilter,
 ) -> AppResult<PlayerStatsResponse> {
-    let mut scan_depth = LIVE_SCAN_BATCH_DEPTH
-        .max(display_depth)
-        .min(LIVE_MAX_SCAN_DEPTH);
+    let mut scan_depth = LIVE_SCAN_BATCH_DEPTH.min(LIVE_MAX_SCAN_DEPTH);
     let mut last_filtered = None;
 
     loop {

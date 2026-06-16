@@ -14,6 +14,7 @@ import type {
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 import GameRecordList from "./GameRecordList.vue"
+import { buildChampionProfiles, buildPlayerProfile, profileScoreLevel } from "../playerProfile"
 import { championName, fixed, percent } from "../utils"
 
 const props = defineProps<{
@@ -56,6 +57,26 @@ const spellMap = computed(() => indexAssets(props.gameAssets.summonerSpells))
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
 const perkMap = computed(() => indexAssets(props.gameAssets.perks))
 const augmentMap = computed(() => indexAssets(props.gameAssets.augments))
+const ratingContext = computed(() => ({
+  items: itemMap.value,
+  champions: props.champions,
+}))
+const playerProfile = computed(() =>
+  buildPlayerProfile(props.stats?.recentGames || [], ratingContext.value),
+)
+const championProfileMap = computed(() =>
+  buildChampionProfiles(props.stats?.recentGames || [], ratingContext.value).reduce<
+    Record<number, ReturnType<typeof buildChampionProfiles>[number]>
+  >((acc, profile) => {
+    acc[profile.championId] = profile
+    return acc
+  }, {}),
+)
+const abilityCards = computed(() => [
+  playerProfile.value.abilities.carry,
+  playerProfile.value.abilities.frontline,
+  playerProfile.value.abilities.support,
+])
 
 function indexAssets(entries: GameAssetBundle["items"]) {
   return entries.reduce<Record<number, GameAssetBundle["items"][number]>>((acc, entry) => {
@@ -160,6 +181,32 @@ function augmentRarityClass(augmentId: number) {
 
 function ratio(part: number, total: number) {
   return total > 0 ? part / total : 0
+}
+
+function scoreText(score: number, games: number) {
+  return games > 0 ? `${Math.round(score)}分` : "样本不足"
+}
+
+function profileLevelClass(score: number, games: number) {
+  return games > 0 ? `profile-${profileScoreLevel(score)}` : "profile-empty"
+}
+
+function championProfile(championId: number) {
+  return (
+    championProfileMap.value[championId] || {
+      championId,
+      games: 0,
+      averageScore: 0,
+      mainRoleLabel: "样本不足",
+      label: "样本不足",
+      highlightRate: 0,
+      disasterRate: 0,
+      averageDamageShare: 0,
+      averageDamageConversion: 0,
+      averageMitigationShare: 0,
+      averageHealingShare: 0,
+    }
+  )
 }
 
 function monthDayText(timestamp: number) {
@@ -303,6 +350,59 @@ function errorMessage(error: unknown) {
       </div>
     </div>
 
+    <section class="panel profile-panel">
+      <div class="profile-heading">
+        <div class="section-title">玩家画像</div>
+        <span>{{ playerProfile.games }} 场样本</span>
+      </div>
+
+      <div class="profile-layout">
+        <div
+          :class="[
+            'profile-score',
+            profileLevelClass(playerProfile.overallScore, playerProfile.games),
+          ]"
+        >
+          <span>综合分</span>
+          <strong>{{ scoreText(playerProfile.overallScore, playerProfile.games) }}</strong>
+          <em>{{ playerProfile.mainRoleLabel }}</em>
+        </div>
+
+        <div class="profile-tags">
+          <span v-for="tag in playerProfile.tags" :key="tag">{{ tag }}</span>
+        </div>
+
+        <div class="role-distribution">
+          <span v-for="role in playerProfile.roleDistribution.slice(0, 4)" :key="role.label">
+            <b>{{ role.label }}</b>
+            <em>{{ percent(role.rate) }}</em>
+          </span>
+        </div>
+      </div>
+
+      <div class="ability-grid">
+        <article
+          v-for="ability in abilityCards"
+          :key="ability.key"
+          :class="['ability-item', profileLevelClass(ability.averageScore, ability.games)]"
+        >
+          <header>
+            <span>{{ ability.label }}</span>
+            <strong>{{ scoreText(ability.averageScore, ability.games) }}</strong>
+          </header>
+          <div>
+            <span>样本 {{ ability.games }}</span>
+            <span>中位 {{ scoreText(ability.medianScore, ability.games) }}</span>
+            <span>波动 {{ fixed(ability.volatility) }}</span>
+          </div>
+          <footer>
+            <span>高光 {{ percent(ability.highlightRate) }}</span>
+            <span>战犯 {{ percent(ability.disasterRate) }}</span>
+          </footer>
+        </article>
+      </div>
+    </section>
+
     <div class="content-grid">
       <section class="panel table-panel" v-if="!selectedChampionId">
         <div class="panel-heading">
@@ -323,6 +423,8 @@ function errorMessage(error: unknown) {
                 <th>英雄</th>
                 <th>场次</th>
                 <th>胜率</th>
+                <th>评分</th>
+                <th>画像标签</th>
                 <th>K / D / A</th>
                 <th>伤害占比</th>
                 <th>伤害转化率</th>
@@ -345,6 +447,28 @@ function errorMessage(error: unknown) {
                 </td>
                 <td>{{ champ.games }}</td>
                 <td>{{ percent(champ.winRate) }}</td>
+                <td>
+                  <span
+                    :class="[
+                      'champion-score',
+                      profileLevelClass(
+                        championProfile(champ.championId).averageScore,
+                        championProfile(champ.championId).games,
+                      ),
+                    ]"
+                  >
+                    {{
+                      scoreText(
+                        championProfile(champ.championId).averageScore,
+                        championProfile(champ.championId).games,
+                      )
+                    }}
+                  </span>
+                  <small class="champion-role">
+                    {{ championProfile(champ.championId).mainRoleLabel }}
+                  </small>
+                </td>
+                <td>{{ championProfile(champ.championId).label }}</td>
                 <td>
                   <span class="kda-total">
                     {{ fixed(champ.averageKills, 1) }} /
@@ -419,6 +543,14 @@ function errorMessage(error: unknown) {
               <strong class="mobile-champion-name">{{ championName(champions, champ.championId) }}</strong>
               <span class="mobile-chip">{{ champ.games }} 场</span>
               <span class="mobile-chip">胜率 {{ percent(champ.winRate) }}</span>
+              <span class="mobile-chip score">
+                {{
+                  scoreText(
+                    championProfile(champ.championId).averageScore,
+                    championProfile(champ.championId).games,
+                  )
+                }}
+              </span>
             </div>
             <div class="mobile-champion-stats">
               <div>
@@ -453,6 +585,8 @@ function errorMessage(error: unknown) {
               <th>英雄</th>
               <th>场次</th>
               <th>胜率</th>
+              <th>评分</th>
+              <th>画像标签</th>
               <th>K / D / A</th>
               <th>伤害占比</th>
               <th>伤害转化率</th>
@@ -470,6 +604,16 @@ function errorMessage(error: unknown) {
               </td>
               <td>{{ champ.games }}</td>
               <td>{{ percent(champ.winRate) }}</td>
+              <td>
+                {{
+                  scoreText(
+                    championProfile(champ.championId).averageScore,
+                    championProfile(champ.championId).games,
+                  )
+                }}
+                <small>{{ championProfile(champ.championId).mainRoleLabel }}</small>
+              </td>
+              <td>{{ championProfile(champ.championId).label }}</td>
               <td>
                 {{ fixed(champ.averageKills, 1) }} /
                 {{ fixed(champ.averageDeaths, 1) }} /
@@ -671,6 +815,182 @@ function errorMessage(error: unknown) {
   min-height: 32px;
 }
 
+.profile-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.profile-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-heading .section-title {
+  margin-bottom: 0;
+}
+
+.profile-heading span {
+  color: #718087;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.profile-layout {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr) minmax(220px, 0.8fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.profile-score {
+  display: flex;
+  min-height: 92px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.profile-score span,
+.profile-score em {
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.profile-score span {
+  color: rgba(31, 42, 46, 0.72);
+}
+
+.profile-score strong {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.profile-tags,
+.role-distribution {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  background: #f7fbfa;
+  padding: 12px;
+}
+
+.profile-tags span {
+  border-radius: 999px;
+  color: #1f514a;
+  background: #dceee9;
+  font-size: 13px;
+  font-weight: 900;
+  padding: 7px 10px;
+}
+
+.role-distribution span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  border-radius: 7px;
+  color: #20333a;
+  background: #ffffff;
+  padding: 7px 9px;
+}
+
+.role-distribution b,
+.role-distribution em {
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.role-distribution b {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.role-distribution em {
+  color: #25845f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ability-item {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: 8px;
+  background: #f7fbfa;
+  padding: 11px 12px;
+}
+
+.ability-item header,
+.ability-item div,
+.ability-item footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ability-item header span {
+  color: #52636a;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ability-item header strong {
+  font-size: 21px;
+  line-height: 1;
+}
+
+.ability-item div span,
+.ability-item footer span {
+  color: #5f7076;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.profile-excellent {
+  color: #5d3300;
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+}
+
+.profile-good {
+  color: #145b3e;
+  background: #d9f1df;
+}
+
+.profile-average {
+  color: #174d83;
+  background: #dcecff;
+}
+
+.profile-poor {
+  color: #8f3434;
+  background: #f8dedc;
+}
+
+.profile-empty {
+  color: #657179;
+  background: #edf4f2;
+}
+
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -780,6 +1100,26 @@ td:first-child {
   font-weight: 800;
 }
 
+.champion-score,
+.champion-role {
+  display: block;
+}
+
+.champion-score {
+  width: fit-content;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1;
+  padding: 5px 7px;
+}
+
+.champion-role {
+  color: #718087;
+  font-size: 11px;
+  margin-top: 3px;
+}
+
 .kda-detail {
   color: #718087;
   font-size: 11px;
@@ -823,7 +1163,7 @@ td:first-child {
   top: 0;
   left: -12000px;
   z-index: -1;
-  width: 1160px;
+  width: 1240px;
   pointer-events: none;
 }
 
@@ -832,7 +1172,7 @@ td:first-child {
 }
 
 .share-card {
-  width: 1160px;
+  width: 1240px;
   border: 1px solid #dce7e4;
   border-radius: 8px;
   color: #263238;
@@ -949,7 +1289,7 @@ td:first-child {
 
 .mobile-champion-head {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
   min-width: 0;
   align-items: center;
   gap: 7px;
@@ -977,6 +1317,11 @@ td:first-child {
   line-height: 1;
   padding: 5px 7px;
   white-space: nowrap;
+}
+
+.mobile-chip.score {
+  color: #5d3300;
+  background: #ffe6a6;
 }
 
 .mobile-champion-stats,
@@ -1177,6 +1522,11 @@ td:first-child {
 @media (max-width: 1050px) {
   .metric-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .profile-layout,
+  .ability-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

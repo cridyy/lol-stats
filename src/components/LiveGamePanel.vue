@@ -1,6 +1,10 @@
 <script setup lang="ts">
+import { computed } from "vue"
+import { buildPlayerProfile, profileScoreLevel } from "../playerProfile"
 import type {
   ChampionSummaryItem,
+  GameAssetBundle,
+  GameAssetEntry,
   LiveGameResponse,
   LivePlayer,
   LiveTeam,
@@ -9,12 +13,28 @@ import type {
 import ChampionAvatar from "./ChampionAvatar.vue"
 import { championName, fixed, percent, phaseName, riotId } from "../utils"
 
-defineProps<{
+const LIVE_DISPLAY_DEPTH = 30
+
+const props = defineProps<{
   liveGame: LiveGameResponse | null
   champions: Record<number, ChampionSummaryItem>
+  gameAssets: GameAssetBundle
   loading: boolean
   error: string
 }>()
+
+const itemMap = computed(() => indexAssets(props.gameAssets.items))
+const ratingContext = computed(() => ({
+  items: itemMap.value,
+  champions: props.champions,
+}))
+
+function indexAssets(entries: GameAssetEntry[]) {
+  return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
+    acc[entry.id] = entry
+    return acc
+  }, {})
+}
 
 function queryStageName(stage?: string) {
   const map: Record<string, string> = {
@@ -61,7 +81,7 @@ function positionName(player: LivePlayer) {
 }
 
 function recentGames(player: LivePlayer) {
-  return player.stats?.recentGames.slice(0, 20) || []
+  return player.stats?.recentGames.slice(0, LIVE_DISPLAY_DEPTH) || []
 }
 
 function gameKda(game: RecentGame) {
@@ -124,9 +144,12 @@ function recentSummary(player: LivePlayer) {
 function teamSummary(team: LiveTeam) {
   const summaries = team.players
     .filter((player) => recentGames(player).length)
-    .map((player) => recentSummary(player))
+    .map((player) => ({
+      ...recentSummary(player),
+      profile: recentProfile(player),
+    }))
 
-  const average = (selector: (summary: ReturnType<typeof recentSummary>) => number) => {
+  const average = (selector: (summary: (typeof summaries)[number]) => number) => {
     if (!summaries.length) return 0
     return summaries.reduce((sum, summary) => sum + selector(summary), 0) / summaries.length
   }
@@ -138,6 +161,7 @@ function teamSummary(team: LiveTeam) {
     averageKda: average((summary) => summary.averageKda),
     damageConversion: average((summary) => summary.damageConversion),
     mitigationShare: average((summary) => summary.mitigationShare),
+    averageScore: average((summary) => summary.profile.overallScore),
   }
 }
 
@@ -163,6 +187,20 @@ function damageConversionTone(value: number) {
   if (value >= 0.9) return "tone-warn"
   return "tone-bad"
 }
+
+function recentProfile(player: LivePlayer) {
+  return buildPlayerProfile(recentGames(player), ratingContext.value)
+}
+
+function profileScoreText(player: LivePlayer) {
+  const profile = recentProfile(player)
+  return profile.games ? `${Math.round(profile.overallScore)}分` : "样本不足"
+}
+
+function profileClass(player: LivePlayer) {
+  const profile = recentProfile(player)
+  return profile.games ? `profile-${profileScoreLevel(profile.overallScore)}` : "profile-empty"
+}
 </script>
 
 <template>
@@ -179,7 +217,7 @@ function damageConversionTone(value: number) {
       </div>
     </header>
 
-    <div class="live-empty" v-if="loading">正在读取双方近 20 局</div>
+    <div class="live-empty" v-if="loading">正在读取双方近 30 局</div>
     <div class="live-empty error" v-else-if="error">{{ error }}</div>
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
@@ -214,6 +252,10 @@ function damageConversionTone(value: number) {
             <span>
               <i>平均承伤</i>
               <b>{{ statPercent(teamSummary(team).mitigationShare) }}</b>
+            </span>
+            <span>
+              <i>平均评分</i>
+              <b>{{ statFixed(teamSummary(team).averageScore, 0) }}分</b>
             </span>
           </div>
         </section>
@@ -267,6 +309,27 @@ function damageConversionTone(value: number) {
                       <b>{{ statPercent(recentSummary(player).mitigationShare) }}</b>
                     </span>
                   </div>
+                  <div
+                    v-if="player.stats"
+                    :class="['profile-line', profileClass(player)]"
+                  >
+                    <span>
+                      <i>画像</i>
+                      <b>{{ recentProfile(player).mainRoleLabel }}</b>
+                    </span>
+                    <span>
+                      <i>综合</i>
+                      <b>{{ profileScoreText(player) }}</b>
+                    </span>
+                    <span>
+                      <i>高光</i>
+                      <b>{{ statPercent(recentProfile(player).highlightRate) }}</b>
+                    </span>
+                    <span>
+                      <i>战犯</i>
+                      <b>{{ statPercent(recentProfile(player).disasterRate) }}</b>
+                    </span>
+                  </div>
                   <span v-else>{{ championName(champions, player.championId) }} · {{ positionName(player) }}</span>
                 </div>
               </div>
@@ -298,7 +361,7 @@ function damageConversionTone(value: number) {
                   <em>{{ statPercent(mitigationShare(game)) }}</em>
                 </button>
               </div>
-              <div class="recent-empty" v-else-if="player.stats">暂无符合当前模式的近 20 局</div>
+              <div class="recent-empty" v-else-if="player.stats">暂无符合当前模式的近 30 局</div>
             </article>
           </div>
         </section>
@@ -404,7 +467,7 @@ h2 {
 
 .average-metrics {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -560,6 +623,67 @@ h2 {
 
 .summary-line b {
   font-weight: 950;
+}
+
+.profile-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+  border-radius: 7px;
+  padding: 5px 6px;
+}
+
+.profile-line span {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.profile-line i,
+.profile-line b {
+  font-style: normal;
+}
+
+.profile-line i {
+  color: rgba(31, 42, 46, 0.72);
+}
+
+.profile-line b {
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+}
+
+.profile-excellent {
+  color: #5d3300;
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+}
+
+.profile-good {
+  color: #145b3e;
+  background: #d9f1df;
+}
+
+.profile-average {
+  color: #174d83;
+  background: #dcecff;
+}
+
+.profile-poor {
+  color: #8f3434;
+  background: #f8dedc;
+}
+
+.profile-empty {
+  color: #657179;
+  background: #edf4f2;
 }
 
 .tone-good {

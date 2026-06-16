@@ -81,7 +81,7 @@ const MAX_RECENT_DEPTH = 1000
 const DEFAULT_STATS_DEPTH = 500
 const MIN_STATS_DEPTH = 50
 const MAX_STATS_DEPTH = 500
-const LIVE_STATS_DEPTH = 20
+const LIVE_STATS_DEPTH = 30
 const LIVE_AUTO_REFRESH_MS = 15000
 const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   championAnalysisLimit: 10,
@@ -972,6 +972,7 @@ onUnmounted(() => {
         <LiveGamePanel
           :live-game="liveGame"
           :champions="championMap"
+          :game-assets="gameAssets"
           :loading="liveLoading"
           :error="liveError"
         />
