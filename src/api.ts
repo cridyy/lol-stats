@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import type {
+  AppUpdateInfo,
   ChampionSummaryItem,
   ConnectionStatus,
   GameAssetBundle,
@@ -8,6 +9,10 @@ import type {
   PlayerStatsResponse,
   RankedStatsResponse,
 } from "./types"
+
+export function checkAppUpdate() {
+  return invoke<AppUpdateInfo>("check_app_update")
+}
 
 export function connectionStatus() {
   return invoke<ConnectionStatus>("connection_status")

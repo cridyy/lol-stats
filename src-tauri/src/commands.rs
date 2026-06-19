@@ -1,5 +1,5 @@
 use futures::stream::{self, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
@@ -26,6 +26,8 @@ const LIVE_SCAN_BATCH_DEPTH: usize = 20;
 const LIVE_MAX_SCAN_DEPTH: usize = 150;
 const LIVE_MATCH_LIMIT: usize = 50;
 const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
+const UPDATE_MANIFEST_URL: &str = "https://gitee.com/Crescenre/lol-stats/raw/main/update.json";
+const UPDATE_DOWNLOAD_PAGE_URL: &str = "https://crescendum.lanzout.com/b00rp145sh";
 
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -36,6 +38,25 @@ struct StatsLoadProgress {
     request_id: String,
     loaded: usize,
     total: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateInfo {
+    current_version: String,
+    latest_version: String,
+    has_update: bool,
+    release_page_url: String,
+    release_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateManifest {
+    version: String,
+    download_url: String,
+    title: Option<String>,
+    message: Option<String>,
 }
 
 struct Clients {
@@ -104,6 +125,39 @@ fn ranked_text_is_empty(value: &str) -> bool {
     )
 }
 
+fn normalize_version_tag(version: &str) -> String {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .trim_start_matches('V')
+        .split(['-', '+'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let latest_parts = version_parts(latest);
+    let current_parts = version_parts(current);
+
+    for index in 0..latest_parts.len().max(current_parts.len()) {
+        let latest_part = *latest_parts.get(index).unwrap_or(&0);
+        let current_part = *current_parts.get(index).unwrap_or(&0);
+        if latest_part != current_part {
+            return latest_part > current_part;
+        }
+    }
+
+    false
+}
+
+fn version_parts(version: &str) -> Vec<u32> {
+    version
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0))
+        .collect()
+}
+
 fn create_clients() -> AppResult<Clients> {
     let auth = discover_primary_client()?;
     let lcu = LcuClient::new(&auth)?;
@@ -145,6 +199,59 @@ pub async fn connection_status() -> Result<ConnectionStatus, String> {
         summoner,
         gameflow_phase: phase,
         message: "已连接国服客户端".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|error| app_error(AppError::Http(error)))?;
+
+    let fallback = AppUpdateInfo {
+        current_version: current_version.clone(),
+        latest_version: current_version.clone(),
+        has_update: false,
+        release_page_url: UPDATE_DOWNLOAD_PAGE_URL.to_string(),
+        release_name: None,
+    };
+
+    let Ok(response) = http
+        .get(UPDATE_MANIFEST_URL)
+        .header("User-Agent", "lol-stats")
+        .send()
+        .await
+    else {
+        return Ok(fallback);
+    };
+
+    let Ok(response) = response.error_for_status() else {
+        return Ok(fallback);
+    };
+
+    let Ok(manifest) = response.json::<UpdateManifest>().await else {
+        return Ok(fallback);
+    };
+
+    let latest_version = normalize_version_tag(&manifest.version);
+    if latest_version.is_empty() {
+        return Ok(fallback);
+    }
+
+    let release_page_url = if manifest.download_url.trim().is_empty() {
+        UPDATE_DOWNLOAD_PAGE_URL.to_string()
+    } else {
+        manifest.download_url
+    };
+
+    Ok(AppUpdateInfo {
+        has_update: version_is_newer(&latest_version, &current_version),
+        current_version,
+        latest_version,
+        release_page_url,
+        release_name: manifest.message.or(manifest.title),
     })
 }
 

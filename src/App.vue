@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   ArrowLeft,
   FileText,
@@ -14,6 +15,7 @@ import {
 } from "lucide-vue-next"
 import {
   cancelStatsLoad,
+  checkAppUpdate,
   connectionStatus,
   loadCurrentRankedStats,
   loadGameflowPhase,
@@ -301,6 +303,28 @@ function notifyError(title: string, error: unknown) {
     message: errorMessage(error),
     duration: 7000,
   })
+}
+
+async function checkForAppUpdate() {
+  try {
+    const update = await checkAppUpdate()
+    if (!update.hasUpdate) return
+
+    showToast({
+      kind: "info",
+      title: `发现新版本 ${update.latestVersion}`,
+      message: update.releaseName || `当前版本 ${update.currentVersion}，点击下载新版`,
+      actionLabel: "下载",
+      duration: 12000,
+      onAction: () => {
+        void openUrl(update.releasePageUrl).catch((error) => {
+          notifyError("无法打开下载页", error)
+        })
+      },
+    })
+  } catch {
+    // 更新提示不能影响主流程；网络失败或更新源不可达时静默跳过。
+  }
 }
 
 provide(notifyKey, showToast)
@@ -897,6 +921,7 @@ watch(activePage, (page, previousPage) => {
 
 onMounted(async () => {
   startGameflowWatcher()
+  void checkForAppUpdate()
   unlistenProgress = await listen<StatsLoadProgress>("stats-load-progress", (event) => {
     const progress = event.payload
     if (progress.requestId !== progressOverlay.value.requestId) return

@@ -7,6 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::cancel_stats_load,
+            commands::check_app_update,
             commands::connection_status,
             commands::copy_png_to_clipboard,
             commands::load_champions,

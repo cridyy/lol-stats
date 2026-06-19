@@ -27,6 +27,14 @@ export interface ConnectionStatus {
   message: string
 }
 
+export interface AppUpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  releasePageUrl: string
+  releaseName?: string
+}
+
 export interface RankedStatsResponse {
   queueMap: RankedQueueMap
 }
