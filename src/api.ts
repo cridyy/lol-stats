@@ -25,6 +25,10 @@ export function loadCurrentRankedStats() {
   return invoke<RankedStatsResponse>("load_current_ranked_stats")
 }
 
+export function loadGameflowPhase() {
+  return invoke<string | null>("load_gameflow_phase")
+}
+
 export function loadRankedStats(puuid: string, sgpServerId?: string) {
   return invoke<RankedStatsResponse>("load_ranked_stats", { puuid, sgpServerId })
 }

@@ -77,6 +77,14 @@ const abilityCards = computed(() => [
   playerProfile.value.abilities.frontline,
   playerProfile.value.abilities.support,
 ])
+const roleBarColors = ["#2f78d6", "#d08a20", "#d44b7a", "#8b5cf6", "#d34f4f", "#5c6f7a"]
+const roleBars = computed(() =>
+  playerProfile.value.roleDistribution.slice(0, roleBarColors.length).map((role, index) => ({
+    ...role,
+    color: roleBarColors[index],
+    width: `${Math.max(role.rate * 100, 4)}%`,
+  })),
+)
 
 function indexAssets(entries: GameAssetBundle["items"]) {
   return entries.reduce<Record<number, GameAssetBundle["items"][number]>>((acc, entry) => {
@@ -189,6 +197,30 @@ function scoreText(score: number, games: number) {
 
 function profileLevelClass(score: number, games: number) {
   return games > 0 ? `profile-${profileScoreLevel(score)}` : "profile-empty"
+}
+
+function abilityRate(games: number) {
+  return ratio(games, playerProfile.value.games)
+}
+
+function mainRoleText(role: string) {
+  return role && role !== "样本不足" ? `主玩${role}` : "样本不足"
+}
+
+function tagToneClass(label: string) {
+  if (/通天|大腿|高光|爆表|优秀|稳定|积极|可靠|发动机|核心/.test(label)) {
+    return "tag-strong"
+  }
+  if (/战犯|低能|混子|K头|开游戏|纸糊|发软|隐身|拉胯/.test(label)) {
+    return "tag-danger"
+  }
+  if (/承伤|团队|辅助|前排|功能|治疗/.test(label)) {
+    return "tag-team"
+  }
+  if (/冲锋|上下限|吃资源/.test(label)) {
+    return "tag-warn"
+  }
+  return "tag-neutral"
 }
 
 function championProfile(championId: number) {
@@ -317,91 +349,114 @@ function errorMessage(error: unknown) {
   </section>
 
   <section class="stats" v-else ref="statsRootRef">
-    <div class="metric-grid">
-      <div class="metric">
-        <span>胜率</span>
-        <strong>{{ percent(stats.summary.winRate) }}</strong>
-        <small>{{ stats.summary.wins }}胜 {{ stats.summary.losses }}负</small>
-      </div>
-      <div class="metric">
-        <span>KDA</span>
-        <strong>{{ fixed(stats.summary.averageKda) }}</strong>
-        <small>
-          {{ fixed(stats.summary.averageKills, 1) }} /
-          {{ fixed(stats.summary.averageDeaths, 1) }} /
-          {{ fixed(stats.summary.averageAssists, 1) }}
-        </small>
-      </div>
-      <div class="metric">
-        <span>英雄池</span>
-        <strong>{{ stats.summary.uniqueChampions }}</strong>
-        <small class="metric-avatar">
-          <ChampionAvatar
-            :champion-id="stats.summary.mostPlayedChampionId"
-            :champions="champions"
-            :size="30"
-          />
-        </small>
-      </div>
-      <div class="metric">
-        <span>总场次</span>
-        <strong>{{ stats.summary.games }}</strong>
-        <small>已过滤人机/教程队列</small>
-      </div>
-    </div>
-
-    <section class="panel profile-panel">
-      <div class="profile-heading">
-        <div class="section-title">玩家画像</div>
-        <span>{{ playerProfile.games }} 场样本</span>
-      </div>
-
-      <div class="profile-layout">
-        <div
-          :class="[
-            'profile-score',
-            profileLevelClass(playerProfile.overallScore, playerProfile.games),
-          ]"
-        >
-          <span>综合分</span>
-          <strong>{{ scoreText(playerProfile.overallScore, playerProfile.games) }}</strong>
-          <em>{{ playerProfile.mainRoleLabel }}</em>
-        </div>
-
-        <div class="profile-tags">
-          <span v-for="tag in playerProfile.tags" :key="tag">{{ tag }}</span>
-        </div>
-
-        <div class="role-distribution">
-          <span v-for="role in playerProfile.roleDistribution.slice(0, 4)" :key="role.label">
-            <b>{{ role.label }}</b>
-            <em>{{ percent(role.rate) }}</em>
-          </span>
-        </div>
-      </div>
-
-      <div class="ability-grid">
-        <article
-          v-for="ability in abilityCards"
-          :key="ability.key"
-          :class="['ability-item', profileLevelClass(ability.averageScore, ability.games)]"
-        >
-          <header>
-            <span>{{ ability.label }}</span>
-            <strong>{{ scoreText(ability.averageScore, ability.games) }}</strong>
-          </header>
-          <div>
-            <span>样本 {{ ability.games }}</span>
-            <span>中位 {{ scoreText(ability.medianScore, ability.games) }}</span>
-            <span>波动 {{ fixed(ability.volatility) }}</span>
+    <div class="stats-overview">
+      <div class="overview-main">
+        <div class="metric-grid">
+          <div class="metric">
+            <span>胜率</span>
+            <strong>{{ stats.summary.games }}场 {{ percent(stats.summary.winRate) }}胜率</strong>
+            <small>
+              {{ stats.summary.wins }}胜 {{ stats.summary.losses }}负
+            </small>
           </div>
-          <footer>
-            <span>高光 {{ percent(ability.highlightRate) }}</span>
-            <span>战犯 {{ percent(ability.disasterRate) }}</span>
-          </footer>
-        </article>
+          <div class="metric">
+            <span>KDA</span>
+            <strong>{{ fixed(stats.summary.averageKda) }}</strong>
+            <small>
+              {{ fixed(stats.summary.averageKills, 1) }} /
+              {{ fixed(stats.summary.averageDeaths, 1) }} /
+              {{ fixed(stats.summary.averageAssists, 1) }}
+            </small>
+          </div>
+          <div class="metric">
+            <span>英雄池</span>
+            <strong>{{ stats.summary.uniqueChampions }}</strong>
+            <small class="metric-avatar">
+              <ChampionAvatar
+                :champion-id="stats.summary.mostPlayedChampionId"
+                :champions="champions"
+                :size="30"
+              />
+            </small>
+          </div>
+        </div>
+
+        <section class="panel profile-panel">
+          <div class="profile-heading">
+            <div class="section-title">玩家画像</div>
+          </div>
+
+          <div class="profile-layout">
+            <div
+              :class="[
+                'profile-score',
+                profileLevelClass(playerProfile.overallScore, playerProfile.games),
+              ]"
+            >
+              <div class="profile-score-line">
+                <span>综合分</span>
+                <strong>{{ scoreText(playerProfile.overallScore, playerProfile.games) }}</strong>
+              </div>
+              <em>{{ mainRoleText(playerProfile.mainRoleLabel) }}</em>
+            </div>
+
+            <div class="profile-tags">
+              <span
+                v-for="tag in playerProfile.tags"
+                :key="tag"
+                :class="tagToneClass(tag)"
+              >
+                {{ tag }}
+              </span>
+            </div>
+          </div>
+
+          <div class="ability-grid">
+            <article
+              v-for="ability in abilityCards"
+              :key="ability.key"
+              :class="['ability-item', profileLevelClass(ability.averageScore, ability.games)]"
+            >
+              <header>
+                <span>{{ ability.label }}</span>
+                <strong>{{ scoreText(ability.averageScore, ability.games) }}</strong>
+              </header>
+              <div>
+                <span>场数 <b>{{ ability.games }}</b></span>
+                <span>占比 <b>{{ percent(abilityRate(ability.games)) }}</b></span>
+              </div>
+              <footer>
+                <span>高光局 <b>{{ percent(ability.highlightRate) }}</b></span>
+                <span>战犯局 <b>{{ percent(ability.disasterRate) }}</b></span>
+              </footer>
+            </article>
+          </div>
+        </section>
       </div>
-    </section>
+
+      <aside class="panel role-bar-panel">
+        <div class="role-bar-scroll">
+          <div
+            v-for="role in roleBars"
+            :key="role.label"
+            class="role-bar-row"
+            :style="{ '--role-color': role.color }"
+          >
+            <div class="role-bar-head">
+              <strong>{{ role.label }}</strong>
+              <span>{{ percent(role.rate) }}</span>
+            </div>
+            <div class="role-bar-track">
+              <div class="role-bar-fill" :style="{ width: role.width }"></div>
+            </div>
+            <div class="role-bar-meta">
+              <span>{{ role.games }} 场</span>
+              <span>胜率 {{ percent(role.winRate) }}</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
 
     <div class="content-grid">
       <section class="panel table-panel" v-if="!selectedChampionId">
@@ -468,7 +523,13 @@ function errorMessage(error: unknown) {
                     {{ championProfile(champ.championId).mainRoleLabel }}
                   </small>
                 </td>
-                <td>{{ championProfile(champ.championId).label }}</td>
+                <td>
+                  <span
+                    :class="['champion-label-tag', tagToneClass(championProfile(champ.championId).label)]"
+                  >
+                    {{ championProfile(champ.championId).label }}
+                  </span>
+                </td>
                 <td>
                   <span class="kda-total">
                     {{ fixed(champ.averageKills, 1) }} /
@@ -613,7 +674,13 @@ function errorMessage(error: unknown) {
                 }}
                 <small>{{ championProfile(champ.championId).mainRoleLabel }}</small>
               </td>
-              <td>{{ championProfile(champ.championId).label }}</td>
+              <td>
+                <span
+                  :class="['champion-label-tag', tagToneClass(championProfile(champ.championId).label)]"
+                >
+                  {{ championProfile(champ.championId).label }}
+                </span>
+              </td>
               <td>
                 {{ fixed(champ.averageKills, 1) }} /
                 {{ fixed(champ.averageDeaths, 1) }} /
@@ -776,9 +843,23 @@ function errorMessage(error: unknown) {
   gap: 18px;
 }
 
+.stats-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 390px;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.overview-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -840,7 +921,7 @@ function errorMessage(error: unknown) {
 
 .profile-layout {
   display: grid;
-  grid-template-columns: 176px minmax(0, 1fr) minmax(220px, 0.8fr);
+  grid-template-columns: 250px minmax(0, 1fr);
   gap: 10px;
   align-items: stretch;
 }
@@ -855,29 +936,35 @@ function errorMessage(error: unknown) {
   padding: 12px;
 }
 
-.profile-score span,
+.profile-score-line {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.profile-score-line span,
+.profile-score-line strong {
+  color: inherit;
+  font-size: 30px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .profile-score em {
-  font-size: 12px;
+  font-size: 16px;
   font-style: normal;
   font-weight: 900;
 }
 
-.profile-score span {
-  color: rgba(31, 42, 46, 0.72);
-}
-
-.profile-score strong {
-  font-size: 30px;
-  line-height: 1;
-}
-
-.profile-tags,
-.role-distribution {
+.profile-tags {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   align-content: center;
-  gap: 8px;
+  gap: 7px;
   border-radius: 8px;
   background: #f7fbfa;
   padding: 12px;
@@ -885,38 +972,11 @@ function errorMessage(error: unknown) {
 
 .profile-tags span {
   border-radius: 999px;
-  color: #1f514a;
-  background: #dceee9;
   font-size: 13px;
   font-weight: 900;
+  line-height: 1;
   padding: 7px 10px;
-}
-
-.role-distribution span {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  border-radius: 7px;
-  color: #20333a;
-  background: #ffffff;
-  padding: 7px 9px;
-}
-
-.role-distribution b,
-.role-distribution em {
-  font-style: normal;
   white-space: nowrap;
-}
-
-.role-distribution b {
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.role-distribution em {
-  color: #25845f;
-  font-size: 12px;
-  font-weight: 900;
 }
 
 .ability-grid {
@@ -946,22 +1006,141 @@ function errorMessage(error: unknown) {
 }
 
 .ability-item header span {
-  color: #52636a;
-  font-size: 12px;
-  font-weight: 900;
+  color: inherit;
+  font-size: 20px;
+  font-weight: 950;
+  line-height: 1;
 }
 
 .ability-item header strong {
-  font-size: 21px;
+  font-size: 23px;
+  font-weight: 950;
   line-height: 1;
 }
 
 .ability-item div span,
 .ability-item footer span {
   color: #5f7076;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: 900;
   white-space: nowrap;
+}
+
+.ability-item div b,
+.ability-item footer b {
+  color: #20333a;
+  font-weight: 950;
+}
+
+.role-bar-panel {
+  contain: size;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.role-bar-scroll {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 16px 12px 16px 16px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.role-bar-row {
+  --role-color: #2f78d6;
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #e0ebe8;
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 10px;
+}
+
+.role-bar-head,
+.role-bar-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.role-bar-head strong {
+  overflow: hidden;
+  color: #20333a;
+  font-size: 17px;
+  font-weight: 950;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-bar-head span {
+  color: var(--role-color);
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.role-bar-track {
+  position: relative;
+  overflow: hidden;
+  height: 13px;
+  border-radius: 999px;
+  background: #eaf1ef;
+}
+
+.role-bar-fill {
+  height: 100%;
+  min-width: 6px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--role-color), color-mix(in srgb, var(--role-color) 72%, #ffffff));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.42) inset;
+}
+
+.role-bar-meta span {
+  color: #4f6066;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.tag-strong {
+  color: #5d3300;
+  background: #ffe09b;
+}
+
+.tag-danger {
+  color: #922f2f;
+  background: #f9d1d0;
+}
+
+.tag-team {
+  color: #135c42;
+  background: #d0f0dd;
+}
+
+.tag-warn {
+  color: #7b4d02;
+  background: #ffe2b8;
+}
+
+.tag-neutral {
+  color: #1f514a;
+  background: #dceee9;
 }
 
 .profile-excellent {
@@ -1118,6 +1297,17 @@ td:first-child {
   color: #718087;
   font-size: 11px;
   margin-top: 3px;
+}
+
+.champion-label-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1;
+  padding: 6px 8px;
+  white-space: nowrap;
 }
 
 .kda-detail {
@@ -1520,6 +1710,10 @@ td:first-child {
 }
 
 @media (max-width: 1050px) {
+  .stats-overview {
+    grid-template-columns: 1fr;
+  }
+
   .metric-grid {
     grid-template-columns: 1fr 1fr;
   }

@@ -235,6 +235,10 @@ pub struct ParticipantStats {
     #[serde(default)]
     pub total_heal: u32,
     #[serde(default)]
+    pub enemy_champion_immobilizations: u32,
+    #[serde(default)]
+    pub immobilize_and_kill_with_ally: u32,
+    #[serde(default)]
     pub vision_score: u32,
     #[serde(default)]
     pub champ_level: u32,
@@ -412,6 +416,14 @@ pub struct RecentGame {
     pub team_total_heal: u32,
     #[serde(default)]
     pub team_gold_earned: u32,
+    #[serde(default)]
+    pub enemy_champion_immobilizations: u32,
+    #[serde(default)]
+    pub team_enemy_champion_immobilizations: u32,
+    #[serde(default)]
+    pub immobilize_and_kill_with_ally: u32,
+    #[serde(default)]
+    pub team_immobilize_and_kill_with_ally: u32,
     pub game_creation: i64,
     pub game_duration: i64,
 }

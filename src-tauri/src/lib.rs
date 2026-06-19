@@ -11,6 +11,7 @@ pub fn run() {
             commands::copy_png_to_clipboard,
             commands::load_champions,
             commands::load_current_ranked_stats,
+            commands::load_gameflow_phase,
             commands::load_game_assets,
             commands::load_ranked_stats,
             commands::load_lcu_asset,

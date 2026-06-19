@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, inject, ref } from "vue"
-import { ClipboardCopy, LoaderCircle } from "lucide-vue-next"
+import { computed, inject, ref, watch } from "vue"
+import { ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
+import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
+import { buildPlayerProfile, profileScoreLevel, type PlayerProfile } from "../playerProfile"
 import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
@@ -16,6 +18,17 @@ import { fixed, formatDate } from "../utils"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 
+const PLAYER_ABILITY_SCAN_DEPTH = 150
+const PLAYER_ABILITY_DISPLAY_DEPTH = 100
+const PLAYER_ABILITY_CONCURRENCY = 3
+const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
+
+type PlayerAbilityState = {
+  loading: boolean
+  error: string
+  profile: PlayerProfile | null
+}
+
 const props = defineProps<{
   game: RecentGame
   matchDetail: MatchDetailResponse | null
@@ -23,6 +36,7 @@ const props = defineProps<{
   error: string
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
+  sgpServerId?: string
 }>()
 
 const emit = defineEmits<{
@@ -31,6 +45,9 @@ const emit = defineEmits<{
 
 const captureRef = ref<HTMLElement | null>(null)
 const copying = ref(false)
+const showPlayerAbility = ref(false)
+const abilityLoading = ref(false)
+const playerAbilityStates = ref<Record<string, PlayerAbilityState>>({})
 const notify = inject(notifyKey, () => 0)
 
 const spellMap = computed(() => indexAssets(props.gameAssets.summonerSpells))
@@ -41,6 +58,15 @@ const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
 }))
+
+watch(
+  () => props.matchDetail?.gameId,
+  () => {
+    showPlayerAbility.value = false
+    abilityLoading.value = false
+    playerAbilityStates.value = {}
+  },
+)
 
 function indexAssets(entries: GameAssetEntry[]) {
   return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
@@ -146,6 +172,174 @@ function outputRatingHint(game: RecentGame) {
   return outputRatingTitle(game, ratingContext.value)
 }
 
+function playerAbilityLabel(player: MatchDetailPlayer) {
+  const state = playerAbilityStates.value[playerAbilityKey(player)]
+  if (state?.loading) return "读取中"
+  if (state?.error) return "读取失败"
+
+  const profile = state?.profile
+  if (!profile) return "待读取"
+  if (!profile.games) return "样本不足"
+  return `${Math.round(profile.overallScore)}分 · ${abilityTierLabel(profile.overallScore)}`
+}
+
+function playerAbilityTitle(player: MatchDetailPlayer) {
+  const state = playerAbilityStates.value[playerAbilityKey(player)]
+  if (state?.loading) return `${playerLabel(player)}\n正在读取历史能力`
+  if (state?.error) return `${playerLabel(player)}\n历史能力读取失败：${state.error}`
+
+  const profile = state?.profile
+  if (!profile?.games) return `${playerLabel(player)}\n历史样本不足`
+
+  const carry = profile.abilities.carry
+  return [
+    playerLabel(player),
+    `历史能力 ${Math.round(profile.overallScore)}分 · ${abilityTierLabel(profile.overallScore)}`,
+    `样本 ${profile.games}场 · 主玩 ${profile.mainRoleLabel}`,
+    `carry率 ${Math.round(profile.highlightRate * 100)}% · 战犯率 ${Math.round(profile.disasterRate * 100)}%`,
+    `输出能力 ${carry.games ? `${Math.round(carry.averageScore)}分` : "样本不足"}`,
+  ].join("\n")
+}
+
+function playerAbilityTone(player: MatchDetailPlayer) {
+  const state = playerAbilityStates.value[playerAbilityKey(player)]
+  if (state?.error) return "profile-poor"
+
+  const profile = state?.profile
+  return profile ? `profile-${profileScoreLevel(profile.overallScore)}` : "profile-empty"
+}
+
+async function togglePlayerAbility() {
+  if (showPlayerAbility.value) {
+    showPlayerAbility.value = false
+    return
+  }
+
+  showPlayerAbility.value = true
+  await loadPlayerAbilities()
+}
+
+function abilityTierLabel(score: number) {
+  if (score >= 90) return "通天代"
+  if (score >= 80) return "小代"
+  if (score >= 70) return "大腿"
+  if (score >= 60) return "正常玩家"
+  if (score >= 50) return "小坑比"
+  return "大坑比"
+}
+
+function playerAbilityKey(player: MatchDetailPlayer) {
+  return player.puuid || `${player.teamId}:${player.participantId}`
+}
+
+function allMatchPlayers() {
+  return props.matchDetail?.teams.flatMap((team) => team.players) || []
+}
+
+async function loadPlayerAbilities() {
+  if (!props.matchDetail || abilityLoading.value) return
+
+  const players = allMatchPlayers().filter((player) => {
+    const state = playerAbilityStates.value[playerAbilityKey(player)]
+    return !state?.profile && !state?.loading
+  })
+  if (!players.length) return
+
+  abilityLoading.value = true
+  for (const player of players) {
+    setPlayerAbilityState(player, { loading: true, error: "", profile: null })
+  }
+
+  try {
+    await runWithConcurrency(players, PLAYER_ABILITY_CONCURRENCY, loadPlayerAbility)
+  } finally {
+    abilityLoading.value = false
+  }
+}
+
+async function loadPlayerAbility(player: MatchDetailPlayer) {
+  try {
+    if (!player.puuid) throw new Error("缺少 PUUID")
+
+    const stats = await searchPlayer(
+      player.puuid,
+      PLAYER_ABILITY_SCAN_DEPTH,
+      props.sgpServerId,
+      false,
+      false,
+    )
+    const games = stats.recentGames
+      .filter(
+        (game) =>
+          game.gameDuration >= MIN_VALID_GAME_DURATION_SECONDS &&
+          abilityQueueMatches(game, props.matchDetail || props.game),
+      )
+      .slice(0, PLAYER_ABILITY_DISPLAY_DEPTH)
+    const profile = buildPlayerProfile(games, ratingContext.value)
+
+    setPlayerAbilityState(player, { loading: false, error: "", profile })
+  } catch (error) {
+    setPlayerAbilityState(player, {
+      loading: false,
+      error: errorMessage(error),
+      profile: null,
+    })
+  }
+}
+
+function setPlayerAbilityState(player: MatchDetailPlayer, state: PlayerAbilityState) {
+  playerAbilityStates.value = {
+    ...playerAbilityStates.value,
+    [playerAbilityKey(player)]: state,
+  }
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let index = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index]
+      index += 1
+      await worker(item)
+    }
+  })
+
+  await Promise.all(workers)
+}
+
+function abilityQueueMatches(game: RecentGame, source: RecentGame | MatchDetailResponse) {
+  const queueId = source.queueId
+  const gameMode = source.gameMode || ""
+
+  if (isHexAram(queueId, gameMode)) return isHexAram(game.queueId, game.gameMode)
+
+  if (queueId === 450 || gameMode === "ARAM") {
+    return !isHexAram(game.queueId, game.gameMode) && (game.queueId === 450 || game.gameMode === "ARAM")
+  }
+
+  if ([420, 440].includes(queueId)) {
+    return [420, 440].includes(game.queueId)
+  }
+
+  if ([400, 430, 490].includes(queueId) || gameMode === "CLASSIC") {
+    return (
+      [400, 420, 430, 440, 490].includes(game.queueId) ||
+      (game.gameMode === "CLASSIC" &&
+        ![450, 1700, 1710, 1711, 1712, 2400].includes(game.queueId))
+    )
+  }
+
+  return true
+}
+
+function isHexAram(queueId: number, gameMode: string) {
+  return queueId === 2400 || ["STRAWBERRY", "KIWI"].includes(gameMode.toUpperCase())
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
@@ -186,6 +380,12 @@ async function copyImage() {
         <span>开始时间 {{ formatDate(game.gameCreation) }}</span>
       </div>
       <div class="overview-actions">
+        <button class="ability-toggle" :disabled="loading || !matchDetail" @click="togglePlayerAbility">
+          <LoaderCircle v-if="showPlayerAbility && abilityLoading" class="spin" :size="14" />
+          <Eye v-else-if="!showPlayerAbility" :size="14" />
+          <EyeOff v-else :size="14" />
+          {{ showPlayerAbility ? "关闭查看" : "查看玩家能力" }}
+        </button>
         <button :disabled="copying || loading || !matchDetail" @click="copyImage">
           <ClipboardCopy :size="14" />
           {{ copying ? "生成中" : "分享" }}
@@ -224,7 +424,7 @@ async function copyImage() {
             :key="`${player.teamId}:${player.participantId}`"
             class="detail-row"
             :class="{ win: player.win, lose: !player.win }"
-            :title="playerLabel(player)"
+            :title="showPlayerAbility ? playerAbilityTitle(player) : playerLabel(player)"
             tabindex="0"
             @click="emit('openPlayer', player)"
             @keydown.enter="emit('openPlayer', player)"
@@ -232,7 +432,14 @@ async function copyImage() {
           >
             <div class="champion-cell">
               <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="42" />
-              <span>{{ playerLabel(player) }}</span>
+              <span
+                v-if="!showPlayerAbility"
+              >
+                {{ playerLabel(player) }}
+              </span>
+              <span v-else :class="['player-ability-cell', playerAbilityTone(player)]">
+                {{ playerAbilityLabel(player) }}
+              </span>
             </div>
 
             <div class="spell-column">
@@ -374,6 +581,13 @@ async function copyImage() {
   font-weight: 700;
 }
 
+.overview-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .overview-actions button {
   display: inline-flex;
   align-items: center;
@@ -385,6 +599,11 @@ async function copyImage() {
   font-size: 12px;
   font-weight: 800;
   padding: 7px 10px;
+}
+
+.overview-actions .ability-toggle {
+  color: #315f58;
+  background: #edf5f3;
 }
 
 .overview-state {
@@ -511,6 +730,19 @@ async function copyImage() {
   font-size: 13.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.champion-cell .player-ability-cell {
+  display: inline-flex;
+  max-width: 106px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1;
+  padding: 6px 7px;
 }
 
 .spell-column {
@@ -707,5 +939,35 @@ async function copyImage() {
 .score-poor {
   color: #8f3434;
   background: rgba(248, 214, 213, 0.92);
+}
+
+.profile-excellent {
+  position: relative;
+  overflow: hidden;
+  color: #5d3300;
+  border: 1px solid rgba(245, 185, 52, 0.72);
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+}
+
+.profile-good {
+  color: #145b3e;
+  background: rgba(204, 239, 218, 0.88);
+}
+
+.profile-average {
+  color: #174d83;
+  background: rgba(205, 229, 255, 0.92);
+}
+
+.profile-poor {
+  color: #8f3434;
+  background: rgba(248, 214, 213, 0.92);
+}
+
+.profile-empty {
+  color: #657179;
+  background: #edf4f2;
 }
 </style>

@@ -118,6 +118,10 @@ export interface RecentGame {
   totalHeal: number
   teamTotalHeal: number
   teamGoldEarned: number
+  enemyChampionImmobilizations: number
+  teamEnemyChampionImmobilizations: number
+  immobilizeAndKillWithAlly: number
+  teamImmobilizeAndKillWithAlly: number
   gameCreation: number
   gameDuration: number
 }

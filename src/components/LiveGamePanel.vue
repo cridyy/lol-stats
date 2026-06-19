@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { buildPlayerProfile, profileScoreLevel } from "../playerProfile"
+import { buildChampionProfiles, buildPlayerProfile, profileScoreLevel } from "../playerProfile"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -13,7 +13,8 @@ import type {
 import ChampionAvatar from "./ChampionAvatar.vue"
 import { championName, fixed, percent, phaseName, riotId } from "../utils"
 
-const LIVE_DISPLAY_DEPTH = 30
+const LIVE_DISPLAY_DEPTH = 50
+const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
 
 const props = defineProps<{
   liveGame: LiveGameResponse | null
@@ -81,7 +82,11 @@ function positionName(player: LivePlayer) {
 }
 
 function recentGames(player: LivePlayer) {
-  return player.stats?.recentGames.slice(0, LIVE_DISPLAY_DEPTH) || []
+  return (
+    player.stats?.recentGames
+      .filter((game) => game.gameDuration >= MIN_VALID_GAME_DURATION_SECONDS)
+      .slice(0, LIVE_DISPLAY_DEPTH) || []
+  )
 }
 
 function gameKda(game: RecentGame) {
@@ -192,14 +197,60 @@ function recentProfile(player: LivePlayer) {
   return buildPlayerProfile(recentGames(player), ratingContext.value)
 }
 
+function selectedChampionGames(player: LivePlayer) {
+  if (!player.championId) return []
+  return recentGames(player).filter((game) => game.championId === player.championId)
+}
+
+function selectedChampionProfile(player: LivePlayer) {
+  const [profile] = buildChampionProfiles(selectedChampionGames(player), ratingContext.value)
+  return profile || null
+}
+
+function selectedChampionScoreText(player: LivePlayer) {
+  const profile = selectedChampionProfile(player)
+  return profile?.games ? `${Math.round(profile.averageScore)}分` : "样本不足"
+}
+
+function selectedChampionLabel(player: LivePlayer) {
+  return selectedChampionProfile(player)?.label || "暂无英雄样本"
+}
+
+function selectedChampionClass(player: LivePlayer) {
+  const profile = selectedChampionProfile(player)
+  return profile?.games ? `profile-${profileScoreLevel(profile.averageScore)}` : "profile-empty"
+}
+
 function profileScoreText(player: LivePlayer) {
   const profile = recentProfile(player)
   return profile.games ? `${Math.round(profile.overallScore)}分` : "样本不足"
 }
 
+function abilityScoreText(score: number, games: number) {
+  return games ? `${Math.round(score)}分` : "样本不足"
+}
+
+function profileTierLabel(player: LivePlayer) {
+  const profile = recentProfile(player)
+  if (!profile.games) return "样本不足"
+
+  const score = profile.overallScore
+  if (score >= 90) return "通天代"
+  if (score >= 80) return "小代"
+  if (score >= 70) return "大腿"
+  if (score >= 60) return "正常玩家"
+  if (score >= 50) return "小坑比"
+  return "大坑比"
+}
+
 function profileClass(player: LivePlayer) {
   const profile = recentProfile(player)
   return profile.games ? `profile-${profileScoreLevel(profile.overallScore)}` : "profile-empty"
+}
+
+function carryProfileClass(player: LivePlayer) {
+  const carry = recentProfile(player).abilities.carry
+  return carry.games ? `profile-${profileScoreLevel(carry.averageScore)}` : "profile-empty"
 }
 </script>
 
@@ -217,7 +268,7 @@ function profileClass(player: LivePlayer) {
       </div>
     </header>
 
-    <div class="live-empty" v-if="loading">正在读取双方近 30 局</div>
+    <div class="live-empty" v-if="loading">正在读取双方近 50 局</div>
     <div class="live-empty error" v-else-if="error">{{ error }}</div>
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
@@ -274,9 +325,24 @@ function profileClass(player: LivePlayer) {
               v-for="player in team.players"
               :key="`${team.name}-${player.puuid}`"
             >
-              <div class="identity">
+              <div
+                v-if="liveGame.queryStage === 'in-game'"
+                :class="['locked-hero-line', selectedChampionClass(player)]"
+                :title="`${championName(champions, player.championId)} · ${selectedChampionScoreText(player)} · ${selectedChampionLabel(player)}`"
+              >
                 <ChampionAvatar
                   v-if="player.championId"
+                  :champion-id="player.championId"
+                  :champions="champions"
+                  :size="34"
+                />
+                <strong>{{ selectedChampionScoreText(player) }}</strong>
+                <span>{{ selectedChampionLabel(player) }}</span>
+              </div>
+
+              <div class="identity">
+                <ChampionAvatar
+                  v-if="player.championId && liveGame.queryStage !== 'in-game'"
                   :champion-id="player.championId"
                   :champions="champions"
                   :size="42"
@@ -309,28 +375,43 @@ function profileClass(player: LivePlayer) {
                       <b>{{ statPercent(recentSummary(player).mitigationShare) }}</b>
                     </span>
                   </div>
-                  <div
-                    v-if="player.stats"
-                    :class="['profile-line', profileClass(player)]"
-                  >
-                    <span>
-                      <i>画像</i>
-                      <b>{{ recentProfile(player).mainRoleLabel }}</b>
-                    </span>
-                    <span>
-                      <i>综合</i>
-                      <b>{{ profileScoreText(player) }}</b>
-                    </span>
-                    <span>
-                      <i>高光</i>
-                      <b>{{ statPercent(recentProfile(player).highlightRate) }}</b>
-                    </span>
-                    <span>
-                      <i>战犯</i>
-                      <b>{{ statPercent(recentProfile(player).disasterRate) }}</b>
-                    </span>
-                  </div>
                   <span v-else>{{ championName(champions, player.championId) }} · {{ positionName(player) }}</span>
+                </div>
+              </div>
+
+              <div
+                v-if="player.stats"
+                class="profile-panel-line"
+              >
+                <div :class="['profile-main-row', profileClass(player)]">
+                  <strong>{{ profileTierLabel(player) }}</strong>
+                  <b>{{ profileScoreText(player) }}</b>
+                </div>
+                <div class="profile-stat-row profile-overall-row">
+                  <span>主玩 <b>{{ recentProfile(player).mainRoleLabel }}</b></span>
+                  <span>carry率 <b>{{ statPercent(recentProfile(player).highlightRate) }}</b></span>
+                  <span>战犯率 <b>{{ statPercent(recentProfile(player).disasterRate) }}</b></span>
+                </div>
+                <div :class="['profile-stat-row', 'profile-carry-row', carryProfileClass(player)]">
+                  <span>
+                    输出能力
+                    <b>
+                      {{
+                        abilityScoreText(
+                          recentProfile(player).abilities.carry.averageScore,
+                          recentProfile(player).abilities.carry.games,
+                        )
+                      }}
+                    </b>
+                  </span>
+                  <span>
+                    carry率
+                    <b>{{ statPercent(recentProfile(player).abilities.carry.highlightRate) }}</b>
+                  </span>
+                  <span>
+                    战犯率
+                    <b>{{ statPercent(recentProfile(player).abilities.carry.disasterRate) }}</b>
+                  </span>
                 </div>
               </div>
 
@@ -361,7 +442,7 @@ function profileClass(player: LivePlayer) {
                   <em>{{ statPercent(mitigationShare(game)) }}</em>
                 </button>
               </div>
-              <div class="recent-empty" v-else-if="player.stats">暂无符合当前模式的近 30 局</div>
+              <div class="recent-empty" v-else-if="player.stats">暂无符合当前模式的近 50 局</div>
             </article>
           </div>
         </section>
@@ -536,7 +617,7 @@ h2 {
 .player-card {
   display: flex;
   min-width: var(--live-player-card-min);
-  min-height: 298px;
+  min-height: 330px;
   flex-direction: column;
   gap: 8px;
   border: 1px solid #dce7e4;
@@ -544,6 +625,33 @@ h2 {
   background: #ffffff;
   box-shadow: 0 10px 24px rgba(32, 67, 73, 0.06);
   padding: 9px;
+}
+
+.locked-hero-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border-radius: 7px;
+  padding: 7px 9px;
+}
+
+.locked-hero-line strong {
+  flex: 0 0 auto;
+  color: inherit;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.locked-hero-line span {
+  min-width: 0;
+  color: inherit;
+  font-size: 16px;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .identity {
@@ -625,38 +733,82 @@ h2 {
   font-weight: 950;
 }
 
-.profile-line {
+.profile-panel-line {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 6px;
-  border-radius: 7px;
-  padding: 5px 6px;
+  width: 100%;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.profile-line span {
+.profile-main-row,
+.profile-stat-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-main-row {
+  justify-content: space-between;
+  border-radius: 7px;
+  padding: 9px 10px;
+}
+
+.profile-main-row strong,
+.profile-main-row b {
+  color: inherit;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.profile-main-row strong {
+  font-size: 25px;
+}
+
+.profile-main-row b {
+  font-size: 21px;
+}
+
+.profile-stat-row {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+
+.profile-overall-row {
+  color: #174d83;
+  background: #dcecff;
+}
+
+.profile-carry-row {
+  color: inherit;
+}
+
+.profile-stat-row span {
   display: inline-flex;
-  max-width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   align-items: baseline;
   gap: 3px;
-  font-size: 11px;
+  color: rgba(31, 42, 46, 0.78);
+  font-size: 12.5px;
   font-weight: 900;
   white-space: nowrap;
 }
 
-.profile-line i,
-.profile-line b {
-  font-style: normal;
+.profile-stat-row b {
+  overflow: visible;
+  max-width: none;
+  color: #d22f2f;
+  font-size: 13.5px;
+  font-weight: 950;
+  white-space: nowrap;
 }
 
-.profile-line i {
-  color: rgba(31, 42, 46, 0.72);
-}
-
-.profile-line b {
-  overflow: hidden;
-  color: inherit;
-  text-overflow: ellipsis;
+.profile-carry-row b {
+  color: #d22f2f;
 }
 
 .profile-excellent {
@@ -739,7 +891,7 @@ h2 {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  max-height: 205px;
+  max-height: 185px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;

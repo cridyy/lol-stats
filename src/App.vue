@@ -16,6 +16,7 @@ import {
   cancelStatsLoad,
   connectionStatus,
   loadCurrentRankedStats,
+  loadGameflowPhase,
   loadRankedStats,
   loadChampions,
   loadGameAssets,
@@ -81,8 +82,10 @@ const MAX_RECENT_DEPTH = 1000
 const DEFAULT_STATS_DEPTH = 500
 const MIN_STATS_DEPTH = 50
 const MAX_STATS_DEPTH = 500
-const LIVE_STATS_DEPTH = 30
+const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
+const GAMEFLOW_WATCH_MS = 1000
+const AUTO_LIVE_PHASES = new Set(["GameStart", "InProgress", "Reconnect"])
 const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   championAnalysisLimit: 10,
   championGamesAnalysisLimit: 20,
@@ -160,6 +163,8 @@ const progressOverlay = ref({
 
 let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
+let gameflowWatchTimer: number | null = null
+let autoLiveSessionActive = false
 let searchServerTouched = false
 let searchServerInitializedFromClient = false
 let searchRankedRequestKey = ""
@@ -845,6 +850,40 @@ function stopLiveAutoRefresh() {
   liveRefreshTimer = null
 }
 
+function shouldAutoOpenLive(phase?: string | null) {
+  return phase ? AUTO_LIVE_PHASES.has(phase) : false
+}
+
+async function checkGameflowForAutoLive() {
+  const phase = await loadGameflowPhase().catch(() => null)
+  const shouldOpen = shouldAutoOpenLive(phase)
+
+  if (!shouldOpen) {
+    autoLiveSessionActive = false
+    return
+  }
+
+  if (autoLiveSessionActive) return
+  autoLiveSessionActive = true
+
+  activePage.value = "live"
+  void refreshLiveGame({ silent: true, switchPage: false })
+}
+
+function startGameflowWatcher() {
+  if (gameflowWatchTimer !== null) return
+  void checkGameflowForAutoLive()
+  gameflowWatchTimer = window.setInterval(() => {
+    void checkGameflowForAutoLive()
+  }, GAMEFLOW_WATCH_MS)
+}
+
+function stopGameflowWatcher() {
+  if (gameflowWatchTimer === null) return
+  window.clearInterval(gameflowWatchTimer)
+  gameflowWatchTimer = null
+}
+
 watch(activePage, (page, previousPage) => {
   if (previousPage) savePageScroll(previousPage)
   void restorePageScroll(page)
@@ -857,6 +896,7 @@ watch(activePage, (page, previousPage) => {
 })
 
 onMounted(async () => {
+  startGameflowWatcher()
   unlistenProgress = await listen<StatsLoadProgress>("stats-load-progress", (event) => {
     const progress = event.payload
     if (progress.requestId !== progressOverlay.value.requestId) return
@@ -867,6 +907,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenProgress?.()
+  stopGameflowWatcher()
   stopLiveAutoRefresh()
 })
 </script>
@@ -918,6 +959,7 @@ onUnmounted(() => {
           :error="activeDrillTab.error"
           :champions="championMap"
           :game-assets="gameAssets"
+          :sgp-server-id="activeDrillTab.sgpServerId"
           @open-player="openPlayerDrillTab($event, activeDrillTab.sgpServerId)"
         />
 

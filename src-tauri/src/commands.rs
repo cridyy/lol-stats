@@ -11,8 +11,8 @@ use crate::services::lcu::{LcuClient, RiotClient};
 use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ClientAuth, ConnectionStatus, GameAssetBundle,
     GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LiveTeam, MatchDetailResponse,
-    PlayerStatsResponse, PlayerSummary, RankedStatsResponse, RecentGame, SafeClientInfo,
-    SummonerInfo,
+    PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse, RecentGame,
+    SafeClientInfo, SummonerInfo,
 };
 use crate::services::stats::{
     load_match_detail as load_match_detail_service, load_player_stats,
@@ -23,8 +23,9 @@ const EMPTY_PUUID: &str = "00000000-0000-0000-0000-000000000000";
 const STATS_PROGRESS_EVENT: &str = "stats-load-progress";
 const LIVE_QUERY_CONCURRENCY: usize = 4;
 const LIVE_SCAN_BATCH_DEPTH: usize = 20;
-const LIVE_MAX_SCAN_DEPTH: usize = 100;
-const LIVE_MATCH_LIMIT: usize = 30;
+const LIVE_MAX_SCAN_DEPTH: usize = 150;
+const LIVE_MATCH_LIMIT: usize = 50;
+const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -78,6 +79,29 @@ fn is_real_puuid(puuid: &str) -> bool {
 fn is_probably_puuid(input: &str) -> bool {
     let parts = input.split('-').collect::<Vec<_>>();
     parts.len() == 5 && input.len() >= 32
+}
+
+fn is_ranked_stats_empty(stats: &RankedStatsResponse) -> bool {
+    is_ranked_queue_empty(&stats.queue_map.ranked_solo_5x5)
+        && is_ranked_queue_empty(&stats.queue_map.ranked_flex_sr)
+}
+
+fn is_ranked_queue_empty(entry: &RankedQueueEntry) -> bool {
+    ranked_text_is_empty(&entry.tier)
+        && ranked_text_is_empty(&entry.highest_tier)
+        && ranked_text_is_empty(&entry.previous_season_highest_tier)
+        && ranked_text_is_empty(&entry.previous_season_end_tier)
+        && entry.league_points == 0
+        && entry.wins == 0
+        && entry.losses == 0
+        && !entry.is_provisional
+}
+
+fn ranked_text_is_empty(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "" | "NONE" | "NA"
+    )
 }
 
 fn create_clients() -> AppResult<Clients> {
@@ -205,22 +229,49 @@ pub async fn load_current_ranked_stats() -> Result<RankedStatsResponse, String> 
 }
 
 #[tauri::command]
+pub async fn load_gameflow_phase() -> Result<Option<String>, String> {
+    let Ok(clients) = create_clients() else {
+        return Ok(None);
+    };
+
+    Ok(clients.lcu.gameflow_phase().await.ok())
+}
+
+#[tauri::command]
 pub async fn load_ranked_stats(
     puuid: String,
     sgp_server_id: Option<String>,
 ) -> Result<RankedStatsResponse, String> {
     let clients = create_clients().map_err(app_error)?;
+    let normalized_sgp_server_id = sgp_server_id
+        .as_deref()
+        .map(crate::services::sgp::normalize_sgp_server_id);
+    let default_sgp_server_id = crate::services::sgp::default_sgp_server_id(&clients.auth);
+    let can_fallback_to_lcu = normalized_sgp_server_id
+        .as_deref()
+        .unwrap_or(default_sgp_server_id.as_str())
+        .eq_ignore_ascii_case(&default_sgp_server_id);
     let sgp = crate::services::sgp::SgpClient::new(
         &clients.lcu,
         &clients.auth,
-        sgp_server_id.as_deref(),
+        normalized_sgp_server_id.as_deref(),
     )
     .await
     .map_err(app_error)?;
+    let puuid = puuid.trim().to_string();
 
-    sgp.ranked_stats(puuid.trim())
-        .await
-        .map_err(app_error)
+    match sgp.ranked_stats(&puuid).await {
+        Ok(ranked) if can_fallback_to_lcu && is_ranked_stats_empty(&ranked) => {
+            clients.lcu.ranked_stats(&puuid).await.map_err(app_error)
+        }
+        Ok(ranked) => Ok(ranked),
+        Err(error) if can_fallback_to_lcu => clients
+            .lcu
+            .ranked_stats(&puuid)
+            .await
+            .map_err(|_| app_error(error)),
+        Err(error) => Err(app_error(error)),
+    }
 }
 
 #[tauri::command]
@@ -687,7 +738,7 @@ fn player_list_contains_puuid(players: &[LivePlayerSeed], puuid: &str) -> bool {
         .any(|player| player.puuid.eq_ignore_ascii_case(puuid))
 }
 
-/// 实时战绩使用当前对局模式筛选历史记录，最多从近 100 场里凑 30 场。
+/// 实时战绩使用当前对局模式筛选历史记录，最多从近 150 场里凑 100 场。
 #[derive(Clone, Copy)]
 enum LiveQueueFilter {
     HexAram,
@@ -768,7 +819,9 @@ fn filter_live_stats(
     let recent_games = stats
         .recent_games
         .iter()
-        .filter(|game| queue_filter.matches(game))
+        .filter(|game| {
+            game.game_duration >= LIVE_MIN_VALID_GAME_DURATION_SECONDS && queue_filter.matches(game)
+        })
         .take(display_depth)
         .cloned()
         .collect::<Vec<_>>();

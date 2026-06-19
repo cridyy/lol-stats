@@ -24,7 +24,7 @@ const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
-const CACHE_SCHEMA_VERSION: i64 = 9;
+const CACHE_SCHEMA_VERSION: i64 = 10;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 
 static STATS_CACHE: LazyLock<Mutex<HashMap<StatsCacheKey, StatsCacheEntry>>> =
@@ -74,6 +74,8 @@ struct TeamTotals {
     gold_earned: u32,
     damage_self_mitigated: u32,
     total_heal: u32,
+    enemy_champion_immobilizations: u32,
+    immobilize_and_kill_with_ally: u32,
     kills: u32,
     deaths: u32,
 }
@@ -381,8 +383,41 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_player_match_recent
             ON player_match_index (sgp_server_id, puuid, game_creation DESC);
+
+        CREATE TABLE IF NOT EXISTS cache_meta (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
         "#,
-    )
+    )?;
+
+    let stored_version = conn
+        .query_row(
+            "SELECT value FROM cache_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+
+    if stored_version != Some(CACHE_SCHEMA_VERSION) {
+        conn.execute_batch(
+            r#"
+            DELETE FROM stats_cache;
+            DELETE FROM match_cache;
+            DELETE FROM player_match_index;
+            "#,
+        )?;
+        conn.execute(
+            r#"
+            INSERT INTO cache_meta (key, value)
+            VALUES ('schema_version', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+            params![CACHE_SCHEMA_VERSION],
+        )?;
+    }
+
+    Ok(())
 }
 
 fn cache_db_path() -> Option<PathBuf> {
@@ -1051,6 +1086,10 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         total_heal: participant.stats.total_heal,
         team_total_heal: team_totals.total_heal,
         team_gold_earned: team_totals.gold_earned,
+        enemy_champion_immobilizations: participant.stats.enemy_champion_immobilizations,
+        team_enemy_champion_immobilizations: team_totals.enemy_champion_immobilizations,
+        immobilize_and_kill_with_ally: participant.stats.immobilize_and_kill_with_ally,
+        team_immobilize_and_kill_with_ally: team_totals.immobilize_and_kill_with_ally,
         game_creation: game.game_creation,
         game_duration: game.game_duration,
     }
@@ -1133,6 +1172,8 @@ fn team_totals_for_participant(game: &Game, participant: &Participant) -> TeamTo
             totals.gold_earned += candidate.stats.gold_earned;
             totals.damage_self_mitigated += candidate.stats.damage_self_mitigated;
             totals.total_heal += candidate.stats.total_heal;
+            totals.enemy_champion_immobilizations += candidate.stats.enemy_champion_immobilizations;
+            totals.immobilize_and_kill_with_ally += candidate.stats.immobilize_and_kill_with_ally;
             totals.kills += candidate.stats.kills;
             totals.deaths += candidate.stats.deaths;
             totals
