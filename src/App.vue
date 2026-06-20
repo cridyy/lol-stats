@@ -205,6 +205,7 @@ let searchRankedRequestKey = ""
 let nextToastId = 0
 let drillCachePruneTimer: number | null = null
 let applyingNavigationHistory = false
+let lastDetailsSnapshot: NavigationSnapshot | null = null
 const hiddenDrillTabCache = new Map<string, HiddenDrillCacheEntry>()
 const pageScrollTop: Record<PageKey, number> = {
   current: 0,
@@ -453,14 +454,14 @@ function currentNavigationSnapshot(): NavigationSnapshot {
   if (activePage.value !== "details") return { page: activePage.value }
 
   const activeTab = activeDrillTab.value || drillTabs.value[0] || null
-  return detailsSnapshot(activeTab)
+  return activeTab ? detailsSnapshot(activeTab) : lastDetailsSnapshot || { page: "details" }
 }
 
 function navigationSnapshotForPage(page: PageKey): NavigationSnapshot {
   if (page !== "details") return { page }
 
   const activeTab = activeDrillTab.value || drillTabs.value[0] || null
-  return detailsSnapshot(activeTab)
+  return activeTab ? detailsSnapshot(activeTab) : lastDetailsSnapshot || { page: "details" }
 }
 
 function normalizeNavigationSnapshot(snapshot: NavigationSnapshot): NavigationSnapshot {
@@ -498,12 +499,20 @@ function pushNavigationSnapshot(snapshot: NavigationSnapshot) {
 }
 
 function navigateToPage(page: PageKey) {
-  pushNavigationSnapshot(navigationSnapshotForPage(page))
-  activePage.value = page
+  const snapshot = navigationSnapshotForPage(page)
+  pushNavigationSnapshot(snapshot)
 
-  if (page === "details" && !activeDrillTabId.value) {
-    activeDrillTabId.value = drillTabs.value[0]?.id || ""
+  if (page === "details" && snapshot.drillTab) {
+    const tab = ensureDrillTab(snapshot.drillTab)
+    activeDrillTabId.value = tab.id
+    lastDetailsSnapshot = detailsSnapshot(tab)
+  } else if (page === "details" && !activeDrillTabId.value) {
+    const tab = drillTabs.value[0] || null
+    activeDrillTabId.value = tab?.id || ""
+    lastDetailsSnapshot = tab ? detailsSnapshot(tab) : lastDetailsSnapshot
   }
+
+  activePage.value = page
 }
 
 function pruneHiddenDrillCache() {
@@ -542,6 +551,7 @@ function hideDrillTabForHistory(id: string) {
   if (index < 0) return
 
   const [tab] = drillTabs.value.splice(index, 1)
+  lastDetailsSnapshot = detailsSnapshot(tab)
   hiddenDrillTabCache.set(id, { tab, hiddenAt: Date.now() })
   pruneHiddenDrillCache()
 
@@ -604,7 +614,8 @@ function activateDrillTab(id: string, options: { recordHistory?: boolean } = {})
 
   activeDrillTabId.value = id
   activePage.value = "details"
-  if (options.recordHistory !== false) pushNavigationSnapshot(detailsSnapshot(tab))
+  lastDetailsSnapshot = detailsSnapshot(tab)
+  if (options.recordHistory !== false) pushNavigationSnapshot(lastDetailsSnapshot)
 }
 
 function closeDrillTab(id: string) {
@@ -613,10 +624,17 @@ function closeDrillTab(id: string) {
   if (index < 0) return
 
   drillTabs.value.splice(index, 1)
-  if (activeDrillTabId.value !== id) return
+  if (activeDrillTabId.value !== id) {
+    if (lastDetailsSnapshot?.activeDrillTabId === id) {
+      const activeTab = activeDrillTab.value || drillTabs.value[0] || null
+      lastDetailsSnapshot = activeTab ? detailsSnapshot(activeTab) : null
+    }
+    return
+  }
 
   const nextTab = drillTabs.value[Math.max(0, index - 1)] || drillTabs.value[0]
   activeDrillTabId.value = nextTab?.id || ""
+  lastDetailsSnapshot = nextTab ? detailsSnapshot(nextTab) : null
 }
 
 async function openOverviewTab(payload: OpenMatchPayload) {
@@ -674,8 +692,11 @@ function applyNavigationSnapshot(snapshot: NavigationSnapshot) {
     if (snapshot.page === "details" && snapshot.drillTab) {
       const tab = ensureDrillTab(snapshot.drillTab)
       activeDrillTabId.value = tab.id
+      lastDetailsSnapshot = detailsSnapshot(tab)
     } else if (snapshot.page === "details") {
-      activeDrillTabId.value = drillTabs.value[0]?.id || ""
+      const tab = drillTabs.value[0] || null
+      activeDrillTabId.value = tab?.id || ""
+      lastDetailsSnapshot = tab ? detailsSnapshot(tab) : lastDetailsSnapshot
     }
 
     activePage.value = snapshot.page
