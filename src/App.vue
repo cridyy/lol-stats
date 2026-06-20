@@ -4,6 +4,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   LoaderCircle,
   RefreshCw,
@@ -74,10 +76,38 @@ type PlayerDrillTab = {
   sgpServerId?: string
 }
 type DrillTab = OverviewDrillTab | PlayerDrillTab
+type DrillHistoryPayload =
+  | {
+      id: string
+      type: "overview"
+      title: string
+      ownerLabel: string
+      game: RecentGame
+      sgpServerId?: string
+    }
+  | {
+      id: string
+      type: "player"
+      title: string
+      playerLabel: string
+      query: string
+      sgpServerId?: string
+    }
+type NavigationSnapshot = {
+  page: PageKey
+  activeDrillTabId?: string
+  drillTab?: DrillHistoryPayload
+}
+type HiddenDrillCacheEntry = {
+  tab: DrillTab
+  hiddenAt: number
+}
 
 const SEARCH_HISTORY_KEY = "lol-stats.search-history"
 const SHARE_SETTINGS_KEY = "lol-stats.share-settings"
 const MIN_PROGRESS_VISIBLE_MS = 700
+const HIDDEN_DRILL_CACHE_MS = 10 * 60 * 1000
+const HIDDEN_DRILL_CACHE_LIMIT = 20
 const DEFAULT_SEARCH_SERVER_ID = "TENCENT_HN1"
 const RECENT_PAGE_SIZE = 20
 const MAX_RECENT_DEPTH = 1000
@@ -155,6 +185,8 @@ const liveError = ref("")
 const drillTabs = ref<DrillTab[]>([])
 const activeDrillTabId = ref("")
 const toasts = ref<AppToast[]>([])
+const navigationHistory = ref<NavigationSnapshot[]>([{ page: "current" }])
+const navigationHistoryIndex = ref(0)
 const progressOverlay = ref({
   visible: false,
   requestId: "",
@@ -171,6 +203,9 @@ let searchServerTouched = false
 let searchServerInitializedFromClient = false
 let searchRankedRequestKey = ""
 let nextToastId = 0
+let drillCachePruneTimer: number | null = null
+let applyingNavigationHistory = false
+const hiddenDrillTabCache = new Map<string, HiddenDrillCacheEntry>()
 const pageScrollTop: Record<PageKey, number> = {
   current: 0,
   live: 0,
@@ -197,6 +232,8 @@ const progressRingStyle = computed(() => ({
 const activeDrillTab = computed(
   () => drillTabs.value.find((tab) => tab.id === activeDrillTabId.value) || null,
 )
+const canGoBack = computed(() => navigationHistoryIndex.value > 0)
+const canGoForward = computed(() => navigationHistoryIndex.value < navigationHistory.value.length - 1)
 
 const navItems: Array<{ key: PageKey; label: string; icon: typeof UserRound }> = [
   { key: "current", label: "当前角色", icon: UserRound },
@@ -338,11 +375,240 @@ function detailPlayerLabel(player: MatchDetailPlayer) {
   return player.summonerName || player.puuid || "未知玩家"
 }
 
-function activateDrillTab(id: string) {
+function copyRecentGame(game: RecentGame): RecentGame {
+  return {
+    ...game,
+    itemIds: [...(game.itemIds || [])],
+    perkIds: [...(game.perkIds || [])],
+    augmentIds: [...(game.augmentIds || [])],
+  }
+}
+
+function overviewHistoryPayload(payload: OpenMatchPayload): Extract<DrillHistoryPayload, { type: "overview" }> {
+  return {
+    id: drillTabKey("overview", payload.sgpServerId, payload.game.gameId, payload.ownerPuuid),
+    type: "overview",
+    title: `${payload.ownerLabel} ${championName(championMap.value, payload.game.championId)}`,
+    ownerLabel: payload.ownerLabel,
+    game: copyRecentGame(payload.game),
+    sgpServerId: payload.sgpServerId,
+  }
+}
+
+function playerHistoryPayload(
+  player: MatchDetailPlayer,
+  sgpServerId?: string,
+): Extract<DrillHistoryPayload, { type: "player" }> {
+  const label = detailPlayerLabel(player)
+  return {
+    id: drillTabKey("player", sgpServerId, player.puuid),
+    type: "player",
+    title: `${label} 总览`,
+    playerLabel: label,
+    query: player.puuid,
+    sgpServerId,
+  }
+}
+
+function drillTabToHistoryPayload(tab: DrillTab): DrillHistoryPayload {
+  if (tab.type === "overview") {
+    return {
+      id: tab.id,
+      type: "overview",
+      title: tab.title,
+      ownerLabel: tab.ownerLabel,
+      game: copyRecentGame(tab.game),
+      sgpServerId: tab.sgpServerId,
+    }
+  }
+
+  return {
+    id: tab.id,
+    type: "player",
+    title: tab.title,
+    playerLabel: tab.playerLabel,
+    query: tab.query,
+    sgpServerId: tab.sgpServerId,
+  }
+}
+
+function visibleDrillTab(id: string) {
+  return drillTabs.value.find((tab) => tab.id === id) || null
+}
+
+function cachedDrillTab(id: string) {
+  return hiddenDrillTabCache.get(id)?.tab || null
+}
+
+function detailsSnapshot(tab: DrillTab | null): NavigationSnapshot {
+  if (!tab) return { page: "details" }
+  return {
+    page: "details",
+    activeDrillTabId: tab.id,
+    drillTab: drillTabToHistoryPayload(tab),
+  }
+}
+
+function currentNavigationSnapshot(): NavigationSnapshot {
+  if (activePage.value !== "details") return { page: activePage.value }
+
+  const activeTab = activeDrillTab.value || drillTabs.value[0] || null
+  return detailsSnapshot(activeTab)
+}
+
+function navigationSnapshotForPage(page: PageKey): NavigationSnapshot {
+  if (page !== "details") return { page }
+
+  const activeTab = activeDrillTab.value || drillTabs.value[0] || null
+  return detailsSnapshot(activeTab)
+}
+
+function normalizeNavigationSnapshot(snapshot: NavigationSnapshot): NavigationSnapshot {
+  if (snapshot.page !== "details") return { page: snapshot.page }
+  if (snapshot.drillTab) {
+    return {
+      page: "details",
+      activeDrillTabId: snapshot.drillTab.id,
+      drillTab: snapshot.drillTab,
+    }
+  }
+
+  const tab = snapshot.activeDrillTabId
+    ? visibleDrillTab(snapshot.activeDrillTabId) || cachedDrillTab(snapshot.activeDrillTabId)
+    : activeDrillTab.value || drillTabs.value[0] || null
+  return detailsSnapshot(tab)
+}
+
+function sameNavigationSnapshot(left: NavigationSnapshot, right: NavigationSnapshot) {
+  return left.page === right.page && (left.activeDrillTabId || "") === (right.activeDrillTabId || "")
+}
+
+function pushNavigationSnapshot(snapshot: NavigationSnapshot) {
+  if (applyingNavigationHistory) return
+
+  const normalized = normalizeNavigationSnapshot(snapshot)
+  const current = navigationHistory.value[navigationHistoryIndex.value]
+  if (current && sameNavigationSnapshot(current, normalized)) return
+
+  navigationHistory.value = [
+    ...navigationHistory.value.slice(0, navigationHistoryIndex.value + 1),
+    normalized,
+  ]
+  navigationHistoryIndex.value = navigationHistory.value.length - 1
+}
+
+function navigateToPage(page: PageKey) {
+  pushNavigationSnapshot(navigationSnapshotForPage(page))
+  activePage.value = page
+
+  if (page === "details" && !activeDrillTabId.value) {
+    activeDrillTabId.value = drillTabs.value[0]?.id || ""
+  }
+}
+
+function pruneHiddenDrillCache() {
+  const now = Date.now()
+  for (const [id, entry] of hiddenDrillTabCache.entries()) {
+    if (now - entry.hiddenAt > HIDDEN_DRILL_CACHE_MS) hiddenDrillTabCache.delete(id)
+  }
+
+  if (hiddenDrillTabCache.size <= HIDDEN_DRILL_CACHE_LIMIT) return
+
+  const entries = [...hiddenDrillTabCache.entries()].sort((left, right) => left[1].hiddenAt - right[1].hiddenAt)
+  for (const [id] of entries.slice(0, hiddenDrillTabCache.size - HIDDEN_DRILL_CACHE_LIMIT)) {
+    hiddenDrillTabCache.delete(id)
+  }
+}
+
+function restoreHiddenDrillTab(id: string) {
+  const visible = visibleDrillTab(id)
+  if (visible) return visible
+
+  const entry = hiddenDrillTabCache.get(id)
+  if (!entry) return null
+
+  if (Date.now() - entry.hiddenAt > HIDDEN_DRILL_CACHE_MS) {
+    hiddenDrillTabCache.delete(id)
+    return null
+  }
+
+  hiddenDrillTabCache.delete(id)
+  drillTabs.value.push(entry.tab)
+  return entry.tab
+}
+
+function hideDrillTabForHistory(id: string) {
+  const index = drillTabs.value.findIndex((tab) => tab.id === id)
+  if (index < 0) return
+
+  const [tab] = drillTabs.value.splice(index, 1)
+  hiddenDrillTabCache.set(id, { tab, hiddenAt: Date.now() })
+  pruneHiddenDrillCache()
+
+  if (activeDrillTabId.value === id) {
+    const nextTab = drillTabs.value[Math.max(0, index - 1)] || drillTabs.value[0]
+    activeDrillTabId.value = nextTab?.id || ""
+  }
+}
+
+function hideCurrentDrillForHistory(target: NavigationSnapshot) {
+  const current = currentNavigationSnapshot()
+  if (current.page !== "details" || !current.activeDrillTabId) return
+  if (target.page === "details" && target.activeDrillTabId === current.activeDrillTabId) return
+
+  hideDrillTabForHistory(current.activeDrillTabId)
+}
+
+function createOverviewTab(payload: Extract<DrillHistoryPayload, { type: "overview" }>) {
+  const tab: OverviewDrillTab = {
+    id: payload.id,
+    type: "overview",
+    title: payload.title,
+    ownerLabel: payload.ownerLabel,
+    game: copyRecentGame(payload.game),
+    sgpServerId: payload.sgpServerId,
+    detail: null,
+    loading: true,
+    error: "",
+  }
+
+  drillTabs.value.push(tab)
+  void loadOverviewTabDetail(tab.id, tab.game.gameId, tab.sgpServerId)
+  return tab
+}
+
+function createPlayerTab(payload: Extract<DrillHistoryPayload, { type: "player" }>) {
+  const tab: PlayerDrillTab = {
+    id: payload.id,
+    type: "player",
+    title: payload.title,
+    playerLabel: payload.playerLabel,
+    query: payload.query,
+    sgpServerId: payload.sgpServerId,
+  }
+
+  drillTabs.value.push(tab)
+  return tab
+}
+
+function ensureDrillTab(payload: DrillHistoryPayload) {
+  const existing = visibleDrillTab(payload.id) || restoreHiddenDrillTab(payload.id)
+  if (existing) return existing
+
+  return payload.type === "overview" ? createOverviewTab(payload) : createPlayerTab(payload)
+}
+
+function activateDrillTab(id: string, options: { recordHistory?: boolean } = {}) {
+  const tab = visibleDrillTab(id) || restoreHiddenDrillTab(id)
+  if (!tab) return
+
   activeDrillTabId.value = id
+  activePage.value = "details"
+  if (options.recordHistory !== false) pushNavigationSnapshot(detailsSnapshot(tab))
 }
 
 function closeDrillTab(id: string) {
+  hiddenDrillTabCache.delete(id)
   const index = drillTabs.value.findIndex((tab) => tab.id === id)
   if (index < 0) return
 
@@ -354,32 +620,16 @@ function closeDrillTab(id: string) {
 }
 
 async function openOverviewTab(payload: OpenMatchPayload) {
-  const id = drillTabKey("overview", payload.sgpServerId, payload.game.gameId, payload.ownerPuuid)
-  activePage.value = "details"
-  const existing = drillTabs.value.find((tab) => tab.id === id)
-  if (existing) {
-    activateDrillTab(id)
-    return
-  }
+  const tab = ensureDrillTab(overviewHistoryPayload(payload))
+  activateDrillTab(tab.id)
+}
 
-  const tab: OverviewDrillTab = {
-    id,
-    type: "overview",
-    title: `${payload.ownerLabel} ${championName(championMap.value, payload.game.championId)}`,
-    ownerLabel: payload.ownerLabel,
-    game: payload.game,
-    sgpServerId: payload.sgpServerId,
-    detail: null,
-    loading: true,
-    error: "",
-  }
-
-  drillTabs.value.push(tab)
-  activateDrillTab(id)
+async function loadOverviewTabDetail(id: string, gameId: number, sgpServerId?: string) {
+  updateOverviewTab(id, { detail: null, loading: true, error: "" })
 
   try {
     const detail = await withTimeout(
-      loadMatchDetail(payload.game.gameId, payload.sgpServerId),
+      loadMatchDetail(gameId, sgpServerId),
       20_000,
       "对局详情读取超时，请稍后重试",
     )
@@ -391,38 +641,69 @@ async function openOverviewTab(payload: OpenMatchPayload) {
 
 function updateOverviewTab(id: string, patch: Partial<OverviewDrillTab>) {
   const index = drillTabs.value.findIndex((tab) => tab.id === id)
-  if (index < 0 || drillTabs.value[index].type !== "overview") return
+  if (index >= 0 && drillTabs.value[index].type === "overview") {
+    drillTabs.value[index] = {
+      ...drillTabs.value[index],
+      ...patch,
+    } as OverviewDrillTab
+    return
+  }
 
-  drillTabs.value[index] = {
-    ...drillTabs.value[index],
+  const cached = hiddenDrillTabCache.get(id)
+  if (!cached || cached.tab.type !== "overview") return
+
+  cached.tab = {
+    ...cached.tab,
     ...patch,
   } as OverviewDrillTab
 }
 
 function openPlayerDrillTab(player: MatchDetailPlayer, sgpServerId?: string) {
-  activePage.value = "details"
   if (!player.puuid) {
     showToast({ kind: "error", title: "无法打开玩家战绩", message: "该玩家缺少 PUUID" })
     return
   }
 
-  const label = detailPlayerLabel(player)
-  const id = drillTabKey("player", sgpServerId, player.puuid)
-  const existing = drillTabs.value.find((tab) => tab.id === id)
-  if (existing) {
-    activateDrillTab(id)
-    return
-  }
+  const tab = ensureDrillTab(playerHistoryPayload(player, sgpServerId))
+  activateDrillTab(tab.id)
+}
 
-  drillTabs.value.push({
-    id,
-    type: "player",
-    title: `${label} 总览`,
-    playerLabel: label,
-    query: player.puuid,
-    sgpServerId,
-  })
-  activateDrillTab(id)
+function applyNavigationSnapshot(snapshot: NavigationSnapshot) {
+  applyingNavigationHistory = true
+  try {
+    if (snapshot.page === "details" && snapshot.drillTab) {
+      const tab = ensureDrillTab(snapshot.drillTab)
+      activeDrillTabId.value = tab.id
+    } else if (snapshot.page === "details") {
+      activeDrillTabId.value = drillTabs.value[0]?.id || ""
+    }
+
+    activePage.value = snapshot.page
+  } finally {
+    applyingNavigationHistory = false
+  }
+}
+
+function navigateBack() {
+  if (!canGoBack.value) return
+
+  const targetIndex = navigationHistoryIndex.value - 1
+  const target = navigationHistory.value[targetIndex]
+  savePageScroll(activePage.value)
+  hideCurrentDrillForHistory(target)
+  navigationHistoryIndex.value = targetIndex
+  applyNavigationSnapshot(target)
+}
+
+function navigateForward() {
+  if (!canGoForward.value) return
+
+  const targetIndex = navigationHistoryIndex.value + 1
+  const target = navigationHistory.value[targetIndex]
+  savePageScroll(activePage.value)
+  hideCurrentDrillForHistory(target)
+  navigationHistoryIndex.value = targetIndex
+  applyNavigationSnapshot(target)
 }
 
 function isKnownSearchServer(sgpServerId: string) {
@@ -685,7 +966,7 @@ function runSearch(query = searchInput.value, sgpServerId = selectedSearchServer
   if (!text) return
   const normalizedServerId = normalizeSearchServerId(sgpServerId)
 
-  activePage.value = "search"
+  navigateToPage("search")
   activeSearchQuery.value = text
   activeSearchServerId.value = normalizedServerId
   selectedSearchServerId.value = normalizedServerId
@@ -841,7 +1122,7 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   }
 
   liveError.value = ""
-  if (switchPage) activePage.value = "live"
+  if (switchPage) navigateToPage("live")
 
   try {
     await ensureClientReady()
@@ -890,7 +1171,7 @@ async function checkGameflowForAutoLive() {
   if (autoLiveSessionActive) return
   autoLiveSessionActive = true
 
-  activePage.value = "live"
+  navigateToPage("live")
   void refreshLiveGame({ silent: true, switchPage: false })
 }
 
@@ -922,6 +1203,7 @@ watch(activePage, (page, previousPage) => {
 onMounted(async () => {
   startGameflowWatcher()
   void checkForAppUpdate()
+  drillCachePruneTimer = window.setInterval(pruneHiddenDrillCache, 60_000)
   unlistenProgress = await listen<StatsLoadProgress>("stats-load-progress", (event) => {
     const progress = event.payload
     if (progress.requestId !== progressOverlay.value.requestId) return
@@ -934,6 +1216,10 @@ onUnmounted(() => {
   unlistenProgress?.()
   stopGameflowWatcher()
   stopLiveAutoRefresh()
+  if (drillCachePruneTimer !== null) {
+    window.clearInterval(drillCachePruneTimer)
+    drillCachePruneTimer = null
+  }
 })
 </script>
 
@@ -941,11 +1227,19 @@ onUnmounted(() => {
   <main class="app-shell">
     <aside class="sidebar">
       <nav class="side-nav">
+        <div class="nav-history">
+          <button aria-label="后退" :disabled="!canGoBack" @click="navigateBack">
+            <ChevronLeft :size="18" />
+          </button>
+          <button aria-label="前进" :disabled="!canGoForward" @click="navigateForward">
+            <ChevronRight :size="18" />
+          </button>
+        </div>
         <button
           v-for="item in navItems"
           :key="item.key"
           :class="{ active: activePage === item.key }"
-          @click="activePage = item.key"
+          @click="navigateToPage(item.key)"
         >
           <component :is="item.icon" :size="18" />
           {{ item.label }}
@@ -1273,6 +1567,24 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.nav-history {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.side-nav .nav-history button {
+  justify-content: center;
+  padding: 8px 0;
+  color: #1f4f48;
+  background: #d9e9e5;
+}
+
+.side-nav .nav-history button:not(:disabled):hover {
+  background: #c8ddd8;
 }
 
 .side-nav button {
