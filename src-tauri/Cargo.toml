@@ -1,6 +1,6 @@
 [package]
 name = "lol-stats"
-version = "0.3.0"
+version = "0.3.1"
 description = "国服英雄联盟战绩统计工具"
 authors = ["local"]
 edition = "2021"
