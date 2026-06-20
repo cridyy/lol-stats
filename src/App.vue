@@ -39,6 +39,7 @@ import ToastStack from "./components/ToastStack.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
 import { championName } from "./utils"
 import type {
+  AppUpdateInfo,
   ChampionSummaryItem,
   ConnectionStatus,
   GameAssetBundle,
@@ -150,6 +151,7 @@ const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
 const shareSettings = ref<ShareSettings>(loadShareSettings())
+const updateDialog = ref<AppUpdateInfo | null>(null)
 
 const currentRecentStats = ref<PlayerStatsResponse | null>(null)
 const currentFullStats = ref<PlayerStatsResponse | null>(null)
@@ -348,21 +350,92 @@ async function checkForAppUpdate() {
     const update = await checkAppUpdate()
     if (!update.hasUpdate) return
 
-    showToast({
-      kind: "info",
-      title: `发现新版本 ${update.latestVersion}`,
-      message: update.releaseName || `当前版本 ${update.currentVersion}，点击下载新版`,
-      actionLabel: "下载",
-      duration: 12000,
-      onAction: () => {
-        void openUrl(update.releasePageUrl).catch((error) => {
-          notifyError("无法打开下载页", error)
-        })
-      },
-    })
+    updateDialog.value = update
   } catch {
     // 更新提示不能影响主流程；网络失败或更新源不可达时静默跳过。
   }
+}
+
+function closeUpdateDialog() {
+  updateDialog.value = null
+}
+
+function updateDownloadPassword() {
+  const message = updateDialog.value?.releaseName || ""
+  return message.match(/(?:密码|提取码|访问码)[:：]\s*([A-Za-z0-9_-]+)/)?.[1] || ""
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.style.position = "fixed"
+  textarea.style.left = "-9999px"
+  textarea.style.opacity = "0"
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  const copied = document.execCommand("copy")
+  textarea.remove()
+  if (!copied) throw new Error("剪切板不可用")
+}
+
+async function copyUpdatePassword() {
+  const password = updateDownloadPassword()
+  if (!password) {
+    showToast({
+      kind: "warning",
+      title: "没有找到下载密码",
+      message: updateDialog.value?.releaseName || "更新提示里没有可复制的密码",
+      duration: 6000,
+    })
+    return
+  }
+
+  try {
+    await copyTextToClipboard(password)
+    showToast({
+      kind: "success",
+      title: "下载密码已复制",
+      message: `下载密码：${password}`,
+      duration: 7000,
+    })
+  } catch (error) {
+    notifyError("下载密码复制失败", error)
+  }
+}
+
+function openUpdateDownload() {
+  const update = updateDialog.value
+  if (!update) return
+
+  void (async () => {
+    const password = updateDownloadPassword()
+
+    if (password) {
+      try {
+        await copyTextToClipboard(password)
+      } catch (error) {
+        notifyError("下载密码复制失败", error)
+      }
+    }
+
+    try {
+      await openUrl(update.releasePageUrl)
+      showToast({
+        kind: password ? "success" : "info",
+        title: password ? "下载页已打开，密码已复制" : "下载页已打开",
+        message: password ? `下载密码：${password}` : update.releaseName || "请在下载页获取新版安装包",
+        duration: 7000,
+      })
+    } catch (error) {
+      notifyError("无法打开下载页", error)
+    }
+  })()
 }
 
 provide(notifyKey, showToast)
@@ -1508,6 +1581,40 @@ onUnmounted(() => {
       </section>
     </div>
 
+    <div class="update-overlay" v-if="updateDialog">
+      <section class="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <button class="update-close" aria-label="关闭更新提示" @click="closeUpdateDialog">
+          <X :size="16" />
+        </button>
+        <div class="update-badge">New Version</div>
+        <header>
+          <span>发现新版本</span>
+          <strong id="update-title">{{ updateDialog.latestVersion }}</strong>
+        </header>
+
+        <p>
+          {{ updateDialog.releaseName || "新版安装包已经准备好，点击下载后请选择覆盖安装以保留任务栏图标。" }}
+        </p>
+
+        <dl>
+          <div>
+            <dt>当前版本</dt>
+            <dd>{{ updateDialog.currentVersion }}</dd>
+          </div>
+          <div>
+            <dt>最新版本</dt>
+            <dd>{{ updateDialog.latestVersion }}</dd>
+          </div>
+        </dl>
+
+        <footer>
+          <button class="update-secondary" @click="closeUpdateDialog">稍后</button>
+          <button class="update-copy" @click="copyUpdatePassword">复制密码</button>
+          <button class="update-primary" @click="openUpdateDownload">立即下载</button>
+        </footer>
+      </section>
+    </div>
+
     <ToastStack :toasts="toasts" @dismiss="dismissToast" @action="runToastAction" />
   </main>
 </template>
@@ -2053,6 +2160,161 @@ button:disabled {
   height: 18px;
   accent-color: #1f5f56;
   cursor: pointer;
+}
+
+.update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(135deg, rgba(31, 95, 86, 0.24), rgba(20, 35, 38, 0.18)),
+    rgba(20, 35, 38, 0.42);
+  backdrop-filter: blur(10px);
+  padding: 24px;
+}
+
+.update-modal {
+  position: relative;
+  display: flex;
+  width: min(520px, calc(100vw - 48px));
+  flex-direction: column;
+  gap: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(214, 229, 225, 0.92);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 30px 90px rgba(12, 32, 35, 0.34);
+  padding: 26px;
+}
+
+.update-modal::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: linear-gradient(90deg, #1f5f56, #d5a835, #2f78d6);
+  content: "";
+}
+
+.update-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 50%;
+  color: #315f58;
+  background: #edf5f3;
+  cursor: pointer;
+}
+
+.update-close:hover {
+  background: #dfecea;
+}
+
+.update-badge {
+  width: fit-content;
+  border-radius: 999px;
+  color: #1f5f56;
+  background: #e6f2ef;
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0;
+  padding: 6px 10px;
+}
+
+.update-modal header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.update-modal header span {
+  color: #63757a;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.update-modal header strong {
+  color: #18282c;
+  font-size: 42px;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.update-modal p {
+  max-width: 440px;
+  margin: 0;
+  color: #4f6368;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.7;
+}
+
+.update-modal dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.update-modal dl div {
+  border: 1px solid #dce7e4;
+  border-radius: 8px;
+  background: #f6faf9;
+  padding: 12px;
+}
+
+.update-modal dt,
+.update-modal dd {
+  margin: 0;
+}
+
+.update-modal dt {
+  color: #718087;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.update-modal dd {
+  margin-top: 5px;
+  color: #20333a;
+  font-size: 18px;
+  font-weight: 950;
+}
+
+.update-modal footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.update-modal footer button {
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 900;
+  padding: 10px 16px;
+}
+
+.update-secondary {
+  color: #315f58;
+  background: #edf5f3;
+}
+
+.update-copy {
+  color: #8b6410;
+  background: #fff4ce;
+}
+
+.update-primary {
+  color: #ffffff;
+  background: #1f5f56;
+  box-shadow: 0 12px 24px rgba(31, 95, 86, 0.22);
 }
 
 .settings-toggle {
