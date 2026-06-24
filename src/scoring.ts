@@ -149,7 +149,7 @@ function calculateRatingParts(
       participation: 15 * clamp01((metrics.killParticipation - 0.42) / 0.38),
       deathControl: 10 * (1 - clamp01((metrics.deathShare - 0.28) / 0.22)),
       roleFit: 8 * clamp01((role.finalWeights.tank + role.finalWeights.fighter) / 0.65),
-      efficiency: 9 * clamp01((metrics.effectiveDamageConversion - 0.65) / 0.5),
+      efficiency: 9 * damageConversionScore(metrics, 0.65, 0.5),
       healing: 5 * clamp01(metrics.healingShare / 0.25),
       control: 6 * metrics.controlQuality,
     }
@@ -221,7 +221,7 @@ function calculateRatingParts(
     killQuality: 9 * killQualityScore(metrics),
     survival: 8 * (1 - clamp01((metrics.deathShare - 0.2) / 0.18)),
     mitigation: combat.mitigation,
-    economy: 6 * clamp01((metrics.effectiveDamageConversion - 0.75) / 0.55),
+    economy: 6 * damageConversionScore(metrics, 0.75, 0.55),
   }
 }
 
@@ -247,8 +247,10 @@ function dynamicCombatContributionParts(
 ) {
   // 输出/战士共享伤害、伤转、承伤分池；承伤最低为 0，只在质量明显更高时借权重。
   const damageScore = clamp01(metrics.damageShare / config.damageTarget)
-  const efficiencyScore = clamp01(
-    (metrics.effectiveDamageConversion - config.efficiencyBase) / config.efficiencyRange,
+  const efficiencyScore = damageConversionScore(
+    metrics,
+    config.efficiencyBase,
+    config.efficiencyRange,
   )
   const mitigationScore = mitigationQualityScore(
     metrics,
@@ -286,6 +288,25 @@ function dynamicCombatContributionParts(
 
 function killQualityScore(metrics: OutputRatingMetrics) {
   return killQualityFromShares(metrics.killShare, metrics.damageShare)
+}
+
+function damageConversionScore(metrics: OutputRatingMetrics, base: number, range: number) {
+  const rawScore = clamp01((metrics.effectiveDamageConversion - base) / range)
+  if (rawScore <= 0) return 0
+
+  // High damage conversion is only reliable when deaths are controlled, or when
+  // the player dealt enough team damage to justify the risk. This prevents
+  // low-gold/high-death games from getting inflated by damage conversion alone.
+  const deathPressure = clamp01((metrics.deathShare - 0.2) / 0.12)
+  const damageProtection = clamp01((metrics.damageShare - 0.24) / 0.12)
+  const deathDamageGapRisk = clamp01((metrics.deathShare - metrics.damageShare - 0.02) / 0.12)
+  const feedRisk = Math.max(
+    deathPressure * (1 - damageProtection),
+    deathDamageGapRisk * (1 - damageProtection * 0.4),
+  )
+  const retain = clamp(1 - feedRisk * 0.82, 0.18, 1)
+
+  return rawScore * retain
 }
 
 function killQualityFromShares(killShare: number, damageShare: number) {
@@ -454,9 +475,9 @@ function outputRatingLabel(
 }
 
 function outputRatingLevel(score: number): OutputRating["level"] {
-  if (score >= 80) return "excellent"
+  if (score >= 82) return "excellent"
   if (score >= 65) return "good"
-  if (score >= 50) return "average"
+  if (score >= 41) return "average"
   return "poor"
 }
 

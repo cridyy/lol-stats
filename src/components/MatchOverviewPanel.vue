@@ -4,7 +4,7 @@ import { ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
 import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
-import { buildPlayerProfile, profileScoreLevel, type PlayerProfile } from "../playerProfile"
+import { buildPlayerProfile, profileTierClass, profileTierLabel, type PlayerProfile } from "../playerProfile"
 import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
@@ -180,7 +180,7 @@ function playerAbilityLabel(player: MatchDetailPlayer) {
   const profile = state?.profile
   if (!profile) return "待读取"
   if (!profile.games) return "样本不足"
-  return `${Math.round(profile.overallScore)}分 · ${abilityTierLabel(profile.overallScore)}`
+  return `${Math.round(profile.overallScore)}分 · ${profileTierLabel(profile.overallScore)}`
 }
 
 function playerAbilityTitle(player: MatchDetailPlayer) {
@@ -194,7 +194,7 @@ function playerAbilityTitle(player: MatchDetailPlayer) {
   const carry = profile.abilities.carry
   return [
     playerLabel(player),
-    `历史能力 ${Math.round(profile.overallScore)}分 · ${abilityTierLabel(profile.overallScore)}`,
+    `历史能力 ${Math.round(profile.overallScore)}分 · ${profileTierLabel(profile.overallScore)}`,
     `样本 ${profile.games}场 · 主玩 ${profile.mainRoleLabel}`,
     `carry率 ${Math.round(profile.highlightRate * 100)}% · 战犯率 ${Math.round(profile.disasterRate * 100)}%`,
     `输出能力 ${carry.games ? `${Math.round(carry.averageScore)}分` : "样本不足"}`,
@@ -203,10 +203,10 @@ function playerAbilityTitle(player: MatchDetailPlayer) {
 
 function playerAbilityTone(player: MatchDetailPlayer) {
   const state = playerAbilityStates.value[playerAbilityKey(player)]
-  if (state?.error) return "profile-poor"
+  if (state?.error) return "profile-tier-big-pit"
 
   const profile = state?.profile
-  return profile ? `profile-${profileScoreLevel(profile.overallScore)}` : "profile-empty"
+  return profile ? profileTierClass(profile.overallScore) : "profile-empty"
 }
 
 async function togglePlayerAbility() {
@@ -217,15 +217,6 @@ async function togglePlayerAbility() {
 
   showPlayerAbility.value = true
   await loadPlayerAbilities()
-}
-
-function abilityTierLabel(score: number) {
-  if (score >= 90) return "通天代"
-  if (score >= 80) return "小代"
-  if (score >= 70) return "大腿"
-  if (score >= 60) return "正常玩家"
-  if (score >= 50) return "小坑比"
-  return "大坑比"
 }
 
 function playerAbilityKey(player: MatchDetailPlayer) {
@@ -941,7 +932,7 @@ async function copyImage() {
   background: rgba(248, 214, 213, 0.92);
 }
 
-.profile-excellent {
+.profile-tier-apex {
   position: relative;
   overflow: hidden;
   color: #5d3300;
@@ -951,17 +942,22 @@ async function copyImage() {
     #ffd36a;
 }
 
-.profile-good {
+.profile-tier-steady {
   color: #145b3e;
   background: rgba(204, 239, 218, 0.88);
 }
 
-.profile-average {
+.profile-tier-normal {
   color: #174d83;
   background: rgba(205, 229, 255, 0.92);
 }
 
-.profile-poor {
+.profile-tier-small-pit {
+  color: #8a5200;
+  background: rgba(255, 238, 191, 0.94);
+}
+
+.profile-tier-big-pit {
   color: #8f3434;
   background: rgba(248, 214, 213, 0.92);
 }

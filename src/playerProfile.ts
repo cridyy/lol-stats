@@ -66,6 +66,7 @@ const EMPTY_ABILITY: Record<AbilityKey, string> = {
   support: "辅助能力",
 }
 const DISASTER_BAND_DOMINANT_RATE = 0.3
+const DISASTER_RATE_SCORE_LIMIT = 60
 
 export function buildPlayerProfile(
   games: RecentGame[] = [],
@@ -90,7 +91,7 @@ export function buildPlayerProfile(
       ratedGames.length,
     ),
     disasterRate: rate(
-      ratedGames.filter((entry) => entry.rating.score < 40).length,
+      ratedGames.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
       ratedGames.length,
     ),
     volatility: standardDeviation(ratedGames.map((entry) => entry.rating.score)),
@@ -135,10 +136,26 @@ export function buildChampionProfiles(
 }
 
 export function profileScoreLevel(score: number) {
-  if (score >= 80) return "excellent"
-  if (score >= 68) return "good"
-  if (score >= 55) return "average"
+  if (score >= 82) return "excellent"
+  if (score >= 65) return "good"
+  if (score >= 41) return "average"
   return "poor"
+}
+
+export function profileTierLabel(score: number) {
+  if (score >= 90) return "通天代"
+  if (score >= 82) return "小代"
+  if (score >= 76) return "实力强劲"
+  if (score >= 65) return "正常玩家"
+  if (score >= 55) return "小坑比"
+  return "大坑比"
+}
+
+export function profileTierClass(score: number) {
+  if (score >= 82) return "profile-tier-apex"
+  if (score >= 65) return "profile-tier-steady"
+  if (score >= 41) return "profile-tier-normal"
+  return "profile-tier-big-pit"
 }
 
 function rateGames(games: RecentGame[], context: RatingContext) {
@@ -176,7 +193,10 @@ function buildAbilityProfile(key: AbilityKey, entries: RatedGame[]): AbilityProf
     averageScore: average(selected.map((entry) => entry.rating.score)),
     medianScore: median(selected.map((entry) => entry.rating.score)),
     highlightRate: rate(selected.filter((entry) => entry.rating.score >= 80).length, selected.length),
-    disasterRate: rate(selected.filter((entry) => entry.rating.score < 40).length, selected.length),
+    disasterRate: rate(
+      selected.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
+      selected.length,
+    ),
     volatility: standardDeviation(selected.map((entry) => entry.rating.score)),
     averageDamageShare: average(selected.map((entry) => entry.rating.metrics.damageShare)),
     averageDamageConversion: average(selected.map((entry) => entry.rating.metrics.damageConversion)),
@@ -234,7 +254,10 @@ function buildPlayerTags(
   const frontlineGamesRate = rate(abilities.frontline.games, entries.length)
   const supportGamesRate = rate(abilities.support.games, entries.length)
   const highlightRate = rate(entries.filter((entry) => entry.rating.score >= 80).length, entries.length)
-  const disasterRate = rate(entries.filter((entry) => entry.rating.score < 40).length, entries.length)
+  const disasterRate = rate(
+    entries.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
+    entries.length,
+  )
   const volatility = standardDeviation(entries.map((entry) => entry.rating.score))
   const tags: string[] = []
 
@@ -280,7 +303,7 @@ function summarizeRatedGames(entries: RatedGame[]) {
     highlightRate: rate(scores.filter((score) => score >= 80).length, entries.length),
     goodRate: rate(scores.filter((score) => score >= 70).length, entries.length),
     poorRate: rate(scores.filter((score) => score < 55).length, entries.length),
-    disasterRate: rate(scores.filter((score) => score < 40).length, entries.length),
+    disasterRate: rate(scores.filter(isDisasterRateScore).length, entries.length),
     damageShare: average(metrics.map((item) => item.damageShare)),
     damageConversion: average(metrics.map((item) => item.damageConversion)),
     killParticipation: average(metrics.map((item) => item.killParticipation)),
@@ -345,6 +368,10 @@ function dominantLabelInBand(entries: RatedGame[]) {
     Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ||
     "样本不足"
   )
+}
+
+function isDisasterRateScore(score: number) {
+  return score < DISASTER_RATE_SCORE_LIMIT
 }
 
 function average(values: number[]) {

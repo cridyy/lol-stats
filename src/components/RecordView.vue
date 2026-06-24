@@ -58,7 +58,7 @@ let statsDepthCloseTimer = 0
 
 const rankedQueueIds = new Set([420, 440])
 const normalQueueIds = new Set([400, 430, 480, 490])
-const arenaQueueIds = new Set([1700, 1710, 1711, 1712, 2400])
+const hexAramQueueIds = new Set([2400])
 const aramQueueIds = new Set([450])
 const apexTiers = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"])
 const statsDepthOptions = [50, 100, 200, 300, 400, 500]
@@ -91,11 +91,7 @@ const queueOptions: QueueOption[] = [
   {
     key: "arena",
     label: "海克斯大乱斗",
-    matches: (game) =>
-      arenaQueueIds.has(game.queueId) ||
-      game.gameMode === "CHERRY" ||
-      game.gameMode === "STRAWBERRY" ||
-      game.gameMode === "KIWI",
+    matches: (game) => hexAramQueueIds.has(game.queueId),
   },
   {
     key: "aram",

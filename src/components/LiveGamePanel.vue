@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { buildChampionProfiles, buildPlayerProfile, profileScoreLevel } from "../playerProfile"
+import { buildChampionProfiles, buildPlayerProfile, profileTierClass, profileTierLabel } from "../playerProfile"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -218,7 +218,7 @@ function selectedChampionLabel(player: LivePlayer) {
 
 function selectedChampionClass(player: LivePlayer) {
   const profile = selectedChampionProfile(player)
-  return profile?.games ? `profile-${profileScoreLevel(profile.averageScore)}` : "profile-empty"
+  return profile?.games ? profileTierClass(profile.averageScore) : "profile-empty"
 }
 
 function profileScoreText(player: LivePlayer) {
@@ -230,27 +230,20 @@ function abilityScoreText(score: number, games: number) {
   return games ? `${Math.round(score)}分` : "样本不足"
 }
 
-function profileTierLabel(player: LivePlayer) {
+function playerProfileTierLabel(player: LivePlayer) {
   const profile = recentProfile(player)
   if (!profile.games) return "样本不足"
-
-  const score = profile.overallScore
-  if (score >= 90) return "通天代"
-  if (score >= 80) return "小代"
-  if (score >= 70) return "大腿"
-  if (score >= 60) return "正常玩家"
-  if (score >= 50) return "小坑比"
-  return "大坑比"
+  return profileTierLabel(profile.overallScore)
 }
 
 function profileClass(player: LivePlayer) {
   const profile = recentProfile(player)
-  return profile.games ? `profile-${profileScoreLevel(profile.overallScore)}` : "profile-empty"
+  return profile.games ? profileTierClass(profile.overallScore) : "profile-empty"
 }
 
 function carryProfileClass(player: LivePlayer) {
   const carry = recentProfile(player).abilities.carry
-  return carry.games ? `profile-${profileScoreLevel(carry.averageScore)}` : "profile-empty"
+  return carry.games ? profileTierClass(carry.averageScore) : "profile-empty"
 }
 </script>
 
@@ -384,10 +377,10 @@ function carryProfileClass(player: LivePlayer) {
                 class="profile-panel-line"
               >
                 <div :class="['profile-main-row', profileClass(player)]">
-                  <strong>{{ profileTierLabel(player) }}</strong>
+                  <strong>{{ playerProfileTierLabel(player) }}</strong>
                   <b>{{ profileScoreText(player) }}</b>
                 </div>
-                <div class="profile-stat-row profile-overall-row">
+                <div :class="['profile-stat-row', 'profile-overall-row', profileClass(player)]">
                   <span>主玩 <b>{{ recentProfile(player).mainRoleLabel }}</b></span>
                   <span>carry率 <b>{{ statPercent(recentProfile(player).highlightRate) }}</b></span>
                   <span>战犯率 <b>{{ statPercent(recentProfile(player).disasterRate) }}</b></span>
@@ -811,24 +804,29 @@ h2 {
   color: #d22f2f;
 }
 
-.profile-excellent {
+.profile-tier-apex {
   color: #5d3300;
   background:
     linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
     #ffd36a;
 }
 
-.profile-good {
+.profile-tier-steady {
   color: #145b3e;
   background: #d9f1df;
 }
 
-.profile-average {
+.profile-tier-normal {
   color: #174d83;
   background: #dcecff;
 }
 
-.profile-poor {
+.profile-tier-small-pit {
+  color: #8a5200;
+  background: #fff1c8;
+}
+
+.profile-tier-big-pit {
   color: #8f3434;
   background: #f8dedc;
 }
