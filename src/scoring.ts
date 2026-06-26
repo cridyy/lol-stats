@@ -56,6 +56,15 @@ function ratio(part: number | undefined, total: number | undefined) {
   return safeTotal > 0 ? safePart / safeTotal : 0
 }
 
+export function scoreEvaluationLabel(score: number) {
+  if (score >= 90) return "通天代"
+  if (score >= 80) return "小代"
+  if (score >= 70) return "小有实力"
+  if (score >= 60) return "普通人"
+  if (score >= 40) return "小坑比"
+  return "大坑比"
+}
+
 export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
   const damageShare = ratio(game.damageToChampions, game.teamDamageToChampions)
   const goldShare = ratio(game.goldEarned, game.teamGoldEarned)
@@ -548,64 +557,17 @@ function outputRatingLabel(
   role: RoleAnalysis,
   family: RatingFamily,
 ) {
-  if (score < 40) return "纯战犯"
+  if (score >= 65) return positiveRatingLabel(game, metrics, score, role, family)
 
   const controlLabel = controlRatingLabel(metrics)
-  if (controlLabel) return controlLabel
-
-  if (family === "frontline") {
-    if (metrics.mitigationShare >= 0.34 && metrics.killParticipation >= 0.7) {
-      return score >= 88 ? "铜墙铁壁" : "可靠前排"
-    }
-    if (metrics.mitigationShare <= 0.18 && metrics.damageShare <= 0.18) return "纸糊前排"
-    if (score >= 88) return "开团核心"
-    if (score >= 75) return "可靠前排"
-    if (score >= 62) return "普通前排"
-    if (score >= 50) return "有点发软"
-    return "低能前排"
-  }
-
-  if (family === "fighter") {
-    if (
-      metrics.damageShare >= 0.25 &&
-      metrics.mitigationShare >= 0.28 &&
-      metrics.effectiveDamageConversion >= 0.95
-    ) {
-      return score >= 88 ? "战士核心" : "能抗能打"
-    }
-    if (
-      metrics.damageShare >= 0.27 &&
-      metrics.effectiveDamageConversion >= 1.1 &&
-      metrics.deathShare >= 0.24
-    ) {
-      return "冲锋战神"
-    }
-    if (metrics.mitigationShare <= 0.18 && metrics.damageShare <= 0.2) return "低能战士"
-    if (score >= 88) return "战士核心"
-    if (score >= 75) return "能抗能打"
-    if (score >= 62) return "普通战士"
-    if (score >= 50) return "有点莽"
-    return "低能战士"
-  }
-
-  if (family === "support") {
-    if (metrics.healingShare >= 0.32 && metrics.killParticipation >= 0.72) {
-      return score >= 88 ? "团队发动机" : "靠谱辅助"
-    }
-    if (metrics.damageShare >= 0.25 && metrics.damageConversion >= 1.1) return "功能大腿"
-    if (score >= 88) return "团队发动机"
-    if (score >= 75) return "靠谱辅助"
-    if (score >= 62) return "普通人"
-    if (score >= 50) return "低能辅助"
-    return "开游戏的"
-  }
+  if (score >= 40 && controlLabel) return controlLabel
 
   if (
     game.kda >= 3 &&
     (metrics.damageShare <= 0.2 || metrics.effectiveDamageConversion <= 0.95) &&
     metrics.killParticipation < 0.68
   ) {
-    return "保KDA混子"
+    return metrics.deathShare <= 0.18 ? "美美隐身" : "保KDA混子"
   }
 
   if (
@@ -613,56 +575,164 @@ function outputRatingLabel(
     metrics.damageShare < 0.24 &&
     metrics.damageConversion < 1.05
   ) {
-    return "只会K头"
+    return "k头狗"
+  }
+
+  if (metrics.goldShare >= 0.24 && metrics.effectiveDamageConversion < 1) return "拿钱不干事"
+
+  if (metrics.deathShare >= 0.3 && metrics.damageShare >= 0.24 && score < 65) {
+    return "自爆达人"
+  }
+
+  if (metrics.damageShare <= 0.18 && metrics.effectiveDamageConversion <= 0.9) {
+    return metrics.killParticipation < 0.5 ? "开游戏的" : "毫无存在感"
+  }
+
+  if (metrics.killParticipation <= 0.5 && metrics.damageShare <= 0.22 && score < 65) {
+    return metrics.deathShare <= 0.18 ? "美美隐身" : "开游戏的"
+  }
+
+  return score >= 60 ? "毫无存在感" : "开游戏的"
+}
+
+function positiveRatingLabel(
+  game: RecentGame,
+  metrics: OutputRatingMetrics,
+  score: number,
+  role: RoleAnalysis,
+  family: RatingFamily,
+) {
+  const controlLabel = controlRatingLabel(metrics)
+
+  if (family === "frontline") {
+    if (
+      metrics.mitigationShare >= 0.34 &&
+      metrics.mitigationPerDeath >= 3 &&
+      metrics.killParticipation >= 0.68
+    ) {
+      return "叹息之墙"
+    }
+    if (
+      metrics.mitigationShare >= 0.34 &&
+      metrics.mitigationPerDeath >= 1.05 &&
+      metrics.killParticipation >= 0.68
+    ) {
+      return "faker加里奥"
+    }
+    if (metrics.mitigationShare >= 0.3 && metrics.damageShare >= 0.22) return "半肉战神"
+    if (metrics.mitigationShare >= 0.3) return "哪来的城墙"
+    if (controlLabel) return controlLabel
+    return "顶级前锋"
+  }
+
+  if (family === "fighter") {
+    if (metrics.damageShare >= 0.35 && metrics.effectiveDamageConversion >= 1.5) {
+      return "大魔王"
+    }
+    if (
+      metrics.damageShare >= 0.32 &&
+      metrics.effectiveDamageConversion > 1.3 &&
+      metrics.killParticipation >= 0.68
+    ) {
+      return "恐怖利刃"
+    }
+    if (
+      game.kda >= 4 &&
+      metrics.damageShare >= 0.26 &&
+      metrics.effectiveDamageConversion >= 1.12 &&
+      metrics.deathShare <= 0.18
+    ) {
+      return "我chovy!"
+    }
+    if (
+      metrics.damageShare >= 0.25 &&
+      metrics.mitigationShare >= 0.28 &&
+      metrics.effectiveDamageConversion >= 0.95
+    ) {
+      return "半肉战神"
+    }
+    if (
+      metrics.damageShare >= 0.27 &&
+      metrics.effectiveDamageConversion >= 1.1 &&
+      metrics.deathShare >= 0.24
+    ) {
+      return "刀尖舔血"
+    }
+    if (metrics.damageShare >= 0.25 && metrics.killParticipation >= 0.68) {
+      return score >= 80 ? "最强前锋" : "冲阵好手"
+    }
+    if (controlLabel) return controlLabel
+    return score >= 80 ? "最强前锋" : "冲阵好手"
+  }
+
+  if (family === "support") {
+    if (metrics.goldShare <= 0.18 && metrics.killParticipation >= 0.7) return "吃草挤奶"
+    if (metrics.damageShare >= 0.24 && metrics.effectiveDamageConversion >= 1.05) return "核心大C"
+    if (controlLabel) return controlLabel
+    return score >= 80 ? "团队发动机" : "功能担当"
+  }
+
+  if (metrics.damageShare >= 0.35 && metrics.effectiveDamageConversion >= 1.5) {
+    return "大魔王"
   }
 
   if (
+    metrics.damageShare >= 0.32 &&
+    metrics.effectiveDamageConversion > 1.3 &&
+    metrics.killParticipation >= 0.68
+  ) {
+    return "爆炸核弹"
+  }
+
+  if (
+    game.kda >= 4 &&
+    metrics.damageShare >= 0.26 &&
+    metrics.effectiveDamageConversion >= 1.12 &&
+    metrics.deathShare <= 0.18
+  ) {
+    return "我chovy!"
+  }
+
+  if (
+    (role.role === "fighterAssassin" || role.role === "pureAssassin") &&
+    metrics.killShare >= 0.28 &&
+    metrics.effectiveDamageConversion >= 1 &&
+    metrics.effectiveDamageConversion <= 1.2
+  ) {
+    return "无情收割者"
+  }
+
+  if (metrics.goldShare <= 0.19 && metrics.damageShare >= 0.25 && metrics.effectiveDamageConversion >= 1.15) {
+    return "吃草挤奶"
+  }
+
+  if (metrics.damageShare >= 0.28 && metrics.effectiveDamageConversion >= 1.12 && game.kda >= 3) {
+    return "无解主c"
+  }
+
+  if (metrics.damageShare >= 0.28 && metrics.effectiveDamageConversion >= 1.05) {
+    return "核心大C"
+  }
+
+  if (metrics.damageShare >= 0.29 && metrics.killParticipation >= 0.68) return "全场火力点"
+
+  if (
     metrics.damageShare >= 0.27 &&
-    metrics.effectiveDamageConversion >= 1.1 &&
+    metrics.effectiveDamageConversion >= 1.08 &&
     metrics.deathShare >= 0.24
   ) {
-    return "冲锋战神"
+    return "浴血奋战"
   }
 
-  if (
-    metrics.damageShare >= 0.27 &&
-    metrics.killShare + 0.08 < metrics.damageShare &&
-    metrics.effectiveDamageConversion >= 1
-  ) {
-    return "打工皇帝"
-  }
+  if (controlLabel) return controlLabel
 
-  if (metrics.damageShare >= 0.28 && metrics.effectiveDamageConversion >= 1.18 && game.kda >= 3) {
-    return score >= 90 ? "通天代" : "核心大腿"
-  }
-
-  if (metrics.damageShare <= 0.2 && metrics.effectiveDamageConversion <= 0.9) {
-    return "低能输出"
-  }
-
-  if (metrics.killParticipation <= 0.5 && metrics.damageShare <= 0.22) {
-    return "开游戏的"
-  }
-
-  if (score >= 90) return "通天代"
-  if (score >= 82) return "核心大腿"
-  if (score >= 72) return "优质输出"
-  if (
-    role.role === "pureAssassin" &&
-    metrics.killShare >= 0.28 &&
-    metrics.effectiveDamageConversion >= 1
-  ) {
-    return "收割机器"
-  }
-  if (score >= 62) return "普通人"
-  if (score >= 52) return "开游戏的"
-  return "低能输出"
+  return score >= 80 ? "输出机器" : "稳定火力"
 }
 
 function outputRatingLevel(score: number): OutputRating["level"] {
-  if (score >= 82) return "excellent"
+  if (score >= 80) return "excellent"
   if (score >= 65) return "good"
-  if (score >= 41) return "average"
+  if (score >= 40) return "average"
   return "poor"
 }
 
@@ -699,7 +769,7 @@ export function outputRatingTitle(game: RecentGame, context: RatingContext = {})
   const rating = calculateOutputRating(game, context)
   const m = rating.metrics
   return [
-    `得分 ${rating.score} · ${rating.label}`,
+    `得分 ${rating.score} · ${scoreEvaluationLabel(rating.score)} · ${rating.label}`,
     ...ratingPartLines(rating.parts),
     `定位 ${rating.role.label} · 置信度 ${Math.round(rating.role.confidence * 100)}%`,
     `定位来源 装备 ${Math.round(rating.role.itemWeightRatio * 100)}% / 英雄 ${Math.round(

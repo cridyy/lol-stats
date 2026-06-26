@@ -107,7 +107,7 @@ async function loadStats(forceRefresh = false) {
 }
 
 function changeStatsDepth(depth: number) {
-  const nextDepth = Math.min(500, Math.max(50, Math.round(Number(depth) || DEFAULT_STATS_DEPTH)))
+  const nextDepth = Math.min(1000, Math.max(50, Math.round(Number(depth) || DEFAULT_STATS_DEPTH)))
   if (nextDepth === statsDepth.value && fullStats.value) return
 
   statsDepth.value = nextDepth

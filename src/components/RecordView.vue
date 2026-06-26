@@ -61,7 +61,7 @@ const normalQueueIds = new Set([400, 430, 480, 490])
 const hexAramQueueIds = new Set([2400])
 const aramQueueIds = new Set([450])
 const apexTiers = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"])
-const statsDepthOptions = [50, 100, 200, 300, 400, 500]
+const statsDepthOptions = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 const tierLabels: Record<string, string> = {
   IRON: "坚韧黑铁",
   BRONZE: "英勇黄铜",
@@ -194,7 +194,7 @@ function selectStatsDepth(depth: number) {
 
 function normalizeStatsDepthInput(event: Event) {
   const input = event.target as HTMLInputElement
-  statsDepthInput.value = input.value.replace(/\D/g, "").slice(0, 3)
+  statsDepthInput.value = input.value.replace(/\D/g, "").slice(0, 4)
 }
 
 function refreshActiveTab() {
@@ -213,7 +213,7 @@ function queueCount(option: QueueOption) {
 function clampStatsDepth(value: unknown) {
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return props.statsDepth
-  return Math.min(500, Math.max(50, Math.round(numberValue)))
+  return Math.min(1000, Math.max(50, Math.round(numberValue)))
 }
 
 function formatCurrentRank(entry: RankedQueueEntry) {

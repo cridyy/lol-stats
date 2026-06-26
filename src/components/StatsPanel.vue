@@ -14,7 +14,12 @@ import type {
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 import GameRecordList from "./GameRecordList.vue"
-import { buildChampionProfiles, buildPlayerProfile, profileScoreLevel } from "../playerProfile"
+import {
+  buildChampionProfiles,
+  buildPlayerProfile,
+  profileScoreLevel,
+  profileTierLabel,
+} from "../playerProfile"
 import { championName, fixed, percent } from "../utils"
 
 const props = defineProps<{
@@ -199,6 +204,10 @@ function profileLevelClass(score: number, games: number) {
   return games > 0 ? `profile-${profileScoreLevel(score)}` : "profile-empty"
 }
 
+function profileEvaluationText(score: number, games: number) {
+  return games > 0 ? profileTierLabel(score) : "样本不足"
+}
+
 function abilityRate(games: number) {
   return ratio(games, playerProfile.value.games)
 }
@@ -208,19 +217,40 @@ function mainRoleText(role: string) {
 }
 
 function tagToneClass(label: string) {
-  if (/通天|大腿|高光|爆表|优秀|稳定|积极|可靠|发动机|核心|控场|控杀|控制|节奏/.test(label)) {
+  if (/小坑比|大坑比/.test(label)) return "tag-danger"
+  if (/小有实力/.test(label)) return "tag-team"
+  if (
+    /通天|小代|全场火力|无解|输出机器|爆炸核弹|大魔王|恐怖利刃|无情收割|吃草挤奶|核心大C|chovy|faker|城墙|叹息之墙|半肉战神|最强前锋|高光|稳定|核心|控杀|控制/.test(
+      label,
+    )
+  ) {
     return "tag-strong"
   }
-  if (/战犯|低能|混子|K头|开游戏|纸糊|发软|隐身|拉胯/.test(label)) {
+  if (/战犯|低能|混子|K头|k头|开游戏|纸糊|发软|隐身|拉胯|毫无存在|拿钱不干事|自爆/.test(label)) {
     return "tag-danger"
   }
   if (/承伤|团队|辅助|前排|功能|治疗/.test(label)) {
     return "tag-team"
   }
-  if (/冲锋|上下限|吃资源/.test(label)) {
+  if (/冲锋|冲阵|上下限|浴血|顶级前锋|刀尖舔血/.test(label)) {
     return "tag-warn"
   }
   return "tag-neutral"
+}
+
+function championTagToneClass(band: string) {
+  switch (band) {
+    case "excellent":
+      return "tag-band-excellent"
+    case "normal":
+      return "tag-band-normal"
+    case "low":
+      return "tag-band-low"
+    case "disaster":
+      return "tag-band-disaster"
+    default:
+      return "tag-neutral"
+  }
 }
 
 function championProfile(championId: number) {
@@ -231,6 +261,7 @@ function championProfile(championId: number) {
       averageScore: 0,
       mainRoleLabel: "样本不足",
       label: "样本不足",
+      labelBand: "empty",
       highlightRate: 0,
       disasterRate: 0,
       averageDamageShare: 0,
@@ -479,7 +510,8 @@ function errorMessage(error: unknown) {
                 <th>场次</th>
                 <th>胜率</th>
                 <th>评分</th>
-                <th>画像标签</th>
+                <th>评价</th>
+                <th>标签</th>
                 <th>K / D / A</th>
                 <th>伤害占比</th>
                 <th>伤害转化率</th>
@@ -525,7 +557,30 @@ function errorMessage(error: unknown) {
                 </td>
                 <td>
                   <span
-                    :class="['champion-label-tag', tagToneClass(championProfile(champ.championId).label)]"
+                    :class="[
+                      'champion-label-tag',
+                      tagToneClass(
+                        profileEvaluationText(
+                          championProfile(champ.championId).averageScore,
+                          championProfile(champ.championId).games,
+                        ),
+                      ),
+                    ]"
+                  >
+                    {{
+                      profileEvaluationText(
+                        championProfile(champ.championId).averageScore,
+                        championProfile(champ.championId).games,
+                      )
+                    }}
+                  </span>
+                </td>
+                <td>
+                  <span
+                    :class="[
+                      'champion-label-tag',
+                      championTagToneClass(championProfile(champ.championId).labelBand),
+                    ]"
                   >
                     {{ championProfile(champ.championId).label }}
                   </span>
@@ -612,6 +667,22 @@ function errorMessage(error: unknown) {
                   )
                 }}
               </span>
+              <span class="mobile-chip">
+                {{
+                  profileEvaluationText(
+                    championProfile(champ.championId).averageScore,
+                    championProfile(champ.championId).games,
+                  )
+                }}
+              </span>
+              <span
+                :class="[
+                  'mobile-chip',
+                  championTagToneClass(championProfile(champ.championId).labelBand),
+                ]"
+              >
+                {{ championProfile(champ.championId).label }}
+              </span>
             </div>
             <div class="mobile-champion-stats">
               <div>
@@ -647,7 +718,8 @@ function errorMessage(error: unknown) {
               <th>场次</th>
               <th>胜率</th>
               <th>评分</th>
-              <th>画像标签</th>
+              <th>评价</th>
+              <th>标签</th>
               <th>K / D / A</th>
               <th>伤害占比</th>
               <th>伤害转化率</th>
@@ -676,7 +748,30 @@ function errorMessage(error: unknown) {
               </td>
               <td>
                 <span
-                  :class="['champion-label-tag', tagToneClass(championProfile(champ.championId).label)]"
+                  :class="[
+                    'champion-label-tag',
+                    tagToneClass(
+                      profileEvaluationText(
+                        championProfile(champ.championId).averageScore,
+                        championProfile(champ.championId).games,
+                      ),
+                    ),
+                  ]"
+                >
+                  {{
+                    profileEvaluationText(
+                      championProfile(champ.championId).averageScore,
+                      championProfile(champ.championId).games,
+                    )
+                  }}
+                </span>
+              </td>
+              <td>
+                <span
+                  :class="[
+                    'champion-label-tag',
+                    championTagToneClass(championProfile(champ.championId).labelBand),
+                  ]"
                 >
                   {{ championProfile(champ.championId).label }}
                 </span>
@@ -1141,6 +1236,30 @@ function errorMessage(error: unknown) {
 .tag-neutral {
   color: #1f514a;
   background: #dceee9;
+}
+
+.tag-band-excellent,
+.mobile-chip.tag-band-excellent {
+  color: #5d3300;
+  background: #ffe09b;
+}
+
+.tag-band-normal,
+.mobile-chip.tag-band-normal {
+  color: #135c42;
+  background: #d0f0dd;
+}
+
+.tag-band-low,
+.mobile-chip.tag-band-low {
+  color: #174d83;
+  background: #dcecff;
+}
+
+.tag-band-disaster,
+.mobile-chip.tag-band-disaster {
+  color: #922f2f;
+  background: #f9d1d0;
 }
 
 .profile-excellent {

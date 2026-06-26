@@ -517,8 +517,8 @@ async function copyImage() {
 
             <div
               :class="['score-cell', `score-${outputRating(player).level}`]"
-              :title="outputRatingHint(player)"
-            >
+            :title="outputRatingHint(player)"
+          >
               <strong>{{ outputRating(player).score }}分</strong>
               <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
             </div>

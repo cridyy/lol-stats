@@ -1,8 +1,13 @@
-import { calculateOutputRating, outputRatingMetrics, type OutputRating } from "./scoring"
+import {
+  calculateOutputRating,
+  scoreEvaluationLabel,
+  type OutputRating,
+} from "./scoring"
 import type { PlayerRole, RatingContext } from "./roleClassifier"
 import type { RecentGame } from "./types"
 
 export type AbilityKey = "carry" | "frontline" | "support"
+export type ChampionLabelBand = "excellent" | "normal" | "low" | "disaster" | "empty"
 
 export interface AbilityProfile {
   key: AbilityKey
@@ -46,6 +51,7 @@ export interface ChampionProfile {
   averageScore: number
   mainRoleLabel: string
   label: string
+  labelBand: ChampionLabelBand
   highlightRate: number
   disasterRate: number
   averageDamageShare: number
@@ -98,7 +104,7 @@ export function buildPlayerProfile(
     mainRoleLabel: resolveMainRoleLabel(roleDistribution),
     roleDistribution,
     abilities,
-    tags: buildPlayerTags(ratedGames, abilities, roleDistribution, overallScore),
+    tags: buildPlayerTags(ratedGames, roleDistribution, overallScore),
   }
 }
 
@@ -117,13 +123,15 @@ export function buildChampionProfiles(
     .map(([championId, entries]) => {
       const roleDistribution = buildRoleDistribution(entries)
       const summary = summarizeRatedGames(entries)
+      const averageScore = weightedProfileScore(entries)
 
       return {
         championId,
         games: entries.length,
-        averageScore: weightedProfileScore(entries),
+        averageScore,
         mainRoleLabel: resolveMainRoleLabel(roleDistribution),
         label: aggregateProfileLabel(entries),
+        labelBand: dominantScoreBandKey(entries),
         highlightRate: summary.highlightRate,
         disasterRate: summary.disasterRate,
         averageDamageShare: summary.damageShare,
@@ -136,25 +144,20 @@ export function buildChampionProfiles(
 }
 
 export function profileScoreLevel(score: number) {
-  if (score >= 82) return "excellent"
+  if (score >= 80) return "excellent"
   if (score >= 65) return "good"
-  if (score >= 41) return "average"
+  if (score >= 40) return "average"
   return "poor"
 }
 
 export function profileTierLabel(score: number) {
-  if (score >= 90) return "通天代"
-  if (score >= 82) return "小代"
-  if (score >= 76) return "实力强劲"
-  if (score >= 65) return "正常玩家"
-  if (score >= 55) return "小坑比"
-  return "大坑比"
+  return scoreEvaluationLabel(score)
 }
 
 export function profileTierClass(score: number) {
-  if (score >= 82) return "profile-tier-apex"
+  if (score >= 80) return "profile-tier-apex"
   if (score >= 65) return "profile-tier-steady"
-  if (score >= 41) return "profile-tier-normal"
+  if (score >= 40) return "profile-tier-normal"
   return "profile-tier-big-pit"
 }
 
@@ -233,72 +236,219 @@ function resolveMainRoleLabel(distribution: RoleDistributionItem[]) {
 
 function buildPlayerTags(
   entries: RatedGame[],
-  abilities: Record<AbilityKey, AbilityProfile>,
   roleDistribution: RoleDistributionItem[],
   overallScore: number,
 ) {
   if (!entries.length) return ["样本不足"]
 
-  // 标签负责给用户一个可读结论，具体分数仍以 scoring.ts 的单局评分为准。
-  const metrics = entries.map((entry) => outputRatingMetrics(entry.game))
-  const damageShare = average(metrics.map((item) => item.damageShare))
-  const effectiveDamageConversion = average(metrics.map((item) => item.effectiveDamageConversion))
-  const goldShare = average(metrics.map((item) => item.goldShare))
-  const mitigationShare = average(metrics.map((item) => item.mitigationShare))
-  const healingShare = average(metrics.map((item) => item.healingShare))
-  const controlQuality = average(metrics.map((item) => item.controlQuality))
-  const immobilizationsPerMinute = average(metrics.map((item) => item.immobilizationsPerMinute))
-  const immobilizationShare = average(metrics.map((item) => item.immobilizationShare))
-  const immobilizeKillConversion = average(metrics.map((item) => item.immobilizeKillConversion))
-  const killParticipation = average(metrics.map((item) => item.killParticipation))
-  const killStealGap = average(metrics.map((item) => item.killShare - item.damageShare))
-  const deathShare = average(metrics.map((item) => item.deathShare))
-  const carryGamesRate = rate(abilities.carry.games, entries.length)
-  const frontlineGamesRate = rate(abilities.frontline.games, entries.length)
-  const supportGamesRate = rate(abilities.support.games, entries.length)
-  const highlightRate = rate(entries.filter((entry) => entry.rating.score >= 80).length, entries.length)
-  const disasterRate = rate(
-    entries.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
-    entries.length,
-  )
-  const volatility = standardDeviation(entries.map((entry) => entry.rating.score))
-  const tags: string[] = []
+  const summary = summarizeRatedGames(entries)
+  const positiveEligible = overallScore >= 65
+  const tags: string[] = [aggregateProfileLabel(entries)]
 
-  tags.push(aggregateProfileLabel(entries))
-
-  if (damageShare >= 0.27 && effectiveDamageConversion >= 1.15) tags.push("输出爆表")
-  else if (damageShare < 0.2 && effectiveDamageConversion < 0.95) tags.push("低能输出")
-  else if (effectiveDamageConversion >= 1.18) tags.push("伤转优秀")
-
-  if (killStealGap >= 0.08 && damageShare < 0.24) tags.push("只会K头")
-  if (killParticipation < 0.52 && damageShare < 0.23) tags.push("开游戏的")
-  if (killParticipation >= 0.72) tags.push("团战积极")
-  if (highlightRate >= 0.28) tags.push("高光多")
-  if (disasterRate >= 0.25 || (disasterRate >= 0.18 && overallScore < 65)) {
-    tags.push("战犯偏多")
-  } else if (disasterRate > 0 && overallScore >= 70) {
-    tags.push("偶有拉胯")
+  if (positiveEligible) {
+    tags.push(...positiveProfileTags(entries, summary, roleDistribution, overallScore))
   }
-  if (volatility <= 9 && entries.length >= 8) tags.push("发挥稳定")
-  if (volatility >= 18 && entries.length >= 8) tags.push("上下限很大")
-  if (goldShare >= 0.24 && effectiveDamageConversion < 1) tags.push("吃资源")
-  if (deathShare >= 0.27 && damageShare >= 0.25) tags.push("冲锋型")
-  if (mitigationShare >= 0.32 || frontlineGamesRate >= 0.35) tags.push("敢吃伤害")
-  if (healingShare >= 0.25 || supportGamesRate >= 0.35) tags.push("团队功能")
-  tags.push(
-    ...profileControlTags(
-      immobilizationsPerMinute,
-      immobilizationShare,
-      immobilizeKillConversion,
-      controlQuality,
-    ),
-  )
-  if (carryGamesRate >= 0.65 && damageShare >= 0.24) tags.push("输出型")
+  if (overallScore >= 40 && overallScore < 65) tags.push(...controlProfileTags(summary))
+  tags.push(...negativeProfileTags(summary, overallScore))
+  tags.push(...stabilityProfileTags(summary, overallScore))
 
   const topRole = roleDistribution[0]
   if (topRole) tags.push(`常用${topRole.label}`)
 
   return dedupe(tags).slice(0, 10)
+}
+
+function positiveProfileTags(
+  entries: RatedGame[],
+  summary: ReturnType<typeof summarizeRatedGames>,
+  roleDistribution: RoleDistributionItem[],
+  overallScore: number,
+) {
+  const tags: string[] = []
+  const role = dominantPlayerRole(entries)
+  const mainRoleLabel = resolveMainRoleLabel(roleDistribution)
+  const carryGamesRate = abilityRate(entries, "carry")
+  const frontlineGamesRate = abilityRate(entries, "frontline")
+  const supportGamesRate = abilityRate(entries, "support")
+
+  const primaryTag = positivePrimaryProfileTag(summary, role, overallScore)
+  if (primaryTag) tags.push(primaryTag)
+
+  if (
+    summary.highlightRate >= 0.28 ||
+    (summary.damageShare >= 0.28 && summary.effectiveDamageConversion >= 1.05)
+  ) {
+    tags.push("核心大C")
+  }
+  if (summary.deathShare >= 0.27 && summary.damageShare >= 0.25) tags.push("浴血奋战")
+  if (summary.mitigationShare >= 0.32 && summary.damageShare >= 0.23) tags.push("半肉战神")
+  else if (summary.mitigationShare >= 0.32 || frontlineGamesRate >= 0.35) tags.push("哪来的城墙")
+  if (summary.healingShare >= 0.25 || supportGamesRate >= 0.35 || mainRoleLabel === "辅助") {
+    tags.push("团队功能")
+  }
+  tags.push(...controlProfileTags(summary))
+  if (carryGamesRate >= 0.65 && summary.damageShare >= 0.24) {
+    tags.push(overallScore >= 80 ? "输出机器" : "稳定火力")
+  }
+
+  return dedupe(tags)
+}
+
+function positivePrimaryProfileTag(
+  summary: ReturnType<typeof summarizeRatedGames>,
+  role: PlayerRole,
+  overallScore: number,
+) {
+  if (role === "tank") {
+    if (
+      summary.mitigationShare >= 0.34 &&
+      summary.mitigationPerDeath >= 3 &&
+      summary.killParticipation >= 0.68
+    ) {
+      return "叹息之墙"
+    }
+    if (
+      summary.mitigationShare >= 0.34 &&
+      summary.mitigationPerDeath >= 1.05 &&
+      summary.killParticipation >= 0.68
+    ) {
+      return "faker加里奥"
+    }
+    if (summary.mitigationShare >= 0.3 && summary.damageShare >= 0.22) return "半肉战神"
+    if (summary.mitigationShare >= 0.3) return "哪来的城墙"
+    return controlProfileTags(summary)[0] || "顶级前锋"
+  }
+
+  if (role === "fighter" || role === "bruiser" || role === "fighterAssassin") {
+    if (summary.damageShare >= 0.35 && summary.effectiveDamageConversion >= 1.5) return "大魔王"
+    if (
+      summary.damageShare >= 0.32 &&
+      summary.effectiveDamageConversion > 1.3 &&
+      summary.killParticipation >= 0.68
+    ) {
+      return "恐怖利刃"
+    }
+    if (
+      summary.kda >= 4 &&
+      summary.damageShare >= 0.26 &&
+      summary.effectiveDamageConversion >= 1.12 &&
+      summary.deathShare <= 0.18
+    ) {
+      return "我chovy!"
+    }
+    if (
+      role === "fighterAssassin" &&
+      summary.killShare >= 0.28 &&
+      summary.effectiveDamageConversion >= 1 &&
+      summary.effectiveDamageConversion <= 1.2
+    ) {
+      return "无情收割者"
+    }
+    if (
+      summary.damageShare >= 0.25 &&
+      summary.mitigationShare >= 0.28 &&
+      summary.effectiveDamageConversion >= 0.95
+    ) {
+      return "半肉战神"
+    }
+    if (
+      summary.damageShare >= 0.27 &&
+      summary.effectiveDamageConversion >= 1.1 &&
+      summary.deathShare >= 0.24
+    ) {
+      return "刀尖舔血"
+    }
+    if (summary.damageShare >= 0.25 && summary.killParticipation >= 0.68) {
+      return overallScore >= 80 ? "最强前锋" : "冲阵好手"
+    }
+    return controlProfileTags(summary)[0] || (overallScore >= 80 ? "最强前锋" : "冲阵好手")
+  }
+
+  if (role === "support" || role === "utilityCarry") {
+    if (summary.goldShare <= 0.18 && summary.killParticipation >= 0.7) return "吃草挤奶"
+    if (summary.damageShare >= 0.24 && summary.effectiveDamageConversion >= 1.05) return "核心大C"
+    return controlProfileTags(summary)[0] || (overallScore >= 80 ? "团队发动机" : "功能担当")
+  }
+
+  if (summary.damageShare >= 0.35 && summary.effectiveDamageConversion >= 1.5) return "大魔王"
+  if (
+    summary.damageShare >= 0.32 &&
+    summary.effectiveDamageConversion > 1.3 &&
+    summary.killParticipation >= 0.68
+  ) {
+    return "爆炸核弹"
+  }
+  if (
+    summary.kda >= 4 &&
+    summary.damageShare >= 0.26 &&
+    summary.effectiveDamageConversion >= 1.12 &&
+    summary.deathShare <= 0.18
+  ) {
+    return "我chovy!"
+  }
+  if (
+    role === "pureAssassin" &&
+    summary.killShare >= 0.28 &&
+    summary.effectiveDamageConversion >= 1 &&
+    summary.effectiveDamageConversion <= 1.2
+  ) {
+    return "无情收割者"
+  }
+  if (
+    summary.goldShare <= 0.19 &&
+    summary.damageShare >= 0.25 &&
+    summary.effectiveDamageConversion >= 1.15
+  ) {
+    return "吃草挤奶"
+  }
+  if (summary.damageShare >= 0.28 && summary.effectiveDamageConversion >= 1.12 && summary.kda >= 3) {
+    return "无解主c"
+  }
+  if (summary.damageShare >= 0.28 && summary.effectiveDamageConversion >= 1.05) return "核心大C"
+  if (summary.damageShare >= 0.29 && summary.killParticipation >= 0.68) return "全场火力点"
+  if (
+    summary.damageShare >= 0.27 &&
+    summary.effectiveDamageConversion >= 1.08 &&
+    summary.deathShare >= 0.24
+  ) {
+    return "浴血奋战"
+  }
+
+  return controlProfileTags(summary)[0] || (overallScore >= 80 ? "输出机器" : "稳定火力")
+}
+
+function negativeProfileTags(summary: ReturnType<typeof summarizeRatedGames>, overallScore: number) {
+  const tags: string[] = []
+
+  if (summary.damageShare < 0.2 && summary.effectiveDamageConversion < 0.95) tags.push("毫无存在感")
+  if (summary.killStealGap >= 0.08 && summary.damageShare < 0.24) tags.push("k头狗")
+  if (summary.killParticipation < 0.52 && summary.damageShare < 0.23) tags.push("开游戏的")
+  if (summary.goldShare >= 0.24 && summary.effectiveDamageConversion < 1) tags.push("拿钱不干事")
+  if (summary.disasterRate >= 0.25 || (summary.disasterRate >= 0.18 && overallScore < 65)) {
+    tags.push("开游戏的")
+  } else if (summary.disasterRate > 0 && overallScore >= 70) {
+    tags.push("偶有拉胯")
+  }
+
+  return dedupe(tags)
+}
+
+function stabilityProfileTags(summary: ReturnType<typeof summarizeRatedGames>, overallScore: number) {
+  const tags: string[] = []
+
+  if (overallScore >= 65 && summary.volatility <= 9 && summary.games >= 8) tags.push("发挥稳定")
+  if (summary.volatility >= 18 && summary.games >= 8) tags.push("上下限很大")
+
+  return tags
+}
+
+function controlProfileTags(summary: ReturnType<typeof summarizeRatedGames>) {
+  return profileControlTags(
+    summary.immobilizationsPerMinute,
+    summary.immobilizationShare,
+    summary.immobilizeKillConversion,
+    summary.controlQuality,
+  )
 }
 
 function profileControlTags(
@@ -340,14 +490,37 @@ function summarizeRatedGames(entries: RatedGame[]) {
     goodRate: rate(scores.filter((score) => score >= 70).length, entries.length),
     poorRate: rate(scores.filter((score) => score < 55).length, entries.length),
     disasterRate: rate(scores.filter(isDisasterRateScore).length, entries.length),
+    volatility: standardDeviation(scores),
+    kda: average(metrics.map((item) => item.kda)),
     damageShare: average(metrics.map((item) => item.damageShare)),
     damageConversion: average(metrics.map((item) => item.damageConversion)),
+    effectiveDamageConversion: average(metrics.map((item) => item.effectiveDamageConversion)),
+    goldShare: average(metrics.map((item) => item.goldShare)),
+    killShare: average(metrics.map((item) => item.killShare)),
     killParticipation: average(metrics.map((item) => item.killParticipation)),
     killStealGap: average(metrics.map((item) => item.killShare - item.damageShare)),
     deathShare: average(metrics.map((item) => item.deathShare)),
     mitigationShare: average(metrics.map((item) => item.mitigationShare)),
+    mitigationPerDeath: average(metrics.map((item) => item.mitigationPerDeath)),
     healingShare: average(metrics.map((item) => item.healingShare)),
+    immobilizationsPerMinute: average(metrics.map((item) => item.immobilizationsPerMinute)),
+    immobilizationShare: average(metrics.map((item) => item.immobilizationShare)),
+    immobilizeKillConversion: average(metrics.map((item) => item.immobilizeKillConversion)),
+    controlQuality: average(metrics.map((item) => item.controlQuality)),
   }
+}
+
+function abilityRate(entries: RatedGame[], family: AbilityKey) {
+  return rate(entries.filter((entry) => entry.family === family).length, entries.length)
+}
+
+function dominantPlayerRole(entries: RatedGame[]): PlayerRole {
+  const counts = new Map<PlayerRole, number>()
+  for (const entry of entries) {
+    counts.set(entry.rating.role.role, (counts.get(entry.rating.role.role) || 0) + 1)
+  }
+
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || "unknown"
 }
 
 function aggregateProfileLabel(entries: RatedGame[]) {
@@ -370,7 +543,15 @@ function weightedProfileScore(entries: RatedGame[]) {
 }
 
 function dominantScoreBand(entries: RatedGame[]) {
-  const bands = [
+  return dominantScoreBandGroup(entries)?.entries || []
+}
+
+function dominantScoreBandKey(entries: RatedGame[]): ChampionLabelBand {
+  return dominantScoreBandGroup(entries)?.key || "empty"
+}
+
+function dominantScoreBandGroup(entries: RatedGame[]) {
+  const bands: Array<{ key: Exclude<ChampionLabelBand, "empty">; entries: RatedGame[] }> = [
     { key: "excellent", entries: [] as RatedGame[] },
     { key: "normal", entries: [] as RatedGame[] },
     { key: "low", entries: [] as RatedGame[] },
@@ -391,7 +572,7 @@ function dominantScoreBand(entries: RatedGame[]) {
     return band.key !== "disaster" || disasterRate >= DISASTER_BAND_DOMINANT_RATE
   })
 
-  return [...eligibleBands].sort((a, b) => b.entries.length - a.entries.length)[0]?.entries || []
+  return [...eligibleBands].sort((a, b) => b.entries.length - a.entries.length)[0]
 }
 
 function dominantLabelInBand(entries: RatedGame[]) {

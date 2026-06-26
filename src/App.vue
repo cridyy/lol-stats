@@ -59,6 +59,7 @@ type SearchServerOption = { id: string; label: string }
 type SearchHistoryItem = { query: string; sgpServerId: string }
 type OverviewDrillTab = {
   id: string
+  instanceKey: string
   type: "overview"
   title: string
   ownerLabel: string
@@ -70,6 +71,7 @@ type OverviewDrillTab = {
 }
 type PlayerDrillTab = {
   id: string
+  instanceKey: string
   type: "player"
   title: string
   playerLabel: string
@@ -114,7 +116,7 @@ const RECENT_PAGE_SIZE = 20
 const MAX_RECENT_DEPTH = 1000
 const DEFAULT_STATS_DEPTH = 500
 const MIN_STATS_DEPTH = 50
-const MAX_STATS_DEPTH = 500
+const MAX_STATS_DEPTH = 1000
 const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
@@ -444,6 +446,10 @@ function drillTabKey(prefix: string, ...parts: Array<string | number | undefined
   return [prefix, ...parts.map((part) => String(part || ""))].join(":")
 }
 
+function drillTabInstanceKey(id: string) {
+  return `${id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+}
+
 function detailPlayerLabel(player: MatchDetailPlayer) {
   if (player.gameName && player.tagLine) return `${player.gameName}#${player.tagLine}`
   return player.summonerName || player.puuid || "未知玩家"
@@ -645,6 +651,7 @@ function hideCurrentDrillForHistory(target: NavigationSnapshot) {
 function createOverviewTab(payload: Extract<DrillHistoryPayload, { type: "overview" }>) {
   const tab: OverviewDrillTab = {
     id: payload.id,
+    instanceKey: drillTabInstanceKey(payload.id),
     type: "overview",
     title: payload.title,
     ownerLabel: payload.ownerLabel,
@@ -663,6 +670,7 @@ function createOverviewTab(payload: Extract<DrillHistoryPayload, { type: "overvi
 function createPlayerTab(payload: Extract<DrillHistoryPayload, { type: "player" }>) {
   const tab: PlayerDrillTab = {
     id: payload.id,
+    instanceKey: drillTabInstanceKey(payload.id),
     type: "player",
     title: payload.title,
     playerLabel: payload.playerLabel,
@@ -1364,28 +1372,31 @@ onUnmounted(() => {
           <span>从当前角色或查战绩页面点击任意具体对局后，会在这里新增标签页</span>
         </section>
 
-        <MatchOverviewPanel
-          v-else-if="activeDrillTab.type === 'overview'"
-          :game="activeDrillTab.game"
-          :match-detail="activeDrillTab.detail"
-          :loading="activeDrillTab.loading"
-          :error="activeDrillTab.error"
-          :champions="championMap"
-          :game-assets="gameAssets"
-          :sgp-server-id="activeDrillTab.sgpServerId"
-          @open-player="openPlayerDrillTab($event, activeDrillTab.sgpServerId)"
-        />
+        <KeepAlive v-else :max="HIDDEN_DRILL_CACHE_LIMIT">
+          <MatchOverviewPanel
+            v-if="activeDrillTab.type === 'overview'"
+            :key="activeDrillTab.instanceKey"
+            :game="activeDrillTab.game"
+            :match-detail="activeDrillTab.detail"
+            :loading="activeDrillTab.loading"
+            :error="activeDrillTab.error"
+            :champions="championMap"
+            :game-assets="gameAssets"
+            :sgp-server-id="activeDrillTab.sgpServerId"
+            @open-player="openPlayerDrillTab($event, activeDrillTab.sgpServerId)"
+          />
 
-        <PlayerRecordTab
-          v-else-if="activeDrillTab.type === 'player'"
-          :key="activeDrillTab.id"
-          :query="activeDrillTab.query"
-          :sgp-server-id="activeDrillTab.sgpServerId"
-          :champions="championMap"
-          :game-assets="gameAssets"
-          :share-settings="shareSettings"
-          @open-match="openOverviewTab"
-        />
+          <PlayerRecordTab
+            v-else-if="activeDrillTab.type === 'player'"
+            :key="activeDrillTab.instanceKey"
+            :query="activeDrillTab.query"
+            :sgp-server-id="activeDrillTab.sgpServerId"
+            :champions="championMap"
+            :game-assets="gameAssets"
+            :share-settings="shareSettings"
+            @open-match="openOverviewTab"
+          />
+        </KeepAlive>
       </section>
 
       <RecordView
