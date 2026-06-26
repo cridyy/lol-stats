@@ -4,11 +4,14 @@ import {
   roleVectorText,
   type RatingContext,
   type RoleAnalysis,
+  type RoleKey,
   type PlayerRole,
 } from "./roleClassifier"
 import { fixed } from "./utils"
 
 export interface OutputRatingMetrics {
+  kda: number
+  immobilizationsPerMinute: number
   damageShare: number
   goldShare: number
   damageConversion: number
@@ -60,6 +63,8 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
   const killParticipation = ratio(game.kills + game.assists, game.teamKills)
   const deathShare = ratio(game.deaths, game.teamDeaths)
   const mitigationShare = ratio(game.damageSelfMitigated, game.teamDamageSelfMitigated)
+  const gameMinutes = Math.max(Number(game.gameDuration || 0) / 60, 1)
+  const immobilizationsPerMinute = Number(game.enemyChampionImmobilizations || 0) / gameMinutes
   const rawDamageConversion = goldShare > 0 ? damageShare / goldShare : 0
   const effectiveGoldShare = killAdjustedGoldShare(damageShare, goldShare, killShare)
   const personalMitigationPerDeath = Number(game.damageSelfMitigated || 0) / Math.max(game.deaths, 1)
@@ -79,6 +84,8 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
   )
 
   return {
+    kda: Number(game.kda || 0),
+    immobilizationsPerMinute,
     damageShare,
     goldShare,
     damageConversion: rawDamageConversion,
@@ -95,13 +102,13 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
     immobilizeKillConversion,
     controlQuality: controlQualityScore(
       immobilizationShare,
-      immobilizeKillShare,
       immobilizeKillConversion,
+      immobilizationsPerMinute,
     ),
   }
 }
 
-type RatingFamily = "carry" | "fighter" | "frontline" | "support"
+type RatingFamily = "carry" | "fighter" | "frontline" | "mage" | "support"
 
 export function calculateOutputRating(game: RecentGame, context: RatingContext = {}): OutputRating {
   const metrics = outputRatingMetrics(game)
@@ -125,16 +132,69 @@ function ratingFamily(role: PlayerRole): RatingFamily {
   switch (role) {
     case "tank":
       return "frontline"
+    case "mage":
+      return "mage"
     case "fighter":
     case "bruiser":
     case "fighterAssassin":
       return "fighter"
     case "support":
-    case "utilityCarry":
       return "support"
     default:
       return "carry"
   }
+}
+
+function dynamicControlMaxWeight(role: RoleAnalysis) {
+  let maxWeight = 0
+
+  if (isSupportHybridControlCandidate(role)) {
+    maxWeight = Math.max(maxWeight, 30)
+  }
+
+  if (role.role === "mage" || primaryChampionRole(role) === "mage") {
+    maxWeight = Math.max(maxWeight, 30)
+  }
+
+  return maxWeight
+}
+
+function isSupportHybridControlCandidate(role: RoleAnalysis) {
+  if (role.role === "support") return false
+
+  const sorted = (Object.keys(role.championWeights) as RoleKey[])
+    .map((key) => ({ key, value: role.championWeights[key] }))
+    .sort((a, b) => b.value - a.value)
+  const top = sorted[0]
+  const second = sorted[1]
+
+  return top?.key === "support" && !!second && second.key !== "support" && second.value > 0.01
+}
+
+function primaryChampionRole(role: RoleAnalysis): RoleKey | undefined {
+  const primary = role.championRoles[0]?.toLowerCase()
+  switch (primary) {
+    case "marksman":
+      return "adc"
+    case "mage":
+      return "mage"
+    case "assassin":
+      return "assassin"
+    case "fighter":
+      return "fighter"
+    case "tank":
+      return "tank"
+    case "support":
+      return "support"
+    default:
+      return undefined
+  }
+}
+
+function dynamicControlPart(role: RoleAnalysis, value: number): OutputRatingParts {
+  if (isSupportHybridControlCandidate(role)) return { supportControl: value }
+  if (role.role === "mage" || primaryChampionRole(role) === "mage") return { mageControl: value }
+  return { control: value }
 }
 
 function calculateRatingParts(
@@ -143,15 +203,17 @@ function calculateRatingParts(
   family: RatingFamily,
 ): OutputRatingParts {
   if (family === "frontline") {
+    const damageControl = frontlineDamageControlParts(metrics)
+
     return {
       mitigation: 30 * gatedMitigationQualityScore(metrics, 0.34, 1.2),
-      effectiveDamage: 17 * clamp01(metrics.damageShare / 0.24),
+      effectiveDamage: damageControl.effectiveDamage,
       participation: 15 * clamp01((metrics.killParticipation - 0.42) / 0.38),
-      deathControl: 10 * (1 - clamp01((metrics.deathShare - 0.28) / 0.22)),
-      roleFit: 8 * clamp01((role.finalWeights.tank + role.finalWeights.fighter) / 0.65),
+      deathControl: 10 * survivalScore(metrics, 0.28, 0.22),
+      roleFit: clamp01((role.finalWeights.tank + role.finalWeights.fighter) / 0.65),
       efficiency: 9 * damageConversionScore(metrics, 0.65, 0.5),
       healing: 5 * clamp01(metrics.healingShare / 0.25),
-      control: 6 * metrics.controlQuality,
+      control: damageControl.control,
     }
   }
 
@@ -170,15 +232,52 @@ function calculateRatingParts(
       mitigationPerDeathStart: 0.7,
       mitigationPerDeathRange: 0.6,
       advantageRange: 0.35,
+      maxControlWeight: dynamicControlMaxWeight(role),
+      controlAdvantageRange: 0.45,
     })
 
     return {
       damage: combat.damage,
       efficiency: combat.efficiency,
       mitigation: combat.mitigation,
+      ...dynamicControlPart(role, combat.control),
       participation: 8 * clamp01((metrics.killParticipation - 0.43) / 0.37),
-      survival: 8 * (1 - clamp01((metrics.deathShare - 0.24) / 0.2)),
+      survival: 8 * survivalScore(metrics, 0.24, 0.2),
       killQuality: 5 * killQualityScore(metrics),
+    }
+  }
+
+  if (family === "mage") {
+    const combat = dynamicCombatContributionParts(
+      metrics,
+      {
+        pool: 63,
+        maxMitigationWeight: 0,
+        damageWeightRatio: 28 / 55,
+        damageTarget: 0.3,
+        efficiencyBase: 0.78,
+        efficiencyRange: 0.57,
+        mitigationTargetShare: 0.22,
+        mitigationTargetPerDeath: 1.25,
+        mitigationShareStart: 0.22,
+        mitigationShareRange: 0.24,
+        mitigationPerDeathStart: 0.9,
+        mitigationPerDeathRange: 0.65,
+        advantageRange: 0.45,
+        maxControlWeight: 30,
+        controlAdvantageRange: 0.45,
+      },
+      mageControlQualityScore(metrics),
+    )
+
+    return {
+      damage: combat.damage,
+      efficiency: combat.efficiency,
+      ...dynamicControlPart(role, combat.control),
+      participation: 14 * clamp01((metrics.killParticipation - 0.45) / 0.35),
+      killQuality: 9 * killQualityScore(metrics),
+      survival: 8 * survivalScore(metrics, 0.2, 0.18),
+      economy: 6 * damageConversionScore(metrics, 0.75, 0.55),
     }
   }
 
@@ -190,16 +289,15 @@ function calculateRatingParts(
       healing: 18 * clamp01(metrics.healingShare / 0.32),
       protection: 14 * clamp01(protection / 0.3),
       effectiveDamage: 13 * clamp01(metrics.damageShare / 0.22),
-      deathControl: 9 * (1 - clamp01((metrics.deathShare - 0.24) / 0.2)),
+      deathControl: 9 * survivalScore(metrics, 0.24, 0.2),
       economy: 6 * (1 - clamp01((metrics.goldShare - 0.23) / 0.18)),
       killQuality: 7 * killQualityScore(metrics),
       control: 10 * metrics.controlQuality,
     }
   }
 
-  const carryParticipationWeight = role.role === "mage" ? 14 : 8
   const combat = dynamicCombatContributionParts(metrics, {
-    pool: role.role === "mage" ? 63 : 69,
+    pool: 69,
     maxMitigationWeight: 20,
     damageWeightRatio: 28 / 55,
     damageTarget: 0.3,
@@ -212,15 +310,18 @@ function calculateRatingParts(
     mitigationPerDeathStart: 0.9,
     mitigationPerDeathRange: 0.65,
     advantageRange: 0.45,
+    maxControlWeight: dynamicControlMaxWeight(role),
+    controlAdvantageRange: 0.45,
   })
 
   return {
     damage: combat.damage,
     efficiency: combat.efficiency,
-    participation: carryParticipationWeight * clamp01((metrics.killParticipation - 0.45) / 0.35),
+    participation: 8 * clamp01((metrics.killParticipation - 0.45) / 0.35),
     killQuality: 9 * killQualityScore(metrics),
-    survival: 8 * (1 - clamp01((metrics.deathShare - 0.2) / 0.18)),
+    survival: 8 * survivalScore(metrics, 0.2, 0.18),
     mitigation: combat.mitigation,
+    ...dynamicControlPart(role, combat.control),
     economy: 6 * damageConversionScore(metrics, 0.75, 0.55),
   }
 }
@@ -239,13 +340,16 @@ interface DynamicCombatConfig {
   mitigationPerDeathStart: number
   mitigationPerDeathRange: number
   advantageRange: number
+  maxControlWeight?: number
+  controlAdvantageRange?: number
 }
 
 function dynamicCombatContributionParts(
   metrics: OutputRatingMetrics,
   config: DynamicCombatConfig,
+  controlScore = metrics.controlQuality,
 ) {
-  // 输出/战士共享伤害、伤转、承伤分池；承伤最低为 0，只在质量明显更高时借权重。
+  // 输出/战士共享伤害、伤转、承伤/控制分池；功能项只有质量更高时才借权重。
   const damageScore = clamp01(metrics.damageShare / config.damageTarget)
   const efficiencyScore = damageConversionScore(
     metrics,
@@ -275,19 +379,58 @@ function dynamicCombatContributionParts(
     mitigationWeight = config.maxMitigationWeight * boost
   }
 
-  const nonMitigationWeight = config.pool - mitigationWeight
-  const damageWeight = nonMitigationWeight * config.damageWeightRatio
-  const efficiencyWeight = nonMitigationWeight - damageWeight
+  const controlAdvantage = controlScore - nonMitigationScore
+  let controlWeight = 0
+  if ((config.maxControlWeight || 0) > 0 && controlAdvantage > 0) {
+    const qualityGate = clamp01(controlScore)
+    const scoreGate = clamp01(controlAdvantage / (config.controlAdvantageRange || 0.45))
+    controlWeight = (config.maxControlWeight || 0) * qualityGate * scoreGate
+  }
+
+  const specialWeight = Math.min(config.pool, mitigationWeight + controlWeight)
+  if (specialWeight < mitigationWeight + controlWeight && mitigationWeight + controlWeight > 0) {
+    const scale = specialWeight / (mitigationWeight + controlWeight)
+    mitigationWeight *= scale
+    controlWeight *= scale
+  }
+
+  const baseWeight = config.pool - mitigationWeight - controlWeight
+  const damageWeight = baseWeight * config.damageWeightRatio
+  const efficiencyWeight = baseWeight - damageWeight
 
   return {
     damage: damageWeight * damageScore,
     efficiency: efficiencyWeight * efficiencyScore,
     mitigation: mitigationWeight * mitigationScore,
+    control: controlWeight * controlScore,
+  }
+}
+
+function frontlineDamageControlParts(metrics: OutputRatingMetrics) {
+  const pool = 30
+  const damageScore = clamp01(metrics.damageShare / 0.24)
+  const controlScore = metrics.controlQuality
+  const totalScore = damageScore + controlScore
+
+  if (totalScore <= 0) {
+    return { effectiveDamage: 0, control: 0 }
+  }
+
+  const controlWeight = pool * (controlScore / totalScore)
+  const damageWeight = pool - controlWeight
+
+  return {
+    effectiveDamage: damageWeight * damageScore,
+    control: controlWeight * controlScore,
   }
 }
 
 function killQualityScore(metrics: OutputRatingMetrics) {
-  return killQualityFromShares(metrics.killShare, metrics.damageShare)
+  return killQualityFromShares(
+    metrics.killShare,
+    metrics.damageShare,
+    performanceProtection(metrics),
+  )
 }
 
 function damageConversionScore(metrics: OutputRatingMetrics, base: number, range: number) {
@@ -304,26 +447,49 @@ function damageConversionScore(metrics: OutputRatingMetrics, base: number, range
     deathPressure * (1 - damageProtection),
     deathDamageGapRisk * (1 - damageProtection * 0.4),
   )
-  const retain = clamp(1 - feedRisk * 0.82, 0.18, 1)
+  const protectedFeedRisk = feedRisk * (1 - performanceProtection(metrics) * 0.65)
+  const retain = clamp(1 - protectedFeedRisk * 0.82, 0.18, 1)
 
   return rawScore * retain
 }
 
-function killQualityFromShares(killShare: number, damageShare: number) {
+function survivalScore(metrics: OutputRatingMetrics, start: number, range: number) {
+  const rawPenalty = clamp01((metrics.deathShare - start) / range)
+  const protectedPenalty = rawPenalty * (1 - performanceProtection(metrics) * 0.65)
+  return 1 - protectedPenalty
+}
+
+function performanceProtection(metrics: OutputRatingMetrics) {
+  const kdaProtection = clamp01((metrics.kda - 3) / 4)
+  const damageProtection = clamp01((metrics.damageShare - 0.24) / 0.12)
+
+  return kdaProtection * damageProtection
+}
+
+function killQualityFromShares(killShare: number, damageShare: number, protection = 0) {
   const killStealGap = Math.max(0, killShare - damageShare)
-  return clamp01(1 - killStealGap / 0.18)
+  const adjustedGap = killStealGap * (1 - protection * 0.65)
+  return clamp01(1 - adjustedGap / 0.18)
 }
 
 function controlQualityScore(
   immobilizationShare: number,
-  immobilizeKillShare: number,
   immobilizeKillConversion: number,
+  immobilizationsPerMinute: number,
 ) {
-  return (
-    clamp01(immobilizationShare / 0.28) * 0.35 +
-    clamp01(immobilizeKillShare / 0.3) * 0.45 +
-    clamp01(immobilizeKillConversion / 0.22) * 0.2
-  )
+  if (immobilizationsPerMinute <= 1) return 0
+
+  const shareScore = clamp01(immobilizationShare / 0.3)
+  const conversionScore = clamp01(immobilizeKillConversion / 0.3)
+  const frequencyScore = clamp01((immobilizationsPerMinute - 1) / 2)
+  const frequencyGate = 0.4 + frequencyScore * 0.6
+  const controlCore = conversionScore * 0.55 + shareScore * 0.45
+
+  return clamp01(controlCore * frequencyGate * 0.7 + frequencyScore * 0.3)
+}
+
+function mageControlQualityScore(metrics: OutputRatingMetrics) {
+  return metrics.controlQuality
 }
 
 function killAdjustedGoldShare(damageShare: number, goldShare: number, killShare: number) {
@@ -359,6 +525,22 @@ function gatedMitigationQualityScore(
   return gatedShareScore * 0.7 + perDeathScore * 0.3
 }
 
+function controlRatingLabel(metrics: OutputRatingMetrics) {
+  if (metrics.immobilizationsPerMinute <= 2) return undefined
+
+  const highConversion = metrics.immobilizeKillConversion > 0.3
+  const highShare = metrics.immobilizationShare > 0.3
+  const highFrequency = metrics.immobilizationsPerMinute > 3
+
+  if (highConversion && highShare && highFrequency) return "控制之神"
+  if ((highConversion && highShare) || (highConversion && highFrequency)) return "控杀狙神"
+  if (highShare && highFrequency) return "控制天花板"
+  if (highConversion) return "精准控杀"
+  if (highShare) return "控制大师"
+  if (highFrequency) return "控制永动机"
+  return undefined
+}
+
 function outputRatingLabel(
   game: RecentGame,
   metrics: OutputRatingMetrics,
@@ -367,6 +549,9 @@ function outputRatingLabel(
   family: RatingFamily,
 ) {
   if (score < 40) return "纯战犯"
+
+  const controlLabel = controlRatingLabel(metrics)
+  if (controlLabel) return controlLabel
 
   if (family === "frontline") {
     if (metrics.mitigationShare >= 0.34 && metrics.killParticipation >= 0.7) {
@@ -481,11 +666,41 @@ function outputRatingLevel(score: number): OutputRating["level"] {
   return "poor"
 }
 
+const RATING_PART_LABELS: Record<string, string> = {
+  damage: "伤害",
+  efficiency: "伤转",
+  mitigation: "承伤",
+  control: "控制分",
+  mageControl: "法师控制分",
+  supportControl: "功能控制分",
+  participation: "参团",
+  killQuality: "人头质量",
+  survival: "生存",
+  economy: "经济效率",
+  effectiveDamage: "有效伤害",
+  deathControl: "死亡控制",
+  roleFit: "定位匹配",
+  healing: "治疗",
+  protection: "保护",
+}
+
+function ratingPartLines(parts: OutputRatingParts) {
+  const entries = Object.entries(parts).filter(([, value]) => Math.abs(value) >= 0.005)
+  if (!entries.length) return ["评分小项 暂无"]
+
+  const total = entries.reduce((sum, [, value]) => sum + value, 0)
+  return [
+    `评分小项 合计 ${fixed(total, 1)}`,
+    ...entries.map(([key, value]) => `${RATING_PART_LABELS[key] || key} ${fixed(value, 1)}`),
+  ]
+}
+
 export function outputRatingTitle(game: RecentGame, context: RatingContext = {}) {
   const rating = calculateOutputRating(game, context)
   const m = rating.metrics
   return [
     `得分 ${rating.score} · ${rating.label}`,
+    ...ratingPartLines(rating.parts),
     `定位 ${rating.role.label} · 置信度 ${Math.round(rating.role.confidence * 100)}%`,
     `定位来源 装备 ${Math.round(rating.role.itemWeightRatio * 100)}% / 英雄 ${Math.round(
       rating.role.championWeightRatio * 100,
@@ -501,8 +716,9 @@ export function outputRatingTitle(game: RecentGame, context: RatingContext = {})
     `死亡占比 ${Math.round(m.deathShare * 100)}%`,
     `承伤占比 ${Math.round(m.mitigationShare * 100)}%`,
     `每死承伤 ${fixed(m.mitigationPerDeath)}`,
-    `定身占比 ${Math.round(m.immobilizationShare * 100)}%`,
-    `定身击杀占比 ${Math.round(m.immobilizeKillShare * 100)}%`,
-    `定身转化 ${Math.round(m.immobilizeKillConversion * 100)}%`,
+    `分均控制 ${fixed(m.immobilizationsPerMinute)}`,
+    `控制占比 ${Math.round(m.immobilizationShare * 100)}%`,
+    `控杀占比 ${Math.round(m.immobilizeKillShare * 100)}%`,
+    `控制转化 ${Math.round(m.immobilizeKillConversion * 100)}%`,
   ].join("\n")
 }

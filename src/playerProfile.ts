@@ -247,6 +247,9 @@ function buildPlayerTags(
   const mitigationShare = average(metrics.map((item) => item.mitigationShare))
   const healingShare = average(metrics.map((item) => item.healingShare))
   const controlQuality = average(metrics.map((item) => item.controlQuality))
+  const immobilizationsPerMinute = average(metrics.map((item) => item.immobilizationsPerMinute))
+  const immobilizationShare = average(metrics.map((item) => item.immobilizationShare))
+  const immobilizeKillConversion = average(metrics.map((item) => item.immobilizeKillConversion))
   const killParticipation = average(metrics.map((item) => item.killParticipation))
   const killStealGap = average(metrics.map((item) => item.killShare - item.damageShare))
   const deathShare = average(metrics.map((item) => item.deathShare))
@@ -282,14 +285,47 @@ function buildPlayerTags(
   if (deathShare >= 0.27 && damageShare >= 0.25) tags.push("冲锋型")
   if (mitigationShare >= 0.32 || frontlineGamesRate >= 0.35) tags.push("敢吃伤害")
   if (healingShare >= 0.25 || supportGamesRate >= 0.35) tags.push("团队功能")
-  if (controlQuality >= 0.75) tags.push("控制关键")
-  else if (controlQuality >= 0.5) tags.push("控制稳定")
+  tags.push(
+    ...profileControlTags(
+      immobilizationsPerMinute,
+      immobilizationShare,
+      immobilizeKillConversion,
+      controlQuality,
+    ),
+  )
   if (carryGamesRate >= 0.65 && damageShare >= 0.24) tags.push("输出型")
 
   const topRole = roleDistribution[0]
   if (topRole) tags.push(`常用${topRole.label}`)
 
   return dedupe(tags).slice(0, 10)
+}
+
+function profileControlTags(
+  immobilizationsPerMinute: number,
+  immobilizationShare: number,
+  immobilizeKillConversion: number,
+  controlQuality: number,
+) {
+  if (immobilizationsPerMinute <= 2) return []
+
+  const tags: string[] = []
+
+  const highConversion = immobilizeKillConversion > 0.3
+  const highShare = immobilizationShare > 0.3
+  const highFrequency = immobilizationsPerMinute > 3
+
+  if (highConversion && highShare && highFrequency) tags.push("控制之神")
+  else if ((highConversion && highShare) || (highConversion && highFrequency)) {
+    tags.push("控杀狙神")
+  } else if (highShare && highFrequency) tags.push("控制天花板")
+  else if (highConversion) tags.push("精准控杀")
+  else if (highShare) tags.push("控制大师")
+  else if (highFrequency) tags.push("控制永动机")
+
+  if (!tags.length && controlQuality >= 0.5) tags.push("控制稳定")
+
+  return tags
 }
 
 function summarizeRatedGames(entries: RatedGame[]) {

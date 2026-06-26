@@ -208,7 +208,7 @@ function mainRoleText(role: string) {
 }
 
 function tagToneClass(label: string) {
-  if (/通天|大腿|高光|爆表|优秀|稳定|积极|可靠|发动机|核心/.test(label)) {
+  if (/通天|大腿|高光|爆表|优秀|稳定|积极|可靠|发动机|核心|控场|控杀|控制|节奏/.test(label)) {
     return "tag-strong"
   }
   if (/战犯|低能|混子|K头|开游戏|纸糊|发软|隐身|拉胯/.test(label)) {

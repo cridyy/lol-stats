@@ -195,6 +195,12 @@ function vectorTotal(vector: RoleVector) {
   return Object.values(vector).reduce((sum, value) => sum + value, 0)
 }
 
+function removeRole(vector: RoleVector, role: RoleKey): RoleVector {
+  if (vector[role] <= 0) return vector
+
+  return normalizeVector({ ...vector, [role]: 0 })
+}
+
 function hasAny(text: string, patterns: string[]) {
   return patterns.some((pattern) => text.includes(pattern))
 }
@@ -325,7 +331,10 @@ function itemRoleVector(game: RecentGame, items: Record<number, GameAssetEntry> 
 
 function combineRoles(itemWeights: RoleVector, championWeights: RoleVector, itemGold: number) {
   const itemDominance = Math.max(...Object.values(itemWeights))
+  const hasItemEvidence = vectorTotal(itemWeights) > 0
   const itemRatio = (() => {
+    if (!hasItemEvidence) return 0
+
     if (itemGold >= 4500) {
       return itemDominance >= 0.75 ? 0.78 : 0.65
     }
@@ -367,6 +376,14 @@ function resolveRole(weights: RoleVector): PlayerRole {
   return "unknown"
 }
 
+function championAllowsAdc(championRoles: string[]) {
+  if (!championRoles.length) return true
+
+  return championRoles
+    .slice(0, 2)
+    .some((role) => role.toLowerCase() === "marksman")
+}
+
 export function roleLabel(role: PlayerRole) {
   return ROLE_LABELS[role]
 }
@@ -382,8 +399,12 @@ export function roleVectorText(vector: RoleVector, limit = 3) {
 
 export function analyzePlayerRole(game: RecentGame, context: RatingContext = {}): RoleAnalysis {
   const champion = context.champions?.[game.championId]
+  const championRoles = champion?.roles || []
   const championWeights = championRoleVector(champion)
-  const { vector: itemWeights, itemGold } = itemRoleVector(game, context.items)
+  const { vector: rawItemWeights, itemGold } = itemRoleVector(game, context.items)
+  const itemWeights = championAllowsAdc(championRoles)
+    ? rawItemWeights
+    : removeRole(rawItemWeights, "adc")
   const { finalWeights, itemWeightRatio, championWeightRatio } = combineRoles(
     itemWeights,
     championWeights,
@@ -402,6 +423,6 @@ export function analyzePlayerRole(game: RecentGame, context: RatingContext = {})
     finalWeights,
     itemWeights,
     championWeights,
-    championRoles: champion?.roles || [],
+    championRoles,
   }
 }
