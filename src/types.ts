@@ -33,6 +33,8 @@ export interface AppUpdateInfo {
   hasUpdate: boolean
   releasePageUrl: string
   releaseName?: string
+  releaseMessage?: string
+  releaseNotes: string[]
 }
 
 export interface RankedStatsResponse {
@@ -116,6 +118,7 @@ export interface RecentGame {
   assists: number
   teamKills: number
   teamDeaths: number
+  teamPuuids: string[]
   kda: number
   cs: number
   goldEarned: number
@@ -185,9 +188,18 @@ export interface LivePlayer {
   summonerId: number
   teamParticipantId?: number
   isPlaceholder: boolean
+  premade?: LivePremadeMarker
   summoner?: SummonerInfo
   stats?: PlayerStatsResponse
   error?: string
+}
+
+export interface LivePremadeMarker {
+  groupId: string
+  label: string
+  source: string
+  togetherTimes: number
+  memberPuuids: string[]
 }
 
 export interface LiveTeam {

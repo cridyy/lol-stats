@@ -1,7 +1,7 @@
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -10,9 +10,9 @@ use crate::services::error::{AppError, AppResult};
 use crate::services::lcu::{LcuClient, RiotClient};
 use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ClientAuth, ConnectionStatus, GameAssetBundle,
-    GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LiveTeam, MatchDetailResponse,
-    PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse, RecentGame,
-    SafeClientInfo, SummonerInfo,
+    GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LivePremadeMarker, LiveTeam,
+    MatchDetailResponse, PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse,
+    RecentGame, SafeClientInfo, SummonerInfo,
 };
 use crate::services::stats::{
     load_match_detail as load_match_detail_service, load_player_stats,
@@ -26,6 +26,8 @@ const LIVE_SCAN_BATCH_DEPTH: usize = 20;
 const LIVE_MAX_SCAN_DEPTH: usize = 150;
 const LIVE_MATCH_LIMIT: usize = 50;
 const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
+const PREMADE_HISTORY_THRESHOLD: usize = 3;
+const PREMADE_GROUP_IDS: [&str; 10] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 const UPDATE_MANIFEST_URL: &str = "https://gitee.com/Crescenre/lol-stats/raw/main/update.json";
 const UPDATE_DOWNLOAD_PAGE_URL: &str = "https://crescendum.lanzout.com/b00rp145sh";
 
@@ -48,6 +50,8 @@ pub struct AppUpdateInfo {
     has_update: bool,
     release_page_url: String,
     release_name: Option<String>,
+    release_message: Option<String>,
+    release_notes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +61,8 @@ struct UpdateManifest {
     download_url: String,
     title: Option<String>,
     message: Option<String>,
+    notes: Option<Vec<String>>,
+    changelog: Option<String>,
 }
 
 struct Clients {
@@ -67,6 +73,65 @@ struct Clients {
 
 fn app_error(error: AppError) -> String {
     error.to_string()
+}
+
+#[tauri::command]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub fn send_alt_left_shortcut() -> Result<(), String> {
+    send_alt_left_shortcut_impl()
+}
+
+#[cfg(target_os = "windows")]
+fn send_alt_left_shortcut_impl() -> Result<(), String> {
+    use std::mem::size_of;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_LEFT, VK_MENU,
+    };
+
+    fn key_input(vk: u16, key_up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if key_up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    let mut inputs = [
+        key_input(VK_MENU, false),
+        key_input(VK_LEFT, false),
+        key_input(VK_LEFT, true),
+        key_input(VK_MENU, true),
+    ];
+
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    };
+
+    if sent == inputs.len() as u32 {
+        Ok(())
+    } else {
+        Err(format!("系统只发送了 {sent}/{} 个输入事件", inputs.len()))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn send_alt_left_shortcut_impl() -> Result<(), String> {
+    Err("当前平台不支持系统级 Alt + 左方向键".to_string())
 }
 
 fn clear_cancelled_request(request_id: &str) {
@@ -158,6 +223,32 @@ fn version_parts(version: &str) -> Vec<u32> {
         .collect()
 }
 
+fn normalize_release_notes(notes: Option<Vec<String>>, changelog: Option<String>) -> Vec<String> {
+    if let Some(notes) = notes {
+        let notes = notes
+            .into_iter()
+            .map(|note| note.trim().to_string())
+            .filter(|note| !note.is_empty())
+            .collect::<Vec<_>>();
+
+        if !notes.is_empty() {
+            return notes;
+        }
+    }
+
+    changelog
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            line.trim()
+                .trim_start_matches(['-', '*', '•'])
+                .trim()
+                .to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
 fn create_clients() -> AppResult<Clients> {
     let auth = discover_primary_client()?;
     let lcu = LcuClient::new(&auth)?;
@@ -216,6 +307,8 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
         has_update: false,
         release_page_url: UPDATE_DOWNLOAD_PAGE_URL.to_string(),
         release_name: None,
+        release_message: None,
+        release_notes: Vec::new(),
     };
 
     let Ok(response) = http
@@ -245,13 +338,16 @@ pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     } else {
         manifest.download_url
     };
+    let release_notes = normalize_release_notes(manifest.notes, manifest.changelog);
 
     Ok(AppUpdateInfo {
         has_update: version_is_newer(&latest_version, &current_version),
         current_version,
         latest_version,
         release_page_url,
-        release_name: manifest.message.or(manifest.title),
+        release_name: manifest.title,
+        release_message: manifest.message,
+        release_notes,
     })
 }
 
@@ -525,6 +621,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
         .map(|summoner| summoner.puuid);
 
     if phase == "ChampSelect" {
+        let team_participant_map = gameflow_team_participant_map(&session);
         let Some(session) = clients
             .lcu
             .champ_select_session()
@@ -538,16 +635,16 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
             .my_team
             .into_iter()
             .filter(|p| is_real_puuid(&p.puuid))
-            .map(champ_select_seed)
+            .map(|player| champ_select_seed(player, &team_participant_map))
             .collect::<Vec<_>>();
         let their_players = session
             .their_team
             .into_iter()
             .filter(|p| is_real_puuid(&p.puuid))
-            .map(champ_select_seed)
+            .map(|player| champ_select_seed(player, &team_participant_map))
             .collect::<Vec<_>>();
 
-        let teams = if queue_type.as_deref() == Some("CHERRY") {
+        let mut teams = if queue_type.as_deref() == Some("CHERRY") {
             vec![LiveTeam {
                 name: "全部玩家".to_string(),
                 players: load_live_players(
@@ -588,6 +685,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
                 },
             ]
         };
+        assign_premade_markers(&mut teams);
 
         return Ok(LiveGameResponse {
             phase,
@@ -620,7 +718,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
             red_players.retain(|player| real_players.contains(&player.puuid));
         }
 
-        let teams = if queue_type.as_deref() == Some("CHERRY") {
+        let mut teams = if queue_type.as_deref() == Some("CHERRY") {
             vec![LiveTeam {
                 name: "全部玩家".to_string(),
                 players: load_live_players(
@@ -677,6 +775,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
                 },
             ]
         };
+        assign_premade_markers(&mut teams);
 
         return Ok(LiveGameResponse {
             phase,
@@ -761,12 +860,19 @@ struct LivePlayerSeed {
     is_placeholder: bool,
 }
 
-fn champ_select_seed(player: ChampSelectPlayer) -> LivePlayerSeed {
+fn champ_select_seed(
+    player: ChampSelectPlayer,
+    team_participant_map: &HashMap<String, u32>,
+) -> LivePlayerSeed {
     let champion_id = if player.champion_id != 0 {
         player.champion_id
     } else {
         player.champion_pick_intent
     };
+    let team_participant_id = team_participant_map
+        .get(&normalize_puuid(&player.puuid))
+        .copied()
+        .filter(|id| *id != 0);
 
     LivePlayerSeed {
         puuid: player.puuid,
@@ -775,11 +881,22 @@ fn champ_select_seed(player: ChampSelectPlayer) -> LivePlayerSeed {
         position: player.assigned_position.to_ascii_uppercase(),
         selected_role: String::new(),
         summoner_id: player.summoner_id,
-        team_participant_id: None,
+        team_participant_id,
         fallback_name: String::new(),
         is_placeholder: player.player_type.eq_ignore_ascii_case("BOT")
             || player.name_visibility_type.eq_ignore_ascii_case("HIDDEN"),
     }
+}
+
+fn gameflow_team_participant_map(session: &GameflowSession) -> HashMap<String, u32> {
+    session
+        .game_data
+        .team_one
+        .iter()
+        .chain(session.game_data.team_two.iter())
+        .filter(|player| is_real_puuid(&player.puuid) && player.team_participant_id != 0)
+        .map(|player| (normalize_puuid(&player.puuid), player.team_participant_id))
+        .collect()
 }
 
 fn champion_selection_map(session: &GameflowSession) -> HashMap<String, u32> {
@@ -843,6 +960,236 @@ fn player_list_contains_puuid(players: &[LivePlayerSeed], puuid: &str) -> bool {
     players
         .iter()
         .any(|player| player.puuid.eq_ignore_ascii_case(puuid))
+}
+
+#[derive(Clone)]
+struct PremadeCandidate {
+    puuids: Vec<String>,
+    source: &'static str,
+    together_times: usize,
+}
+
+fn assign_premade_markers(teams: &mut [LiveTeam]) {
+    let mut marked = HashSet::<String>::new();
+    let mut group_index = 0usize;
+
+    for team in teams.iter_mut() {
+        for group in explicit_premade_groups(team) {
+            if assign_premade_group(team, group, &mut marked, &mut group_index) {
+                continue;
+            }
+        }
+    }
+
+    for team in teams.iter_mut() {
+        for group in inferred_premade_groups(team, &marked) {
+            let _ = assign_premade_group(team, group, &mut marked, &mut group_index);
+        }
+    }
+}
+
+fn explicit_premade_groups(team: &LiveTeam) -> Vec<PremadeCandidate> {
+    let mut groups = BTreeMap::<u32, Vec<String>>::new();
+
+    for player in &team.players {
+        let Some(team_participant_id) = player.team_participant_id else {
+            continue;
+        };
+
+        if !is_real_puuid(&player.puuid) {
+            continue;
+        }
+
+        groups
+            .entry(team_participant_id)
+            .or_default()
+            .push(normalize_puuid(&player.puuid));
+    }
+
+    groups
+        .into_values()
+        .filter(|puuids| puuids.len() >= 2)
+        .map(|mut puuids| {
+            puuids.sort();
+            puuids.dedup();
+            PremadeCandidate {
+                puuids,
+                source: "客户端分组",
+                together_times: 0,
+            }
+        })
+        .collect()
+}
+
+fn inferred_premade_groups(team: &LiveTeam, marked: &HashSet<String>) -> Vec<PremadeCandidate> {
+    let current_players = team
+        .players
+        .iter()
+        .filter(|player| player.premade.is_none() && is_real_puuid(&player.puuid))
+        .map(|player| normalize_puuid(&player.puuid))
+        .collect::<BTreeSet<_>>();
+
+    if current_players.len() < 2 || current_players.len() > 10 {
+        return Vec::new();
+    }
+
+    let current_players = current_players
+        .into_iter()
+        .filter(|puuid| !marked.contains(puuid))
+        .collect::<Vec<_>>();
+
+    if current_players.len() < 2 {
+        return Vec::new();
+    }
+
+    let current_set = current_players.iter().cloned().collect::<HashSet<_>>();
+    let mut pair_games = HashMap::<(String, String), HashSet<u64>>::new();
+
+    for player in &team.players {
+        let Some(stats) = &player.stats else {
+            continue;
+        };
+
+        for game in &stats.recent_games {
+            let same_side = game
+                .team_puuids
+                .iter()
+                .map(|puuid| normalize_puuid(puuid))
+                .filter(|puuid| current_set.contains(puuid) && !marked.contains(puuid))
+                .collect::<BTreeSet<_>>();
+
+            if same_side.len() < 2 {
+                continue;
+            }
+
+            let same_side = same_side.into_iter().collect::<Vec<_>>();
+            for i in 0..same_side.len().saturating_sub(1) {
+                for j in (i + 1)..same_side.len() {
+                    pair_games
+                        .entry((same_side[i].clone(), same_side[j].clone()))
+                        .or_default()
+                        .insert(game.game_id);
+                }
+            }
+        }
+    }
+
+    let mut candidates = Vec::<PremadeCandidate>::new();
+    let total_masks = 1usize << current_players.len();
+    for mask in 0..total_masks {
+        if mask.count_ones() < 2 {
+            continue;
+        }
+
+        let puuids = current_players
+            .iter()
+            .enumerate()
+            .filter_map(|(index, puuid)| ((mask & (1usize << index)) != 0).then_some(puuid.clone()))
+            .collect::<Vec<_>>();
+
+        let Some(times) = premade_subset_times(&puuids, &pair_games) else {
+            continue;
+        };
+
+        if times >= PREMADE_HISTORY_THRESHOLD {
+            candidates.push(PremadeCandidate {
+                puuids,
+                source: "历史同队",
+                together_times: times,
+            });
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.puuids
+            .len()
+            .cmp(&a.puuids.len())
+            .then_with(|| b.together_times.cmp(&a.together_times))
+            .then_with(|| a.puuids.cmp(&b.puuids))
+    });
+
+    let mut selected = Vec::<PremadeCandidate>::new();
+    let mut used = HashSet::<String>::new();
+    for candidate in candidates {
+        if candidate.puuids.iter().any(|puuid| used.contains(puuid)) {
+            continue;
+        }
+
+        for puuid in &candidate.puuids {
+            used.insert(puuid.clone());
+        }
+        selected.push(candidate);
+    }
+
+    selected
+}
+
+fn premade_subset_times(
+    puuids: &[String],
+    pair_games: &HashMap<(String, String), HashSet<u64>>,
+) -> Option<usize> {
+    let mut min_times = usize::MAX;
+
+    for i in 0..puuids.len().saturating_sub(1) {
+        for j in (i + 1)..puuids.len() {
+            let key = if puuids[i] <= puuids[j] {
+                (puuids[i].clone(), puuids[j].clone())
+            } else {
+                (puuids[j].clone(), puuids[i].clone())
+            };
+            let times = pair_games.get(&key)?.len();
+            min_times = min_times.min(times);
+        }
+    }
+
+    Some(min_times)
+}
+
+fn assign_premade_group(
+    team: &mut LiveTeam,
+    group: PremadeCandidate,
+    marked: &mut HashSet<String>,
+    group_index: &mut usize,
+) -> bool {
+    if group.puuids.len() < 2 || group.puuids.iter().any(|puuid| marked.contains(puuid)) {
+        return false;
+    }
+
+    let group_id = PREMADE_GROUP_IDS
+        .get(*group_index)
+        .copied()
+        .unwrap_or("Z")
+        .to_string();
+    let label = format!("{}队 · {}黑", group_id, group.puuids.len());
+    let member_set = group.puuids.iter().cloned().collect::<HashSet<_>>();
+    let marker = LivePremadeMarker {
+        group_id,
+        label,
+        source: group.source.to_string(),
+        together_times: group.together_times,
+        member_puuids: group.puuids.clone(),
+    };
+    let mut assigned = false;
+
+    for player in &mut team.players {
+        if member_set.contains(&normalize_puuid(&player.puuid)) {
+            player.premade = Some(marker.clone());
+            assigned = true;
+        }
+    }
+
+    if assigned {
+        for puuid in group.puuids {
+            marked.insert(puuid);
+        }
+        *group_index += 1;
+    }
+
+    assigned
+}
+
+fn normalize_puuid(puuid: &str) -> String {
+    puuid.to_ascii_lowercase()
 }
 
 /// 实时战绩使用当前对局模式筛选历史记录，最多从近 150 场里凑 100 场。
@@ -1042,6 +1389,7 @@ async fn load_live_player(
             summoner_id: seed.summoner_id,
             team_participant_id: seed.team_participant_id,
             is_placeholder: seed.is_placeholder,
+            premade: None,
             summoner: Some(summoner),
             stats: Some(stats),
             error: None,
@@ -1055,6 +1403,7 @@ async fn load_live_player(
             summoner_id: seed.summoner_id,
             team_participant_id: seed.team_participant_id,
             is_placeholder: seed.is_placeholder,
+            premade: None,
             summoner: Some(summoner),
             stats: None,
             error: Some(match identity_error {

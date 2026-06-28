@@ -14,6 +14,10 @@ export function checkAppUpdate() {
   return invoke<AppUpdateInfo>("check_app_update")
 }
 
+export function appVersion() {
+  return invoke<string>("app_version")
+}
+
 export function connectionStatus() {
   return invoke<ConnectionStatus>("connection_status")
 }

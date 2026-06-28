@@ -7,6 +7,7 @@ import type {
   GameAssetEntry,
   LiveGameResponse,
   LivePlayer,
+  LivePremadeMarker,
   LiveTeam,
   RecentGame,
 } from "../types"
@@ -245,6 +246,28 @@ function carryProfileClass(player: LivePlayer) {
   const carry = recentProfile(player).abilities.carry
   return carry.games ? profileTierClass(carry.averageScore) : "profile-empty"
 }
+
+function premadeClass(marker: LivePremadeMarker) {
+  return `premade-${marker.groupId.toLowerCase()}`
+}
+
+function premadeMembers(marker: LivePremadeMarker) {
+  const players = props.liveGame?.teams.flatMap((team) => team.players) || []
+  return marker.memberPuuids
+    .map((puuid) => players.find((player) => player.puuid.toLowerCase() === puuid.toLowerCase()))
+    .filter((player): player is LivePlayer => Boolean(player))
+    .map((player) => riotId(player.summoner))
+    .join("、")
+}
+
+function premadeTitle(marker: LivePremadeMarker) {
+  const members = premadeMembers(marker)
+  const source =
+    marker.source === "历史同队" && marker.togetherTimes
+      ? `${marker.source} ${marker.togetherTimes} 次以上`
+      : marker.source
+  return members ? `${marker.label} · ${source} · ${members}` : `${marker.label} · ${source}`
+}
 </script>
 
 <template>
@@ -343,6 +366,13 @@ function carryProfileClass(player: LivePlayer) {
                 <div class="identity-text">
                   <div class="name-line">
                     <strong>{{ riotId(player.summoner) }}</strong>
+                    <span
+                      v-if="player.premade"
+                      :class="['premade-tag', premadeClass(player.premade)]"
+                      :title="premadeTitle(player.premade)"
+                    >
+                      {{ player.premade.label }}
+                    </span>
                     <b v-if="player.stats" class="kda-badge">
                       <span>KDA</span>
                       <em :class="kdaTone(recentSummary(player).averageKda)">
@@ -677,6 +707,56 @@ h2 {
   line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.name-line > strong {
+  flex: 1 1 auto;
+}
+
+.premade-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #1d2730;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1.1;
+  white-space: nowrap;
+  box-shadow: 0 6px 14px rgba(20, 35, 45, 0.1);
+}
+
+.premade-a {
+  background: linear-gradient(135deg, #fde68a, #f59e0b);
+}
+
+.premade-b {
+  background: linear-gradient(135deg, #bfdbfe, #3b82f6);
+  color: #071827;
+}
+
+.premade-c {
+  background: linear-gradient(135deg, #bbf7d0, #22c55e);
+}
+
+.premade-d {
+  background: linear-gradient(135deg, #fecdd3, #fb7185);
+}
+
+.premade-e {
+  background: linear-gradient(135deg, #ddd6fe, #8b5cf6);
+  color: #120b24;
+}
+
+.premade-f,
+.premade-g,
+.premade-h,
+.premade-i,
+.premade-j,
+.premade-z {
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
 }
 
 .kda-badge {

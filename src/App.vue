@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window"
 import {
   ArrowLeft,
   ChevronLeft,
@@ -13,9 +14,11 @@ import {
   Settings,
   Swords,
   UserRound,
+  Wrench,
   X,
 } from "lucide-vue-next"
 import {
+  appVersion,
   cancelStatsLoad,
   checkAppUpdate,
   connectionStatus,
@@ -36,6 +39,7 @@ import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
 import PlayerRecordTab from "./components/PlayerRecordTab.vue"
 import RecordView from "./components/RecordView.vue"
 import ToastStack from "./components/ToastStack.vue"
+import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
 import { championName } from "./utils"
 import type {
@@ -54,7 +58,7 @@ import type {
   StatsLoadProgress,
 } from "./types"
 
-type PageKey = "current" | "live" | "search" | "details"
+type PageKey = "current" | "live" | "search" | "details" | "tools"
 type SearchServerOption = { id: string; label: string }
 type SearchHistoryItem = { query: string; sgpServerId: string }
 type OverviewDrillTab = {
@@ -105,12 +109,25 @@ type HiddenDrillCacheEntry = {
   tab: DrillTab
   hiddenAt: number
 }
+type WindowStartupSize = {
+  width: number
+  height: number
+}
+type ReleaseNotesDialog = {
+  version: string
+  notes: string[]
+}
 
 const SEARCH_HISTORY_KEY = "lol-stats.search-history"
 const SHARE_SETTINGS_KEY = "lol-stats.share-settings"
+const WINDOW_STARTUP_SIZE_KEY = "lol-stats.window-startup-size"
+const RELEASE_NOTES_SEEN_VERSION_KEY = "lol-stats.release-notes.seen-version"
+const RELEASE_NOTES_DISABLED_KEY = "lol-stats.release-notes.disabled"
 const MIN_PROGRESS_VISIBLE_MS = 700
 const HIDDEN_DRILL_CACHE_MS = 10 * 60 * 1000
 const HIDDEN_DRILL_CACHE_LIMIT = 20
+const DEFAULT_WINDOW_SIZE: WindowStartupSize = { width: 1363, height: 836 }
+const MIN_WINDOW_SIZE: WindowStartupSize = { width: 1040, height: 680 }
 const DEFAULT_SEARCH_SERVER_ID = "TENCENT_HN1"
 const RECENT_PAGE_SIZE = 20
 const MAX_RECENT_DEPTH = 1000
@@ -121,11 +138,21 @@ const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
 const AUTO_LIVE_PHASES = new Set(["GameStart", "InProgress", "Reconnect"])
+const LIVE_DATA_PHASES = new Set(["ChampSelect", "GameStart", "InProgress", "Reconnect"])
 const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   championAnalysisLimit: 10,
   championGamesAnalysisLimit: 20,
   mobileShareLayout: true,
 }
+const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.5.0": [
+    "新增工具页与 AramKit 内嵌入口，支持实时英雄快捷打开。",
+    "新增软件初始大小设置，支持保存和重置启动窗口尺寸。",
+    "新增左下角版本号显示，以及更新后首次启动的更新日志弹窗。",
+    "更新检测弹窗新增本次更新内容展示。",
+  ],
+}
+const DEFAULT_RELEASE_NOTES = ["本版本包含功能优化、体验调整和问题修复。"]
 const emptyGameAssets = (): GameAssetBundle => ({
   summonerSpells: [],
   items: [],
@@ -153,7 +180,12 @@ const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
 const shareSettings = ref<ShareSettings>(loadShareSettings())
+const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
+const windowSizeDraft = ref<WindowStartupSize>({ ...savedStartupSize.value })
+const appCurrentVersion = ref("")
+const releaseNotesDialog = ref<ReleaseNotesDialog | null>(null)
 const updateDialog = ref<AppUpdateInfo | null>(null)
+const pendingUpdateDialog = ref<AppUpdateInfo | null>(null)
 
 const currentRecentStats = ref<PlayerStatsResponse | null>(null)
 const currentFullStats = ref<PlayerStatsResponse | null>(null)
@@ -200,6 +232,8 @@ const progressOverlay = ref({
 })
 
 let unlistenProgress: UnlistenFn | null = null
+let unlistenWindowResize: UnlistenFn | null = null
+let windowSizeWatchTimer: number | null = null
 let liveRefreshTimer: number | null = null
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
@@ -216,6 +250,7 @@ const pageScrollTop: Record<PageKey, number> = {
   live: 0,
   search: 0,
   details: 0,
+  tools: 0,
 }
 
 const championMap = computed(() => {
@@ -239,12 +274,42 @@ const activeDrillTab = computed(
 )
 const canGoBack = computed(() => navigationHistoryIndex.value > 0)
 const canGoForward = computed(() => navigationHistoryIndex.value < navigationHistory.value.length - 1)
+const windowStartupSizeDirty = computed(
+  () =>
+    !windowSizeEquals(
+      normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value),
+      savedStartupSize.value,
+    ),
+)
+const windowStartupSizeIsDefault = computed(() =>
+  windowSizeEquals(savedStartupSize.value, DEFAULT_WINDOW_SIZE),
+)
+const liveAramkitChampionId = computed(() => {
+  const game = liveGame.value
+  if (!game) return null
+
+  const players = game.teams.flatMap((team) => team.players)
+  if (!players.length) return null
+
+  const selfPuuid = status.value?.summoner?.puuid?.toLowerCase()
+  const self = selfPuuid
+    ? players.find((player) => player.puuid.toLowerCase() === selfPuuid)
+    : undefined
+  const fallback = players.find(
+    (player) => !player.isPlaceholder && (player.championId > 0 || player.championPickIntent > 0),
+  )
+  const player = self || fallback
+  const championId = player?.championId || player?.championPickIntent || 0
+
+  return championId > 0 && championMap.value[championId] ? championId : null
+})
 
 const navItems: Array<{ key: PageKey; label: string; icon: typeof UserRound }> = [
   { key: "current", label: "当前角色", icon: UserRound },
   { key: "live", label: "实时战绩", icon: Swords },
   { key: "search", label: "查战绩", icon: Search },
   { key: "details", label: "详细战绩", icon: FileText },
+  { key: "tools", label: "工具", icon: Wrench },
 ]
 
 function errorMessage(error: unknown) {
@@ -322,6 +387,136 @@ function persistShareSettings() {
   localStorage.setItem(SHARE_SETTINGS_KEY, JSON.stringify(shareSettings.value))
 }
 
+function loadStartupWindowSize(): WindowStartupSize {
+  try {
+    const raw = localStorage.getItem(WINDOW_STARTUP_SIZE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    return normalizeWindowSize(parsed, DEFAULT_WINDOW_SIZE)
+  } catch {
+    return { ...DEFAULT_WINDOW_SIZE }
+  }
+}
+
+function normalizeWindowSize(value: Partial<WindowStartupSize>, fallback: WindowStartupSize) {
+  return {
+    width: clampInteger(value.width, fallback.width, MIN_WINDOW_SIZE.width, 9999),
+    height: clampInteger(value.height, fallback.height, MIN_WINDOW_SIZE.height, 9999),
+  }
+}
+
+function windowSizeEquals(left: WindowStartupSize, right: WindowStartupSize) {
+  return left.width === right.width && left.height === right.height
+}
+
+async function applyWindowSizeInput() {
+  const nextSize = normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value)
+  windowSizeDraft.value = { ...nextSize }
+
+  try {
+    await setAppWindowSize(nextSize)
+  } catch (error) {
+    notifyError("窗口尺寸调整失败", error)
+  }
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function setAppWindowSize(size: WindowStartupSize) {
+  const appWindow = getCurrentWindow()
+
+  if (await appWindow.isFullscreen().catch(() => false)) {
+    await appWindow.setFullscreen(false)
+    await wait(80)
+  }
+
+  if (await appWindow.isMaximized().catch(() => false)) {
+    await appWindow.unmaximize()
+    await wait(80)
+  }
+
+  await appWindow.setSize(new LogicalSize(size.width, size.height))
+}
+
+async function readCurrentLogicalWindowSize() {
+  const appWindow = getCurrentWindow()
+  const [size, scaleFactor] = await Promise.all([appWindow.outerSize(), appWindow.scaleFactor()])
+  return {
+    width: Math.round(size.width / scaleFactor),
+    height: Math.round(size.height / scaleFactor),
+  }
+}
+
+async function refreshWindowSizeDraft() {
+  try {
+    windowSizeDraft.value = normalizeWindowSize(
+      await readCurrentLogicalWindowSize(),
+      savedStartupSize.value,
+    )
+  } catch {
+    // Tauri 窗口 API 在普通浏览器预览中不可用，保留当前草稿即可。
+  }
+}
+
+function startWindowSizeWatchTimer() {
+  if (windowSizeWatchTimer !== null) return
+  windowSizeWatchTimer = window.setInterval(() => {
+    if (settingsOpen.value) void refreshWindowSizeDraft()
+  }, 300)
+}
+
+async function initWindowSizeSettings() {
+  startWindowSizeWatchTimer()
+
+  try {
+    await setAppWindowSize(savedStartupSize.value)
+    await refreshWindowSizeDraft()
+    unlistenWindowResize = await getCurrentWindow().onResized(() => {
+      void refreshWindowSizeDraft()
+    })
+  } catch {
+    windowSizeDraft.value = { ...savedStartupSize.value }
+  }
+}
+
+async function saveStartupWindowSize() {
+  const nextSize = normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value)
+  savedStartupSize.value = nextSize
+  windowSizeDraft.value = { ...nextSize }
+  localStorage.setItem(WINDOW_STARTUP_SIZE_KEY, JSON.stringify(nextSize))
+
+  try {
+    await setAppWindowSize(nextSize)
+    showToast({ kind: "success", title: "启动尺寸已保存", message: `${nextSize.width} × ${nextSize.height}` })
+  } catch (error) {
+    showToast({
+      kind: "info",
+      title: "启动尺寸已保存",
+      message: `当前窗口暂时未调整成功，下次启动生效：${errorMessage(error)}`,
+      duration: 7000,
+    })
+  }
+}
+
+async function resetStartupWindowSize() {
+  savedStartupSize.value = { ...DEFAULT_WINDOW_SIZE }
+  windowSizeDraft.value = { ...DEFAULT_WINDOW_SIZE }
+  localStorage.removeItem(WINDOW_STARTUP_SIZE_KEY)
+
+  try {
+    await setAppWindowSize(DEFAULT_WINDOW_SIZE)
+    showToast({ kind: "success", title: "启动尺寸已重置", message: `${DEFAULT_WINDOW_SIZE.width} × ${DEFAULT_WINDOW_SIZE.height}` })
+  } catch (error) {
+    showToast({
+      kind: "info",
+      title: "启动尺寸已重置",
+      message: `当前窗口暂时未调整成功，下次启动生效：${errorMessage(error)}`,
+      duration: 7000,
+    })
+  }
+}
+
 function showToast(toast: ToastPayload) {
   const id = ++nextToastId
   toasts.value = [{ ...toast, id }, ...toasts.value].slice(0, 4)
@@ -347,12 +542,70 @@ function notifyError(title: string, error: unknown) {
   })
 }
 
+function releaseNotesForVersion(version: string) {
+  return LOCAL_RELEASE_NOTES[version] ?? DEFAULT_RELEASE_NOTES
+}
+
+function flushPendingUpdateDialog() {
+  if (releaseNotesDialog.value || !pendingUpdateDialog.value) return
+
+  updateDialog.value = pendingUpdateDialog.value
+  pendingUpdateDialog.value = null
+}
+
+function showAppUpdateDialog(update: AppUpdateInfo) {
+  if (releaseNotesDialog.value) {
+    pendingUpdateDialog.value = update
+    return
+  }
+
+  updateDialog.value = update
+}
+
+function markReleaseNotesSeen(version: string) {
+  localStorage.setItem(RELEASE_NOTES_SEEN_VERSION_KEY, version)
+}
+
+async function initAppVersionAndReleaseNotes() {
+  try {
+    const version = await appVersion()
+    appCurrentVersion.value = version
+
+    const disabled = localStorage.getItem(RELEASE_NOTES_DISABLED_KEY) === "1"
+    const seenVersion = localStorage.getItem(RELEASE_NOTES_SEEN_VERSION_KEY)
+    if (!disabled && version && seenVersion !== version) {
+      releaseNotesDialog.value = {
+        version,
+        notes: releaseNotesForVersion(version),
+      }
+    }
+  } catch {
+    // 版本号只用于展示和启动更新日志，读取失败不影响主流程。
+  }
+}
+
+function closeReleaseNotesDialog() {
+  const version = releaseNotesDialog.value?.version
+  if (version) markReleaseNotesSeen(version)
+  releaseNotesDialog.value = null
+  flushPendingUpdateDialog()
+}
+
+function disableReleaseNotesDialog() {
+  const version = releaseNotesDialog.value?.version
+  if (version) markReleaseNotesSeen(version)
+  localStorage.setItem(RELEASE_NOTES_DISABLED_KEY, "1")
+  releaseNotesDialog.value = null
+  flushPendingUpdateDialog()
+}
+
 async function checkForAppUpdate() {
   try {
     const update = await checkAppUpdate()
     if (!update.hasUpdate) return
 
-    updateDialog.value = update
+    if (!appCurrentVersion.value) appCurrentVersion.value = update.currentVersion
+    showAppUpdateDialog(update)
   } catch {
     // 更新提示不能影响主流程；网络失败或更新源不可达时静默跳过。
   }
@@ -363,7 +616,9 @@ function closeUpdateDialog() {
 }
 
 function updateDownloadPassword() {
-  const message = updateDialog.value?.releaseName || ""
+  const message = [updateDialog.value?.releaseName, updateDialog.value?.releaseMessage]
+    .filter(Boolean)
+    .join("\n")
   return message.match(/(?:密码|提取码|访问码)[:：]\s*([A-Za-z0-9_-]+)/)?.[1] || ""
 }
 
@@ -392,7 +647,7 @@ async function copyUpdatePassword() {
     showToast({
       kind: "warning",
       title: "没有找到下载密码",
-      message: updateDialog.value?.releaseName || "更新提示里没有可复制的密码",
+      message: updateDialog.value?.releaseMessage || "更新提示里没有可复制的密码",
       duration: 6000,
     })
     return
@@ -431,7 +686,7 @@ function openUpdateDownload() {
       showToast({
         kind: password ? "success" : "info",
         title: password ? "下载页已打开，密码已复制" : "下载页已打开",
-        message: password ? `下载密码：${password}` : update.releaseName || "请在下载页获取新版安装包",
+        message: password ? `下载密码：${password}` : update.releaseMessage || "请在下载页获取新版安装包",
         duration: 7000,
       })
     } catch (error) {
@@ -1265,6 +1520,13 @@ async function checkGameflowForAutoLive() {
   const phase = await loadGameflowPhase().catch(() => null)
   const shouldOpen = shouldAutoOpenLive(phase)
 
+  if (!phase || !LIVE_DATA_PHASES.has(phase)) {
+    liveGame.value = null
+    liveError.value = ""
+  } else if (phase === "ChampSelect" && liveGame.value?.phase !== "ChampSelect") {
+    liveGame.value = null
+  }
+
   if (!shouldOpen) {
     autoLiveSessionActive = false
     return
@@ -1302,7 +1564,13 @@ watch(activePage, (page, previousPage) => {
   }
 })
 
+watch(settingsOpen, (open) => {
+  if (open) void refreshWindowSizeDraft()
+})
+
 onMounted(async () => {
+  void initWindowSizeSettings()
+  await initAppVersionAndReleaseNotes()
   startGameflowWatcher()
   void checkForAppUpdate()
   drillCachePruneTimer = window.setInterval(pruneHiddenDrillCache, 60_000)
@@ -1316,6 +1584,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenProgress?.()
+  unlistenWindowResize?.()
+  if (windowSizeWatchTimer !== null) {
+    window.clearInterval(windowSizeWatchTimer)
+    windowSizeWatchTimer = null
+  }
   stopGameflowWatcher()
   stopLiveAutoRefresh()
   if (drillCachePruneTimer !== null) {
@@ -1347,10 +1620,13 @@ onUnmounted(() => {
           {{ item.label }}
         </button>
       </nav>
-      <button class="settings-entry" @click="settingsOpen = true">
-        <Settings :size="18" />
-        设置
-      </button>
+      <div class="sidebar-footer">
+        <button class="settings-entry" @click="settingsOpen = true">
+          <Settings :size="18" />
+          设置
+        </button>
+        <span class="app-version">{{ appCurrentVersion ? `v${appCurrentVersion}` : "版本读取中" }}</span>
+      </div>
     </aside>
 
     <section class="workspace" ref="workspaceRef">
@@ -1442,6 +1718,10 @@ onUnmounted(() => {
           :loading="liveLoading"
           :error="liveError"
         />
+      </section>
+
+      <section class="tools-page" v-show="activePage === 'tools'">
+        <ToolsPanel :champions="championMap" :live-champion-id="liveAramkitChampionId" />
       </section>
 
       <section class="search-page" v-show="activePage === 'search'">
@@ -1553,42 +1833,106 @@ onUnmounted(() => {
       <section class="settings-modal">
         <header>
           <div>
-            <span>截图设置</span>
-            <strong>分享图片范围</strong>
+            <span>软件设置</span>
+            <strong>窗口与截图</strong>
           </div>
           <button @click="settingsOpen = false">关闭</button>
         </header>
 
-        <label>
-          <span>单英雄战绩截图英雄数</span>
-          <input
-            v-model.number="shareSettings.championAnalysisLimit"
-            type="number"
-            min="1"
-            max="50"
-            @change="persistShareSettings"
-          />
-        </label>
+        <section class="settings-section">
+          <div class="settings-section-title">
+            <span>窗口设置</span>
+            <strong>软件初始大小</strong>
+          </div>
 
-        <label>
-          <span>单英雄具体战绩截图场数</span>
-          <input
-            v-model.number="shareSettings.championGamesAnalysisLimit"
-            type="number"
-            min="1"
-            max="100"
-            @change="persistShareSettings"
-          />
-        </label>
+          <div class="window-size-grid">
+            <label>
+              <span>宽度</span>
+              <input
+                v-model.number="windowSizeDraft.width"
+                type="number"
+                :min="MIN_WINDOW_SIZE.width"
+                max="9999"
+                @change="applyWindowSizeInput"
+                @keyup.enter="applyWindowSizeInput"
+              />
+            </label>
+            <label>
+              <span>高度</span>
+              <input
+                v-model.number="windowSizeDraft.height"
+                type="number"
+                :min="MIN_WINDOW_SIZE.height"
+                max="9999"
+                @change="applyWindowSizeInput"
+                @keyup.enter="applyWindowSizeInput"
+              />
+            </label>
+          </div>
 
-        <label class="settings-toggle">
-          <span>生成手机版截图</span>
-          <input
-            v-model="shareSettings.mobileShareLayout"
-            type="checkbox"
-            @change="persistShareSettings"
-          />
-        </label>
+          <div class="settings-actions">
+            <button :disabled="!windowStartupSizeDirty" @click="saveStartupWindowSize">保存</button>
+            <button :disabled="windowStartupSizeIsDefault && !windowStartupSizeDirty" @click="resetStartupWindowSize">
+              重置
+            </button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">
+            <span>截图设置</span>
+            <strong>分享图片范围</strong>
+          </div>
+
+          <label>
+            <span>单英雄战绩截图英雄数</span>
+            <input
+              v-model.number="shareSettings.championAnalysisLimit"
+              type="number"
+              min="1"
+              max="50"
+              @change="persistShareSettings"
+            />
+          </label>
+
+          <label>
+            <span>单英雄具体战绩截图场数</span>
+            <input
+              v-model.number="shareSettings.championGamesAnalysisLimit"
+              type="number"
+              min="1"
+              max="100"
+              @change="persistShareSettings"
+            />
+          </label>
+
+          <label class="settings-toggle">
+            <span>生成手机版截图</span>
+            <input
+              v-model="shareSettings.mobileShareLayout"
+              type="checkbox"
+              @change="persistShareSettings"
+            />
+          </label>
+        </section>
+      </section>
+    </div>
+
+    <div class="release-notes-overlay" v-if="releaseNotesDialog">
+      <section class="release-notes-modal" role="dialog" aria-modal="true" aria-labelledby="release-notes-title">
+        <header>
+          <span>更新日志</span>
+          <strong id="release-notes-title">v{{ releaseNotesDialog.version }}</strong>
+        </header>
+
+        <ul>
+          <li v-for="note in releaseNotesDialog.notes" :key="note">{{ note }}</li>
+        </ul>
+
+        <footer>
+          <button class="release-notes-secondary" @click="disableReleaseNotesDialog">不再提示</button>
+          <button class="release-notes-primary" @click="closeReleaseNotesDialog">关闭</button>
+        </footer>
       </section>
     </div>
 
@@ -1604,8 +1948,15 @@ onUnmounted(() => {
         </header>
 
         <p>
-          {{ updateDialog.releaseName || "新版安装包已经准备好，点击下载后请选择覆盖安装以保留任务栏图标。" }}
+          {{ updateDialog.releaseMessage || "新版安装包已经准备好，点击下载后请选择覆盖安装以保留任务栏图标。" }}
         </p>
+
+        <section class="update-notes" v-if="updateDialog.releaseNotes.length">
+          <strong>{{ updateDialog.releaseName || "本次更新内容" }}</strong>
+          <ul>
+            <li v-for="note in updateDialog.releaseNotes" :key="note">{{ note }}</li>
+          </ul>
+        </section>
 
         <dl>
           <div>
@@ -1739,6 +2090,12 @@ button:disabled {
   font-size: 13px;
 }
 
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .settings-entry {
   display: inline-flex;
   align-items: center;
@@ -1750,6 +2107,14 @@ button:disabled {
   cursor: pointer;
   padding: 10px 8px;
   font-size: 13px;
+}
+
+.app-version {
+  color: #7a8a8f;
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.2;
+  padding: 0 8px 2px;
 }
 
 .side-nav button.active {
@@ -2100,7 +2465,7 @@ button:disabled {
 
 .settings-modal {
   display: flex;
-  width: 360px;
+  width: 460px;
   flex-direction: column;
   gap: 14px;
   border: 1px solid #d6e5e1;
@@ -2124,15 +2489,41 @@ button:disabled {
 }
 
 .settings-modal header span,
-.settings-modal label span {
+.settings-modal label span,
+.settings-section-title span {
   color: #718087;
   font-size: 12px;
   font-weight: 800;
 }
 
-.settings-modal header strong {
+.settings-modal header strong,
+.settings-section-title strong {
   color: #1f2a2e;
   font-size: 18px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #edf3f1;
+  padding-top: 12px;
+}
+
+.settings-section-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-section-title strong {
+  font-size: 15px;
+}
+
+.window-size-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .settings-modal header button {
@@ -2166,11 +2557,138 @@ button:disabled {
   font-weight: 800;
 }
 
+.window-size-grid input {
+  width: 108px;
+}
+
 .settings-modal input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: #1f5f56;
   cursor: pointer;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-actions button {
+  border-radius: 8px;
+  color: #ffffff;
+  background: #1f6f62;
+  cursor: pointer;
+  padding: 9px 14px;
+  font-weight: 900;
+}
+
+.settings-actions button:last-child {
+  color: #315f58;
+  background: #edf5f3;
+}
+
+.settings-actions button:disabled {
+  color: #849399;
+  background: #edf1f0;
+  cursor: not-allowed;
+}
+
+.release-notes-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1520;
+  display: grid;
+  place-items: center;
+  background: rgba(20, 35, 38, 0.36);
+  backdrop-filter: blur(8px);
+  padding: 24px;
+}
+
+.release-notes-modal {
+  display: flex;
+  width: min(460px, calc(100vw - 48px));
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(18, 42, 46, 0.24);
+  padding: 20px;
+}
+
+.release-notes-modal header {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.release-notes-modal header span {
+  color: #718087;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.release-notes-modal header strong {
+  color: #1f2a2e;
+  font-size: 28px;
+  font-weight: 950;
+}
+
+.release-notes-modal ul,
+.update-notes ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.release-notes-modal li,
+.update-notes li {
+  position: relative;
+  color: #42575c;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.55;
+  padding-left: 16px;
+}
+
+.release-notes-modal li::before,
+.update-notes li::before {
+  position: absolute;
+  top: 0.72em;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1f6f62;
+  content: "";
+}
+
+.release-notes-modal footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.release-notes-modal footer button {
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 900;
+  padding: 9px 14px;
+}
+
+.release-notes-secondary {
+  color: #315f58;
+  background: #edf5f3;
+}
+
+.release-notes-primary {
+  color: #ffffff;
+  background: #1f5f56;
 }
 
 .update-overlay {
@@ -2263,6 +2781,22 @@ button:disabled {
   font-size: 15px;
   font-weight: 750;
   line-height: 1.7;
+}
+
+.update-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid #dce7e4;
+  border-radius: 8px;
+  background: #f6faf9;
+  padding: 12px;
+}
+
+.update-notes strong {
+  color: #1f2a2e;
+  font-size: 14px;
+  font-weight: 950;
 }
 
 .update-modal dl {

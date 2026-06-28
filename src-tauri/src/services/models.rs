@@ -399,6 +399,12 @@ pub struct RecentGame {
     pub team_kills: u32,
     #[serde(default)]
     pub team_deaths: u32,
+    /// 这局里与当前玩家同一统计队伍的 PUUID 列表。
+    ///
+    /// 普通 5v5 按 teamId 计算；CHERRY / 海克斯等多小队模式按 playerSubteamId 计算。
+    /// 实时战绩的组排推断会用它统计“当前对局玩家近期是否反复同队”。
+    #[serde(default)]
+    pub team_puuids: Vec<String>,
     pub kda: f64,
     pub cs: u32,
     #[serde(default)]
@@ -627,9 +633,20 @@ pub struct LivePlayer {
     pub summoner_id: u64,
     pub team_participant_id: Option<u32>,
     pub is_placeholder: bool,
+    pub premade: Option<LivePremadeMarker>,
     pub summoner: Option<SummonerInfo>,
     pub stats: Option<PlayerStatsResponse>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePremadeMarker {
+    pub group_id: String,
+    pub label: String,
+    pub source: String,
+    pub together_times: usize,
+    pub member_puuids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

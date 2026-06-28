@@ -24,7 +24,7 @@ const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
-const CACHE_SCHEMA_VERSION: i64 = 10;
+const CACHE_SCHEMA_VERSION: i64 = 11;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 
 static STATS_CACHE: LazyLock<Mutex<HashMap<StatsCacheKey, StatsCacheEntry>>> =
@@ -1076,6 +1076,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         assists: participant.stats.assists,
         team_kills: team_totals.kills,
         team_deaths: team_totals.deaths,
+        team_puuids: team_puuids_for_participant(game, participant),
         kda,
         cs,
         gold_earned: participant.stats.gold_earned,
@@ -1093,6 +1094,21 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         game_creation: game.game_creation,
         game_duration: game.game_duration,
     }
+}
+
+fn team_puuids_for_participant(game: &Game, participant: &Participant) -> Vec<String> {
+    game.participants
+        .iter()
+        .filter(|candidate| same_stat_team(game, participant, candidate))
+        .filter_map(|candidate| {
+            let identity = identity_for_participant(game, candidate.participant_id);
+            is_real_puuid(&identity.puuid).then_some(identity.puuid)
+        })
+        .collect()
+}
+
+fn is_real_puuid(puuid: &str) -> bool {
+    !puuid.trim().is_empty() && puuid != "00000000-0000-0000-0000-000000000000"
 }
 
 fn identity_for_participant(game: &Game, participant_id: u32) -> IdentityPlayer {

@@ -1,6 +1,12 @@
 {
-  "version": "0.4.0",
-  "title": "LOL Stats 0.4.0",
+  "version": "0.5.0",
+  "title": "LOL Stats 0.5.0",
   "message": "下载密码：djvm",
-  "downloadUrl": "https://crescendum.lanzout.com/b00rp145sh"
+  "downloadUrl": "https://crescendum.lanzout.com/b00rp145sh",
+  "notes": [
+    "新增工具页与 AramKit 内嵌入口，支持实时英雄快捷打开。",
+    "新增软件初始大小设置，支持保存和重置启动窗口尺寸。",
+    "新增左下角版本号显示，以及更新后首次启动的更新日志弹窗。",
+    "更新检测弹窗新增本次更新内容展示。"
+  ]
 }

@@ -6,6 +6,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            commands::app_version,
             commands::cancel_stats_load,
             commands::check_app_update,
             commands::connection_status,
@@ -22,7 +23,8 @@ pub fn run() {
             commands::search_player,
             commands::search_player_with_progress,
             commands::load_match_detail,
-            commands::load_live_game
+            commands::load_live_game,
+            commands::send_alt_left_shortcut
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
