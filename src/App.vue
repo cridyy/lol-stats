@@ -138,13 +138,25 @@ const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
 const AUTO_LIVE_PHASES = new Set(["GameStart", "InProgress", "Reconnect"])
-const LIVE_DATA_PHASES = new Set(["ChampSelect", "GameStart", "InProgress", "Reconnect"])
+const LIVE_DATA_PHASES = new Set([
+  "ChampSelect",
+  "GameStart",
+  "InProgress",
+  "Reconnect",
+  "WaitingForStats",
+  "PreEndOfGame",
+  "EndOfGame",
+])
 const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   championAnalysisLimit: 10,
   championGamesAnalysisLimit: 20,
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.5.1": [
+    "修复赛后客户端停留在结算页时，实时战绩被自动清空的问题。",
+    "一局结束后会保留上一局实时战绩，直到进入下一局选人阶段。",
+  ],
   "0.5.0": [
     "新增工具页与 AramKit 内嵌入口，支持实时英雄快捷打开。",
     "新增软件初始大小设置，支持保存和重置启动窗口尺寸。",
@@ -1520,11 +1532,11 @@ async function checkGameflowForAutoLive() {
   const phase = await loadGameflowPhase().catch(() => null)
   const shouldOpen = shouldAutoOpenLive(phase)
 
-  if (!phase || !LIVE_DATA_PHASES.has(phase)) {
+  if (phase === "ChampSelect" && liveGame.value?.phase !== "ChampSelect") {
     liveGame.value = null
     liveError.value = ""
-  } else if (phase === "ChampSelect" && liveGame.value?.phase !== "ChampSelect") {
-    liveGame.value = null
+  } else if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
+    liveError.value = ""
   }
 
   if (!shouldOpen) {
