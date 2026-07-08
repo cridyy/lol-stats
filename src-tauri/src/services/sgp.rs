@@ -366,6 +366,8 @@ struct SgpParticipant {
     #[serde(default)]
     damage_self_mitigated: u32,
     #[serde(default)]
+    total_damage_taken: u32,
+    #[serde(default)]
     total_heal: u32,
     #[serde(default)]
     vision_score: u32,
@@ -520,6 +522,7 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                     neutral_minions_killed: participant.neutral_minions_killed,
                     total_damage_dealt_to_champions: participant.total_damage_dealt_to_champions,
                     damage_self_mitigated: participant.damage_self_mitigated,
+                    total_damage_taken: participant.total_damage_taken,
                     total_heal: participant.total_heal,
                     enemy_champion_immobilizations,
                     immobilize_and_kill_with_ally,

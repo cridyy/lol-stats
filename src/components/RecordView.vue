@@ -12,7 +12,7 @@ import type {
   RecentGame,
   ShareSettings,
 } from "../types"
-import { riotId } from "../utils"
+import { mitigationValue, riotId, teamMitigationValue } from "../utils"
 import MatchHistoryPanel from "./MatchHistoryPanel.vue"
 import StatsPanel from "./StatsPanel.vue"
 
@@ -313,9 +313,9 @@ function buildChampionStats(games: RecentGame[]): ChampionStat[] {
       const teamDamage = championGames.reduce((sum, game) => sum + game.teamDamageToChampions, 0)
       const gold = championGames.reduce((sum, game) => sum + game.goldEarned, 0)
       const teamGold = championGames.reduce((sum, game) => sum + game.teamGoldEarned, 0)
-      const mitigated = championGames.reduce((sum, game) => sum + game.damageSelfMitigated, 0)
+      const mitigated = championGames.reduce((sum, game) => sum + mitigationValue(game), 0)
       const teamMitigated = championGames.reduce(
-        (sum, game) => sum + game.teamDamageSelfMitigated,
+        (sum, game) => sum + teamMitigationValue(game),
         0,
       )
       const healing = championGames.reduce((sum, game) => sum + game.totalHeal, 0)

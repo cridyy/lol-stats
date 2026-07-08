@@ -14,7 +14,7 @@ import type {
   MatchDetailResponse,
   RecentGame,
 } from "../types"
-import { fixed, formatDate } from "../utils"
+import { fixed, formatDate, mitigationValue, teamMitigationValue } from "../utils"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 
@@ -499,7 +499,7 @@ async function copyImage() {
 
             <div class="stat-cell">
               <strong :class="{ leader: detailStatLeader(player, 'mitigation') }">
-                {{ kNumber(player.damageSelfMitigated) }}<em>{{ shareSuffix(player.damageSelfMitigated, player.teamDamageSelfMitigated) }}</em>
+                {{ kNumber(mitigationValue(player)) }}<em>{{ shareSuffix(mitigationValue(player), teamMitigationValue(player)) }}</em>
               </strong>
             </div>
 

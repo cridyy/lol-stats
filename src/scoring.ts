@@ -7,7 +7,7 @@ import {
   type RoleKey,
   type PlayerRole,
 } from "./roleClassifier"
-import { fixed } from "./utils"
+import { fixed, mitigationValue, teamMitigationValue } from "./utils"
 
 export interface OutputRatingMetrics {
   kda: number
@@ -71,14 +71,16 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
   const killShare = ratio(game.kills, game.teamKills)
   const killParticipation = ratio(game.kills + game.assists, game.teamKills)
   const deathShare = ratio(game.deaths, game.teamDeaths)
-  const mitigationShare = ratio(game.damageSelfMitigated, game.teamDamageSelfMitigated)
+  const mitigation = mitigationValue(game)
+  const teamMitigation = teamMitigationValue(game)
+  const mitigationShare = ratio(mitigation, teamMitigation)
   const gameMinutes = Math.max(Number(game.gameDuration || 0) / 60, 1)
   const immobilizationsPerMinute = Number(game.enemyChampionImmobilizations || 0) / gameMinutes
   const rawDamageConversion = goldShare > 0 ? damageShare / goldShare : 0
   const effectiveGoldShare = killAdjustedGoldShare(damageShare, goldShare, killShare)
-  const personalMitigationPerDeath = Number(game.damageSelfMitigated || 0) / Math.max(game.deaths, 1)
+  const personalMitigationPerDeath = mitigation / Math.max(game.deaths, 1)
   const teamMitigationPerDeath =
-    Number(game.teamDamageSelfMitigated || 0) / Math.max(game.teamDeaths, 1)
+    teamMitigation / Math.max(game.teamDeaths, 1)
   const immobilizationShare = ratio(
     game.enemyChampionImmobilizations,
     game.teamEnemyChampionImmobilizations,
@@ -215,7 +217,7 @@ function calculateRatingParts(
     const damageControl = frontlineDamageControlParts(metrics)
 
     return {
-      mitigation: 30 * gatedMitigationQualityScore(metrics, 0.34, 1.2),
+      mitigation: 30 * gatedMitigationQualityScore(metrics, 0.3, 1.1),
       effectiveDamage: damageControl.effectiveDamage,
       participation: 15 * clamp01((metrics.killParticipation - 0.42) / 0.38),
       deathControl: 10 * survivalScore(metrics, 0.28, 0.22),
@@ -234,12 +236,12 @@ function calculateRatingParts(
       damageTarget: 0.28,
       efficiencyBase: 0.72,
       efficiencyRange: 0.58,
-      mitigationTargetShare: 0.3,
-      mitigationTargetPerDeath: 1.15,
-      mitigationShareStart: 0.18,
-      mitigationShareRange: 0.22,
-      mitigationPerDeathStart: 0.7,
-      mitigationPerDeathRange: 0.6,
+      mitigationTargetShare: 0.27,
+      mitigationTargetPerDeath: 1.08,
+      mitigationShareStart: 0.16,
+      mitigationShareRange: 0.2,
+      mitigationPerDeathStart: 0.65,
+      mitigationPerDeathRange: 0.55,
       advantageRange: 0.35,
       maxControlWeight: dynamicControlMaxWeight(role),
       controlAdvantageRange: 0.45,
@@ -606,21 +608,21 @@ function positiveRatingLabel(
 
   if (family === "frontline") {
     if (
-      metrics.mitigationShare >= 0.34 &&
+      metrics.mitigationShare >= 0.3 &&
       metrics.mitigationPerDeath >= 3 &&
       metrics.killParticipation >= 0.68
     ) {
       return "叹息之墙"
     }
     if (
-      metrics.mitigationShare >= 0.34 &&
+      metrics.mitigationShare >= 0.3 &&
       metrics.mitigationPerDeath >= 1.05 &&
       metrics.killParticipation >= 0.68
     ) {
       return "faker加里奥"
     }
-    if (metrics.mitigationShare >= 0.3 && metrics.damageShare >= 0.22) return "半肉战神"
-    if (metrics.mitigationShare >= 0.3) return "哪来的城墙"
+    if (metrics.mitigationShare >= 0.27 && metrics.damageShare >= 0.22) return "半肉战神"
+    if (metrics.mitigationShare >= 0.27) return "哪来的城墙"
     if (controlLabel) return controlLabel
     return "顶级前锋"
   }
@@ -646,7 +648,7 @@ function positiveRatingLabel(
     }
     if (
       metrics.damageShare >= 0.25 &&
-      metrics.mitigationShare >= 0.28 &&
+      metrics.mitigationShare >= 0.25 &&
       metrics.effectiveDamageConversion >= 0.95
     ) {
       return "半肉战神"

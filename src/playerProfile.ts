@@ -281,8 +281,8 @@ function positiveProfileTags(
     tags.push("核心大C")
   }
   if (summary.deathShare >= 0.27 && summary.damageShare >= 0.25) tags.push("浴血奋战")
-  if (summary.mitigationShare >= 0.32 && summary.damageShare >= 0.23) tags.push("半肉战神")
-  else if (summary.mitigationShare >= 0.32 || frontlineGamesRate >= 0.35) tags.push("哪来的城墙")
+  if (summary.mitigationShare >= 0.29 && summary.damageShare >= 0.23) tags.push("半肉战神")
+  else if (summary.mitigationShare >= 0.29 || frontlineGamesRate >= 0.35) tags.push("哪来的城墙")
   if (summary.healingShare >= 0.25 || supportGamesRate >= 0.35 || mainRoleLabel === "辅助") {
     tags.push("团队功能")
   }
@@ -301,21 +301,21 @@ function positivePrimaryProfileTag(
 ) {
   if (role === "tank") {
     if (
-      summary.mitigationShare >= 0.34 &&
+      summary.mitigationShare >= 0.3 &&
       summary.mitigationPerDeath >= 3 &&
       summary.killParticipation >= 0.68
     ) {
       return "叹息之墙"
     }
     if (
-      summary.mitigationShare >= 0.34 &&
+      summary.mitigationShare >= 0.3 &&
       summary.mitigationPerDeath >= 1.05 &&
       summary.killParticipation >= 0.68
     ) {
       return "faker加里奥"
     }
-    if (summary.mitigationShare >= 0.3 && summary.damageShare >= 0.22) return "半肉战神"
-    if (summary.mitigationShare >= 0.3) return "哪来的城墙"
+    if (summary.mitigationShare >= 0.27 && summary.damageShare >= 0.22) return "半肉战神"
+    if (summary.mitigationShare >= 0.27) return "哪来的城墙"
     return controlProfileTags(summary)[0] || "顶级前锋"
   }
 
@@ -346,7 +346,7 @@ function positivePrimaryProfileTag(
     }
     if (
       summary.damageShare >= 0.25 &&
-      summary.mitigationShare >= 0.28 &&
+      summary.mitigationShare >= 0.25 &&
       summary.effectiveDamageConversion >= 0.95
     ) {
       return "半肉战神"

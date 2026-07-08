@@ -12,7 +12,7 @@ import type {
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
-import { championName, fixed, percent, phaseName, riotId } from "../utils"
+import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
@@ -23,6 +23,10 @@ const props = defineProps<{
   gameAssets: GameAssetBundle
   loading: boolean
   error: string
+}>()
+
+const emit = defineEmits<{
+  openPlayer: [player: LivePlayer]
 }>()
 
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
@@ -118,7 +122,7 @@ function damageShare(game: RecentGame) {
 }
 
 function mitigationShare(game: RecentGame) {
-  return ratio(game.damageSelfMitigated, game.teamDamageSelfMitigated)
+  return ratio(mitigationValue(game), teamMitigationValue(game))
 }
 
 function damageConversion(game: RecentGame) {
@@ -133,8 +137,8 @@ function recentSummary(player: LivePlayer) {
   const teamDamage = games.reduce((sum, game) => sum + game.teamDamageToChampions, 0)
   const gold = games.reduce((sum, game) => sum + game.goldEarned, 0)
   const teamGold = games.reduce((sum, game) => sum + game.teamGoldEarned, 0)
-  const mitigation = games.reduce((sum, game) => sum + game.damageSelfMitigated, 0)
-  const teamMitigation = games.reduce((sum, game) => sum + game.teamDamageSelfMitigated, 0)
+  const mitigation = games.reduce((sum, game) => sum + mitigationValue(game), 0)
+  const teamMitigation = games.reduce((sum, game) => sum + teamMitigationValue(game), 0)
   const aggregateDamageShare = ratio(damage, teamDamage)
   const aggregateGoldShare = ratio(gold, teamGold)
 
@@ -284,11 +288,15 @@ function premadeTitle(marker: LivePremadeMarker) {
       </div>
     </header>
 
-    <div class="live-empty" v-if="loading">正在读取双方近 50 局</div>
-    <div class="live-empty error" v-else-if="error">{{ error }}</div>
+    <div class="live-empty" v-if="loading && !liveGame">正在读取双方近 50 局</div>
+    <div class="live-empty error" v-else-if="!liveGame && error">{{ error }}</div>
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
     <template v-else-if="liveGame.teams.some((team) => team.players.length)">
+      <div class="live-stale-notice" v-if="error">
+        {{ error }}，已保留上一局实时战绩
+      </div>
+
       <div class="team-averages">
         <section
           class="team-average"
@@ -365,7 +373,9 @@ function premadeTitle(marker: LivePremadeMarker) {
                 />
                 <div class="identity-text">
                   <div class="name-line">
-                    <strong>{{ riotId(player.summoner) }}</strong>
+                    <button class="player-name-button" type="button" @click="emit('openPlayer', player)">
+                      {{ riotId(player.summoner) }}
+                    </button>
                     <span
                       v-if="player.premade"
                       :class="['premade-tag', premadeClass(player.premade)]"
@@ -530,6 +540,16 @@ h2 {
 .live-empty.error {
   color: #a94745;
   border-color: #efc4c2;
+}
+
+.live-stale-notice {
+  border: 1px solid #efd6a3;
+  border-radius: 8px;
+  background: #fff6df;
+  color: #8a5a12;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 12px;
 }
 
 .team-averages {
@@ -697,7 +717,8 @@ h2 {
   gap: 8px;
 }
 
-.identity-text strong {
+.identity-text strong,
+.player-name-button {
   display: block;
   overflow: hidden;
   min-width: 0;
@@ -709,7 +730,30 @@ h2 {
   white-space: nowrap;
 }
 
-.name-line > strong {
+.player-name-button {
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: #0f6f8f;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.player-name-button:hover,
+.player-name-button:focus-visible {
+  color: #0a526b;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.player-name-button:focus-visible {
+  outline: 2px solid rgba(15, 111, 143, 0.35);
+  outline-offset: 2px;
+}
+
+.name-line > strong,
+.name-line > .player-name-button {
   flex: 1 1 auto;
 }
 

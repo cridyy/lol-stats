@@ -62,7 +62,9 @@ struct ChampionAccumulator {
     team_damage_to_champions: u64,
     team_gold_earned: u64,
     damage_self_mitigated: u64,
+    total_damage_taken: u64,
     team_damage_self_mitigated: u64,
+    team_total_damage_taken: u64,
     total_heal: u64,
     team_total_heal: u64,
     last_played_at: i64,
@@ -73,6 +75,7 @@ struct TeamTotals {
     damage_to_champions: u32,
     gold_earned: u32,
     damage_self_mitigated: u32,
+    total_damage_taken: u32,
     total_heal: u32,
     enemy_champion_immobilizations: u32,
     immobilize_and_kill_with_ally: u32,
@@ -924,7 +927,9 @@ fn analyze_games(summoner: SummonerInfo, depth: usize, games: Vec<Game>) -> Play
         entry.team_damage_to_champions += team_totals.damage_to_champions as u64;
         entry.team_gold_earned += team_totals.gold_earned as u64;
         entry.damage_self_mitigated += participant.stats.damage_self_mitigated as u64;
+        entry.total_damage_taken += participant.stats.total_damage_taken as u64;
         entry.team_damage_self_mitigated += team_totals.damage_self_mitigated as u64;
+        entry.team_total_damage_taken += team_totals.total_damage_taken as u64;
         entry.total_heal += participant.stats.total_heal as u64;
         entry.team_total_heal += team_totals.total_heal as u64;
         entry.last_played_at = entry.last_played_at.max(game.game_creation);
@@ -1083,7 +1088,9 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         damage_to_champions: participant.stats.total_damage_dealt_to_champions,
         team_damage_to_champions: team_totals.damage_to_champions,
         damage_self_mitigated: participant.stats.damage_self_mitigated,
+        total_damage_taken: participant.stats.total_damage_taken,
         team_damage_self_mitigated: team_totals.damage_self_mitigated,
+        team_total_damage_taken: team_totals.total_damage_taken,
         total_heal: participant.stats.total_heal,
         team_total_heal: team_totals.total_heal,
         team_gold_earned: team_totals.gold_earned,
@@ -1152,7 +1159,11 @@ fn champion_accumulator_to_stat(c: ChampionAccumulator, total_games: usize) -> C
         average_cs: average(c.cs, c.games),
         damage_share,
         damage_conversion_rate,
-        mitigation_share: ratio_u64(c.damage_self_mitigated, c.team_damage_self_mitigated),
+        mitigation_share: ratio_u64(
+            c.damage_self_mitigated.saturating_add(c.total_damage_taken),
+            c.team_damage_self_mitigated
+                .saturating_add(c.team_total_damage_taken),
+        ),
         healing_share: ratio_u64(c.total_heal, c.team_total_heal),
         gold_share,
         last_played_at: c.last_played_at,
@@ -1187,6 +1198,7 @@ fn team_totals_for_participant(game: &Game, participant: &Participant) -> TeamTo
             totals.damage_to_champions += candidate.stats.total_damage_dealt_to_champions;
             totals.gold_earned += candidate.stats.gold_earned;
             totals.damage_self_mitigated += candidate.stats.damage_self_mitigated;
+            totals.total_damage_taken += candidate.stats.total_damage_taken;
             totals.total_heal += candidate.stats.total_heal;
             totals.enemy_champion_immobilizations += candidate.stats.enemy_champion_immobilizations;
             totals.immobilize_and_kill_with_ally += candidate.stats.immobilize_and_kill_with_ally;
@@ -1220,7 +1232,7 @@ fn game_accolades_for_participant(
         .unwrap_or(0);
     let team_mitigation_max = team_participants
         .iter()
-        .map(|candidate| candidate.stats.damage_self_mitigated)
+        .map(|candidate| participant_mitigation_value(candidate))
         .max()
         .unwrap_or(0);
     let team_healing_max = team_participants
@@ -1245,7 +1257,7 @@ fn game_accolades_for_participant(
         team_damage_leader: is_u32_leader(my_damage, team_damage_max),
         game_damage_leader: is_u32_leader(my_damage, game_damage_max),
         team_mitigation_leader: is_u32_leader(
-            participant.stats.damage_self_mitigated,
+            participant_mitigation_value(participant),
             team_mitigation_max,
         ),
         team_healing_leader: is_u32_leader(participant.stats.total_heal, team_healing_max),
@@ -1273,6 +1285,13 @@ fn participant_damage_conversion(participant: &Participant, team_totals: &TeamTo
     } else {
         damage_share / gold_share
     }
+}
+
+fn participant_mitigation_value(participant: &Participant) -> u32 {
+    participant
+        .stats
+        .damage_self_mitigated
+        .saturating_add(participant.stats.total_damage_taken)
 }
 
 fn is_u32_leader(value: u32, max: u32) -> bool {

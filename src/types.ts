@@ -125,7 +125,9 @@ export interface RecentGame {
   damageToChampions: number
   teamDamageToChampions: number
   damageSelfMitigated: number
+  totalDamageTaken: number
   teamDamageSelfMitigated: number
+  teamTotalDamageTaken: number
   totalHeal: number
   teamTotalHeal: number
   teamGoldEarned: number

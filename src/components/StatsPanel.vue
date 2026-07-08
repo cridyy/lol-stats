@@ -20,7 +20,7 @@ import {
   profileScoreLevel,
   profileTierLabel,
 } from "../playerProfile"
-import { championName, fixed, percent } from "../utils"
+import { championName, fixed, mitigationValue, percent, teamMitigationValue } from "../utils"
 
 const props = defineProps<{
   stats: PlayerStatsResponse | null
@@ -879,8 +879,8 @@ function errorMessage(error: unknown) {
               </div>
               <div :class="{ leader: isGameLeader(game, 'mitigation') }">
                 <span>承伤</span>
-                <strong>{{ kNumber(game.damageSelfMitigated) }}</strong>
-                <em>{{ shareText(game.damageSelfMitigated, game.teamDamageSelfMitigated) }}</em>
+                <strong>{{ kNumber(mitigationValue(game)) }}</strong>
+                <em>{{ shareText(mitigationValue(game), teamMitigationValue(game)) }}</em>
               </div>
               <div :class="{ leader: isGameLeader(game, 'healing') }">
                 <span>治疗</span>

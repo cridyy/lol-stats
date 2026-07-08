@@ -1,10 +1,10 @@
 {
-  "version": "0.5.1",
-  "title": "LOL Stats 0.5.1",
+  "version": "0.5.2",
+  "title": "LOL Stats 0.5.2",
   "message": "下载密码：djvm",
   "downloadUrl": "https://crescendum.lanzout.com/b00rp145sh",
   "notes": [
-    "修复赛后客户端停留在结算页时，实时战绩被自动清空的问题。",
-    "一局结束后会保留上一局实时战绩，直到进入下一局选人阶段。"
+    "承伤口径调整为自我缓和的伤害 + 承受到的伤害。",
+    "评分、实时战绩、详细战绩和英雄统计统一使用新的承伤口径。"
   ]
 }

@@ -233,6 +233,8 @@ pub struct ParticipantStats {
     #[serde(default)]
     pub damage_self_mitigated: u32,
     #[serde(default)]
+    pub total_damage_taken: u32,
+    #[serde(default)]
     pub total_heal: u32,
     #[serde(default)]
     pub enemy_champion_immobilizations: u32,
@@ -415,7 +417,11 @@ pub struct RecentGame {
     #[serde(default)]
     pub damage_self_mitigated: u32,
     #[serde(default)]
+    pub total_damage_taken: u32,
+    #[serde(default)]
     pub team_damage_self_mitigated: u32,
+    #[serde(default)]
+    pub team_total_damage_taken: u32,
     #[serde(default)]
     pub total_heal: u32,
     #[serde(default)]

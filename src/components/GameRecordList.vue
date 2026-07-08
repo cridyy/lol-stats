@@ -14,7 +14,7 @@ import type {
   OpenMatchPayload,
   RecentGame,
 } from "../types"
-import { fixed, formatDate } from "../utils"
+import { fixed, formatDate, mitigationValue, teamMitigationValue } from "../utils"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
 
@@ -409,8 +409,8 @@ async function openMatchDetail(game: RecentGame) {
       </div>
 
       <div class="stat-cell">
-        <strong :class="{ leader: detailStatLeader(game, 'mitigation') }">{{ kNumber(game.damageSelfMitigated) }}</strong>
-        <span class="stat-share" :class="{ leader: detailStatLeader(game, 'mitigation') }">承伤 <b>{{ shareText(game.damageSelfMitigated, game.teamDamageSelfMitigated) }}</b></span>
+        <strong :class="{ leader: detailStatLeader(game, 'mitigation') }">{{ kNumber(mitigationValue(game)) }}</strong>
+        <span class="stat-share" :class="{ leader: detailStatLeader(game, 'mitigation') }">承伤 <b>{{ shareText(mitigationValue(game), teamMitigationValue(game)) }}</b></span>
       </div>
 
       <div class="stat-cell">
@@ -576,7 +576,7 @@ async function openMatchDetail(game: RecentGame) {
 
                 <div class="stat-cell">
                   <strong :class="{ leader: detailStatLeader(player, 'mitigation') }">
-                    {{ kNumber(player.damageSelfMitigated) }}<em>{{ shareSuffix(player.damageSelfMitigated, player.teamDamageSelfMitigated) }}</em>
+                    {{ kNumber(mitigationValue(player)) }}<em>{{ shareSuffix(mitigationValue(player), teamMitigationValue(player)) }}</em>
                   </strong>
                 </div>
 

@@ -1,4 +1,4 @@
-import type { ChampionSummaryItem, SummonerInfo } from "./types"
+import type { ChampionSummaryItem, RecentGame, SummonerInfo } from "./types"
 
 export function riotId(summoner?: SummonerInfo) {
   if (!summoner) return "未知玩家"
@@ -16,6 +16,14 @@ export function fixed(value: number, digits = 2) {
 
 export function compactNumber(value: number) {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(value)
+}
+
+export function mitigationValue(game: RecentGame) {
+  return Number(game.damageSelfMitigated || 0) + Number(game.totalDamageTaken || 0)
+}
+
+export function teamMitigationValue(game: RecentGame) {
+  return Number(game.teamDamageSelfMitigated || 0) + Number(game.teamTotalDamageTaken || 0)
 }
 
 export function formatDate(timestamp: number) {

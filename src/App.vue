@@ -41,13 +41,14 @@ import RecordView from "./components/RecordView.vue"
 import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
-import { championName } from "./utils"
+import { championName, riotId } from "./utils"
 import type {
   AppUpdateInfo,
   ChampionSummaryItem,
   ConnectionStatus,
   GameAssetBundle,
   LiveGameResponse,
+  LivePlayer,
   MatchDetailPlayer,
   MatchDetailResponse,
   OpenMatchPayload,
@@ -257,6 +258,7 @@ let drillCachePruneTimer: number | null = null
 let applyingNavigationHistory = false
 let lastDetailsSnapshot: NavigationSnapshot | null = null
 const hiddenDrillTabCache = new Map<string, HiddenDrillCacheEntry>()
+const drillTabScrollTop = new Map<string, number>()
 const pageScrollTop: Record<PageKey, number> = {
   current: 0,
   live: 0,
@@ -330,12 +332,31 @@ function errorMessage(error: unknown) {
 
 function savePageScroll(page: PageKey) {
   pageScrollTop[page] = workspaceRef.value?.scrollTop ?? 0
+  if (page === "details") saveActiveDrillTabScroll()
 }
 
 async function restorePageScroll(page: PageKey) {
   await nextTick()
   if (!workspaceRef.value) return
+  if (page === "details" && activeDrillTabId.value) {
+    workspaceRef.value.scrollTop =
+      drillTabScrollTop.get(activeDrillTabId.value) ?? pageScrollTop.details ?? 0
+    return
+  }
+
   workspaceRef.value.scrollTop = pageScrollTop[page] ?? 0
+}
+
+function saveActiveDrillTabScroll() {
+  const tabId = activeDrillTabId.value
+  if (!tabId || !workspaceRef.value) return
+  drillTabScrollTop.set(tabId, workspaceRef.value.scrollTop)
+}
+
+async function restoreDrillTabScroll(id = activeDrillTabId.value) {
+  await nextTick()
+  if (activePage.value !== "details" || !id || !workspaceRef.value) return
+  workspaceRef.value.scrollTop = drillTabScrollTop.get(id) ?? 0
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
@@ -747,12 +768,20 @@ function playerHistoryPayload(
   sgpServerId?: string,
 ): Extract<DrillHistoryPayload, { type: "player" }> {
   const label = detailPlayerLabel(player)
+  return playerHistoryPayloadFromParts(player.puuid, label, sgpServerId)
+}
+
+function playerHistoryPayloadFromParts(
+  puuid: string,
+  label: string,
+  sgpServerId?: string,
+): Extract<DrillHistoryPayload, { type: "player" }> {
   return {
-    id: drillTabKey("player", sgpServerId, player.puuid),
+    id: drillTabKey("player", sgpServerId, puuid),
     type: "player",
     title: `${label} 总览`,
     playerLabel: label,
-    query: player.puuid,
+    query: puuid,
     sgpServerId,
   }
 }
@@ -845,6 +874,7 @@ function pushNavigationSnapshot(snapshot: NavigationSnapshot) {
 }
 
 function navigateToPage(page: PageKey) {
+  savePageScroll(activePage.value)
   const snapshot = navigationSnapshotForPage(page)
   pushNavigationSnapshot(snapshot)
 
@@ -859,12 +889,16 @@ function navigateToPage(page: PageKey) {
   }
 
   activePage.value = page
+  void restorePageScroll(page)
 }
 
 function pruneHiddenDrillCache() {
   const now = Date.now()
   for (const [id, entry] of hiddenDrillTabCache.entries()) {
-    if (now - entry.hiddenAt > HIDDEN_DRILL_CACHE_MS) hiddenDrillTabCache.delete(id)
+    if (now - entry.hiddenAt > HIDDEN_DRILL_CACHE_MS) {
+      hiddenDrillTabCache.delete(id)
+      drillTabScrollTop.delete(id)
+    }
   }
 
   if (hiddenDrillTabCache.size <= HIDDEN_DRILL_CACHE_LIMIT) return
@@ -872,6 +906,7 @@ function pruneHiddenDrillCache() {
   const entries = [...hiddenDrillTabCache.entries()].sort((left, right) => left[1].hiddenAt - right[1].hiddenAt)
   for (const [id] of entries.slice(0, hiddenDrillTabCache.size - HIDDEN_DRILL_CACHE_LIMIT)) {
     hiddenDrillTabCache.delete(id)
+    drillTabScrollTop.delete(id)
   }
 }
 
@@ -896,6 +931,7 @@ function hideDrillTabForHistory(id: string) {
   const index = drillTabs.value.findIndex((tab) => tab.id === id)
   if (index < 0) return
 
+  if (activeDrillTabId.value === id) saveActiveDrillTabScroll()
   const [tab] = drillTabs.value.splice(index, 1)
   lastDetailsSnapshot = detailsSnapshot(tab)
   hiddenDrillTabCache.set(id, { tab, hiddenAt: Date.now() })
@@ -960,14 +996,17 @@ function activateDrillTab(id: string, options: { recordHistory?: boolean } = {})
   const tab = visibleDrillTab(id) || restoreHiddenDrillTab(id)
   if (!tab) return
 
+  if (activeDrillTabId.value !== id) saveActiveDrillTabScroll()
   activeDrillTabId.value = id
   activePage.value = "details"
   lastDetailsSnapshot = detailsSnapshot(tab)
   if (options.recordHistory !== false) pushNavigationSnapshot(lastDetailsSnapshot)
+  void restoreDrillTabScroll(id)
 }
 
 function closeDrillTab(id: string) {
   hiddenDrillTabCache.delete(id)
+  drillTabScrollTop.delete(id)
   const index = drillTabs.value.findIndex((tab) => tab.id === id)
   if (index < 0) return
 
@@ -983,6 +1022,7 @@ function closeDrillTab(id: string) {
   const nextTab = drillTabs.value[Math.max(0, index - 1)] || drillTabs.value[0]
   activeDrillTabId.value = nextTab?.id || ""
   lastDetailsSnapshot = nextTab ? detailsSnapshot(nextTab) : null
+  void restoreDrillTabScroll(activeDrillTabId.value)
 }
 
 async function openOverviewTab(payload: OpenMatchPayload) {
@@ -1034,6 +1074,17 @@ function openPlayerDrillTab(player: MatchDetailPlayer, sgpServerId?: string) {
   activateDrillTab(tab.id)
 }
 
+function openLivePlayerDrillTab(player: LivePlayer) {
+  if (!player.puuid || player.isPlaceholder) {
+    showToast({ kind: "error", title: "无法打开玩家战绩", message: "该玩家缺少可查询的 PUUID" })
+    return
+  }
+
+  const label = player.summoner ? riotId(player.summoner) : player.puuid
+  const tab = ensureDrillTab(playerHistoryPayloadFromParts(player.puuid, label))
+  activateDrillTab(tab.id)
+}
+
 function applyNavigationSnapshot(snapshot: NavigationSnapshot) {
   applyingNavigationHistory = true
   try {
@@ -1048,6 +1099,7 @@ function applyNavigationSnapshot(snapshot: NavigationSnapshot) {
     }
 
     activePage.value = snapshot.page
+    void restorePageScroll(snapshot.page)
   } finally {
     applyingNavigationHistory = false
   }
@@ -1484,7 +1536,7 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   const switchPage = options.switchPage ?? !silent
   if (liveLoading.value || liveRefreshing.value) return
 
-  if (silent && liveGame.value) {
+  if (liveGame.value) {
     liveRefreshing.value = true
   } else {
     liveLoading.value = true
@@ -1497,9 +1549,13 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
     await ensureClientReady()
     liveGame.value = await loadLiveGame(LIVE_STATS_DEPTH)
   } catch (error) {
-    liveError.value = errorMessage(error)
-    if (!silent) {
-      notifyError("实时战绩读取失败", error)
+    const message = errorMessage(error)
+    if (liveGame.value) {
+      liveError.value = silent ? "" : message
+      if (!silent) notifyError("实时战绩刷新失败，已保留上一局", error)
+    } else {
+      liveError.value = message
+      if (!silent) notifyError("实时战绩读取失败", error)
       liveGame.value = null
     }
   } finally {
@@ -1532,10 +1588,7 @@ async function checkGameflowForAutoLive() {
   const phase = await loadGameflowPhase().catch(() => null)
   const shouldOpen = shouldAutoOpenLive(phase)
 
-  if (phase === "ChampSelect" && liveGame.value?.phase !== "ChampSelect") {
-    liveGame.value = null
-    liveError.value = ""
-  } else if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
+  if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
     liveError.value = ""
   }
 
@@ -1729,6 +1782,7 @@ onUnmounted(() => {
           :game-assets="gameAssets"
           :loading="liveLoading"
           :error="liveError"
+          @open-player="openLivePlayerDrillTab"
         />
       </section>
 
