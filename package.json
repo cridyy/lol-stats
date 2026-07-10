@@ -1,7 +1,7 @@
 {
   "name": "lol-stats",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "国服英雄联盟战绩统计工具",
   "type": "module",
   "scripts": {

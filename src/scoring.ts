@@ -222,7 +222,7 @@ function calculateRatingParts(
       participation: 15 * clamp01((metrics.killParticipation - 0.42) / 0.38),
       deathControl: 10 * survivalScore(metrics, 0.28, 0.22),
       roleFit: clamp01((role.finalWeights.tank + role.finalWeights.fighter) / 0.65),
-      efficiency: 9 * damageConversionScore(metrics, 0.65, 0.5),
+      efficiency: 9 * damageConversionScore(metrics, 0.65, 0.55),
       healing: 5 * clamp01(metrics.healingShare / 0.25),
       control: damageControl.control,
     }
@@ -233,9 +233,9 @@ function calculateRatingParts(
       pool: 79,
       maxMitigationWeight: 22,
       damageWeightRatio: 36 / 58,
-      damageTarget: 0.28,
+      damageTarget: 0.3,
       efficiencyBase: 0.72,
-      efficiencyRange: 0.58,
+      efficiencyRange: 0.63,
       mitigationTargetShare: 0.27,
       mitigationTargetPerDeath: 1.08,
       mitigationShareStart: 0.16,
@@ -265,9 +265,10 @@ function calculateRatingParts(
         pool: 63,
         maxMitigationWeight: 0,
         damageWeightRatio: 28 / 55,
-        damageTarget: 0.3,
+        damageWeightShift: 3,
+        damageTarget: 0.32,
         efficiencyBase: 0.78,
-        efficiencyRange: 0.57,
+        efficiencyRange: 0.62,
         mitigationTargetShare: 0.22,
         mitigationTargetPerDeath: 1.25,
         mitigationShareStart: 0.22,
@@ -288,7 +289,7 @@ function calculateRatingParts(
       participation: 14 * clamp01((metrics.killParticipation - 0.45) / 0.35),
       killQuality: 9 * killQualityScore(metrics),
       survival: 8 * survivalScore(metrics, 0.2, 0.18),
-      economy: 6 * damageConversionScore(metrics, 0.75, 0.55),
+      economy: 6 * damageConversionScore(metrics, 0.75, 0.65),
     }
   }
 
@@ -311,9 +312,10 @@ function calculateRatingParts(
     pool: 69,
     maxMitigationWeight: 20,
     damageWeightRatio: 28 / 55,
-    damageTarget: 0.3,
+    damageWeightShift: 3,
+    damageTarget: 0.32,
     efficiencyBase: 0.78,
-    efficiencyRange: 0.57,
+    efficiencyRange: 0.62,
     mitigationTargetShare: 0.22,
     mitigationTargetPerDeath: 1.25,
     mitigationShareStart: 0.22,
@@ -333,7 +335,7 @@ function calculateRatingParts(
     survival: 8 * survivalScore(metrics, 0.2, 0.18),
     mitigation: combat.mitigation,
     ...dynamicControlPart(role, combat.control),
-    economy: 6 * damageConversionScore(metrics, 0.75, 0.55),
+    economy: 6 * damageConversionScore(metrics, 0.75, 0.65),
   }
 }
 
@@ -341,6 +343,7 @@ interface DynamicCombatConfig {
   pool: number
   maxMitigationWeight: number
   damageWeightRatio: number
+  damageWeightShift?: number
   damageTarget: number
   efficiencyBase: number
   efficiencyRange: number
@@ -372,8 +375,11 @@ function dynamicCombatContributionParts(
     config.mitigationTargetShare,
     config.mitigationTargetPerDeath,
   )
+  const comparisonDamageRatio = clamp01(
+    config.damageWeightRatio + (config.damageWeightShift || 0) / config.pool,
+  )
   const nonMitigationScore =
-    damageScore * config.damageWeightRatio + efficiencyScore * (1 - config.damageWeightRatio)
+    damageScore * comparisonDamageRatio + efficiencyScore * (1 - comparisonDamageRatio)
   const mitigationAdvantage = mitigationScore - nonMitigationScore
 
   let mitigationWeight = 0
@@ -406,7 +412,11 @@ function dynamicCombatContributionParts(
   }
 
   const baseWeight = config.pool - mitigationWeight - controlWeight
-  const damageWeight = baseWeight * config.damageWeightRatio
+  const damageWeightShift = Math.min(
+    config.damageWeightShift || 0,
+    baseWeight * (1 - config.damageWeightRatio),
+  )
+  const damageWeight = baseWeight * config.damageWeightRatio + damageWeightShift
   const efficiencyWeight = baseWeight - damageWeight
 
   return {

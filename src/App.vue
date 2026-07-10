@@ -157,6 +157,11 @@ const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.6.1": [
+    "提高各定位的伤转满分门槛：输出和法师 1.40、战士类 1.35、前排 1.20。",
+    "输出和法师从伤转权重中转移 3 分给伤害占比，提高实际输出贡献的重要性。",
+    "伤害占比满分线调整为输出和法师 32%、战士类 30%。",
+  ],
   "0.6.0": [
     "查战绩支持不限区服候选搜索，精确 Riot ID 可直接打开玩家总览。",
     "新增段位图标，并完善他人总览和详细战绩中的段位展示。",
