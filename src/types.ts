@@ -62,6 +62,16 @@ export interface RankedQueueEntry {
   isProvisional: boolean
 }
 
+export interface SummonerSearchCandidate {
+  puuid: string
+  gameName: string
+  tagLine: string
+  sgpServerId: string
+  profileIconId: number
+  summonerLevel: number
+  privacy: string
+}
+
 export interface PlayerSummary {
   games: number
   wins: number
@@ -223,6 +233,7 @@ export interface ChampionSummaryItem {
   id: number
   name: string
   alias: string
+  title: string
   squarePortraitPath: string
   roles: string[]
 }

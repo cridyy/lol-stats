@@ -33,6 +33,7 @@ import {
   loadSelfStatsWithProgress,
   searchPlayer,
   searchPlayerWithProgress,
+  searchSummonerCandidates,
 } from "./api"
 import LiveGamePanel from "./components/LiveGamePanel.vue"
 import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
@@ -57,6 +58,7 @@ import type {
   RecentGame,
   ShareSettings,
   StatsLoadProgress,
+  SummonerSearchCandidate,
 } from "./types"
 
 type PageKey = "current" | "live" | "search" | "details" | "tools"
@@ -129,6 +131,7 @@ const HIDDEN_DRILL_CACHE_MS = 10 * 60 * 1000
 const HIDDEN_DRILL_CACHE_LIMIT = 20
 const DEFAULT_WINDOW_SIZE: WindowStartupSize = { width: 1363, height: 836 }
 const MIN_WINDOW_SIZE: WindowStartupSize = { width: 1040, height: 680 }
+const ALL_SEARCH_SERVER_ID = "ALL"
 const DEFAULT_SEARCH_SERVER_ID = "TENCENT_HN1"
 const RECENT_PAGE_SIZE = 20
 const MAX_RECENT_DEPTH = 1000
@@ -154,6 +157,12 @@ const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.6.0": [
+    "查战绩支持不限区服候选搜索，精确 Riot ID 可直接打开玩家总览。",
+    "新增段位图标，并完善他人总览和详细战绩中的段位展示。",
+    "数据统计新增英雄搜索、日期筛选、前五英雄池和位置分布优化。",
+    "优化评分系统、死亡修正与详细战绩页面状态保持。",
+  ],
   "0.5.1": [
     "修复赛后客户端停留在结算页时，实时战绩被自动清空的问题。",
     "一局结束后会保留上一局实时战绩，直到进入下一局选人阶段。",
@@ -174,6 +183,7 @@ const emptyGameAssets = (): GameAssetBundle => ({
 })
 
 const searchServerOptions: SearchServerOption[] = [
+  { id: ALL_SEARCH_SERVER_ID, label: "不限" },
   { id: "TENCENT_HN1", label: "艾欧尼亚" },
   { id: "TENCENT_HN10", label: "黑色玫瑰" },
   { id: "TENCENT_NJ100", label: "联盟一区" },
@@ -226,6 +236,10 @@ const searchRecentLoading = ref(false)
 const searchStatsLoading = ref(false)
 const searchRankedLoading = ref(false)
 const searchError = ref("")
+const searchCandidateResults = ref<SummonerSearchCandidate[]>([])
+const searchCandidateLoading = ref(false)
+const searchCandidateError = ref("")
+let searchCandidateRequestKey = ""
 
 const liveGame = ref<LiveGameResponse | null>(null)
 const liveLoading = ref(false)
@@ -1382,8 +1396,32 @@ function changeCurrentStatsDepth(depth: number) {
   void loadCurrentStats()
 }
 
-function runSearch(query = searchInput.value, sgpServerId = selectedSearchServerId.value) {
-  const text = query.trim()
+function isDirectSearchText(text: string) {
+  if (isProbablyPuuidText(text)) return true
+  const [gameName, tagLine] = text.split("#")
+  return Boolean(gameName?.trim() && tagLine?.trim())
+}
+
+function normalizeSearchInputText(value: string) {
+  return value.trim().replace(/[＃﹟]/g, "#").replace(/[\u200B\uFEFF]/g, "")
+}
+
+function isProbablyPuuidText(text: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    text.trim(),
+  )
+}
+
+function candidateRiotId(candidate: SummonerSearchCandidate) {
+  return `${candidate.gameName}#${candidate.tagLine}`
+}
+
+function isAllSearchServer(sgpServerId: string) {
+  return sgpServerId === ALL_SEARCH_SERVER_ID
+}
+
+function openSearchOverview(query: string, sgpServerId: string, historyLabel = query) {
+  const text = normalizeSearchInputText(query)
   if (!text) return
   const normalizedServerId = normalizeSearchServerId(sgpServerId)
 
@@ -1400,7 +1438,74 @@ function runSearch(query = searchInput.value, sgpServerId = selectedSearchServer
   searchRecentDepth.value = RECENT_PAGE_SIZE
   searchRecentHasMore.value = true
   searchError.value = ""
-  saveSearchHistory(text, normalizedServerId)
+  searchCandidateError.value = ""
+  saveSearchHistory(historyLabel.trim() || text, normalizedServerId)
+}
+
+async function runSearch(query = searchInput.value, sgpServerId = selectedSearchServerId.value) {
+  const text = normalizeSearchInputText(query)
+  if (!text) return
+  const normalizedServerId = normalizeSearchServerId(sgpServerId)
+
+  selectedSearchServerId.value = normalizedServerId
+  searchInput.value = text
+
+  if (!isAllSearchServer(normalizedServerId) && isDirectSearchText(text)) {
+    searchCandidateResults.value = []
+    openSearchOverview(text, normalizedServerId)
+    return
+  }
+
+  navigateToPage("search")
+  activeSearchQuery.value = ""
+  activeSearchServerId.value = normalizedServerId
+  searchRecentStats.value = null
+  searchFullStats.value = null
+  searchRankedStats.value = null
+  searchRankedLoading.value = false
+  searchRankedRequestKey = ""
+  searchRecentDepth.value = RECENT_PAGE_SIZE
+  searchRecentHasMore.value = true
+  searchError.value = ""
+  searchCandidateError.value = ""
+  searchCandidateResults.value = []
+
+  if (isAllSearchServer(normalizedServerId) && isProbablyPuuidText(text)) {
+    searchCandidateError.value = "PUUID 查询需要先选择具体区服"
+    return
+  }
+
+  const requestKey = `${normalizedServerId}:${text}:${Date.now()}`
+  searchCandidateRequestKey = requestKey
+  searchCandidateLoading.value = true
+
+  try {
+    await ensureClientReady()
+    const candidates = await searchSummonerCandidates(text, normalizedServerId)
+    if (searchCandidateRequestKey === requestKey) {
+      searchCandidateResults.value = candidates
+      if (!candidates.length) {
+        searchCandidateError.value = isAllSearchServer(normalizedServerId)
+          ? "没有找到这个名字在任一区服的召唤师"
+          : "没有找到这个名字在当前区服的召唤师"
+      }
+    }
+  } catch (error) {
+    if (searchCandidateRequestKey === requestKey) {
+      searchCandidateError.value = errorMessage(error)
+      notifyError("候选召唤师读取失败", error)
+    }
+  } finally {
+    if (searchCandidateRequestKey === requestKey) {
+      searchCandidateLoading.value = false
+    }
+  }
+}
+
+function openSearchCandidate(candidate: SummonerSearchCandidate) {
+  const label = candidateRiotId(candidate)
+  searchInput.value = label
+  openSearchOverview(label, candidate.sgpServerId, label)
 }
 
 function returnToSearchHome() {
@@ -1807,8 +1912,39 @@ onUnmounted(() => {
               </select>
               <Search :size="18" />
               <input v-model="searchInput" placeholder="GameName#Tag 或 PUUID" @keyup.enter="runSearch()" />
-              <button @click="runSearch()" :disabled="!searchInput.trim()">搜索</button>
+              <button @click="runSearch()" :disabled="!searchInput.trim() || searchCandidateLoading">
+                <LoaderCircle v-if="searchCandidateLoading" class="spin" :size="15" />
+                <span v-else>搜索</span>
+              </button>
             </div>
+
+            <section class="candidate-panel" v-if="searchCandidateLoading || searchCandidateError || searchCandidateResults.length">
+              <div class="candidate-title">
+                <strong>候选召唤师</strong>
+                <span>{{ searchServerLabel(selectedSearchServerId) }}</span>
+              </div>
+              <div class="candidate-state" v-if="searchCandidateLoading">
+                <LoaderCircle class="spin" :size="16" />
+                正在搜索当前区服
+              </div>
+              <div class="candidate-state error" v-else-if="searchCandidateError">
+                {{ searchCandidateError }}
+              </div>
+              <div class="candidate-list" v-else>
+                <button
+                  v-for="candidate in searchCandidateResults"
+                  :key="`${candidate.sgpServerId}:${candidate.puuid}`"
+                  class="candidate-item"
+                  @click="openSearchCandidate(candidate)"
+                >
+                  <div>
+                    <strong>{{ candidate.gameName }}</strong>
+                    <span>#{{ candidate.tagLine }}</span>
+                  </div>
+                  <em>{{ searchServerLabel(candidate.sgpServerId) }} · Lv.{{ candidate.summonerLevel || "-" }}</em>
+                </button>
+              </div>
+            </section>
 
             <div class="history" v-if="searchHistory.length">
               <div class="history-title">历史查询记录</div>
@@ -1875,7 +2011,10 @@ onUnmounted(() => {
                 </select>
                 <Search :size="16" />
                 <input v-model="searchInput" placeholder="GameName#Tag 或 PUUID" @keyup.enter="runSearch()" />
-                <button @click="runSearch()" :disabled="!searchInput.trim()">搜索</button>
+                <button @click="runSearch()" :disabled="!searchInput.trim() || searchCandidateLoading">
+                  <LoaderCircle v-if="searchCandidateLoading" class="spin" :size="14" />
+                  <span v-else>搜索</span>
+                </button>
               </div>
             </div>
           </template>
@@ -2368,6 +2507,109 @@ button:disabled {
 .search-box.compact {
   width: min(620px, 54vw);
   box-shadow: none;
+}
+
+.candidate-panel {
+  display: flex;
+  width: min(560px, 100%);
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 14px 34px rgba(32, 67, 73, 0.08);
+  padding: 12px;
+}
+
+.candidate-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.candidate-title strong {
+  color: #1f2a2e;
+  font-size: 14px;
+}
+
+.candidate-title span {
+  color: #718087;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.candidate-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 46px;
+  color: #53656b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.candidate-state.error {
+  color: #a64d4b;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.candidate-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #dce7e4;
+  border-radius: 8px;
+  color: #20333a;
+  background: #f8fbfa;
+  cursor: pointer;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.candidate-item:hover {
+  border-color: #a7ccc4;
+  background: #edf5f3;
+}
+
+.candidate-item div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.candidate-item strong {
+  overflow: hidden;
+  color: #1f3f39;
+  font-size: 15px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candidate-item span {
+  color: #4f7770;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.candidate-item em {
+  flex: 0 0 auto;
+  color: #718087;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 850;
 }
 
 .search-toolbar {

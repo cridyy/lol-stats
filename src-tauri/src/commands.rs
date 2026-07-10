@@ -12,7 +12,7 @@ use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ClientAuth, ConnectionStatus, GameAssetBundle,
     GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LivePremadeMarker, LiveTeam,
     MatchDetailResponse, PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse,
-    RecentGame, SafeClientInfo, SummonerInfo,
+    RecentGame, SafeClientInfo, SummonerInfo, SummonerSearchCandidate,
 };
 use crate::services::stats::{
     load_match_detail as load_match_detail_service, load_player_stats,
@@ -30,6 +30,17 @@ const PREMADE_HISTORY_THRESHOLD: usize = 3;
 const PREMADE_GROUP_IDS: [&str; 10] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 const UPDATE_MANIFEST_URL: &str = "https://gitee.com/Crescenre/lol-stats/raw/main/update.json";
 const UPDATE_DOWNLOAD_PAGE_URL: &str = "https://crescendum.lanzout.com/b00rp145sh";
+const ALL_SEARCH_SERVER_ID: &str = "ALL";
+const ALL_SEARCH_SGP_SERVER_IDS: [&str; 8] = [
+    "TENCENT_HN1",
+    "TENCENT_HN10",
+    "TENCENT_NJ100",
+    "TENCENT_GZ100",
+    "TENCENT_CQ100",
+    "TENCENT_TJ100",
+    "TENCENT_TJ101",
+    "TENCENT_BGP2",
+];
 
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -492,6 +503,114 @@ pub async fn load_lcu_assets(
 }
 
 #[tauri::command]
+pub async fn search_summoner_candidates(
+    query: String,
+    sgp_server_id: Option<String>,
+) -> Result<Vec<SummonerSearchCandidate>, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let query = normalize_query_text(&query);
+    let query = query.as_str();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let riot = clients.riot.as_ref().ok_or_else(|| {
+        app_error(AppError::RiotClientUnavailable(
+            "Riot Client 未连接，无法搜索召唤师候选".to_string(),
+        ))
+    })?;
+    let (game_name, tag_line) = query
+        .split_once('#')
+        .map(|(name, tag)| (name.trim(), Some(tag.trim())))
+        .unwrap_or((query, None));
+    let target_name = normalize_search_name(game_name);
+    let target_tag = tag_line.map(normalize_search_name);
+    let raw_sgp_server_id = sgp_server_id
+        .as_deref()
+        .map(crate::services::sgp::normalize_sgp_server_id);
+    let search_all_servers = raw_sgp_server_id
+        .as_deref()
+        .is_some_and(|id| id.eq_ignore_ascii_case(ALL_SEARCH_SERVER_ID));
+    let target_server_ids = if search_all_servers {
+        ALL_SEARCH_SGP_SERVER_IDS
+            .iter()
+            .map(|server_id| (*server_id).to_string())
+            .collect::<Vec<_>>()
+    } else {
+        vec![crate::services::sgp::resolve_sgp_server_id(
+            &clients.auth,
+            raw_sgp_server_id.as_deref(),
+        )]
+    };
+
+    let mut aliases = riot
+        .lookup_alias(game_name, tag_line)
+        .await
+        .map_err(app_error)?;
+    aliases.retain(|alias| {
+        normalize_search_name(&alias.alias.game_name) == target_name
+            && target_tag
+                .as_ref()
+                .map(|tag| normalize_search_name(&alias.alias.tag_line) == *tag)
+                .unwrap_or(true)
+            && is_real_puuid(&alias.puuid)
+    });
+
+    let mut seen = HashSet::new();
+    aliases.retain(|alias| seen.insert(normalize_puuid(&alias.puuid)));
+    if aliases.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let puuids = aliases
+        .iter()
+        .map(|alias| alias.puuid.clone())
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for server_id in target_server_ids {
+        let sgp = match crate::services::sgp::SgpClient::new(
+            &clients.lcu,
+            &clients.auth,
+            Some(&server_id),
+        )
+        .await
+        {
+            Ok(sgp) => sgp,
+            Err(_) if search_all_servers => continue,
+            Err(error) => return Err(app_error(error)),
+        };
+
+        let summoners = match sgp.summoners_by_puuids(&puuids).await {
+            Ok(summoners) => summoners,
+            Err(_) if search_all_servers => continue,
+            Err(error) => return Err(app_error(error)),
+        };
+        let summoner_map = summoners
+            .into_iter()
+            .map(|summoner| (normalize_puuid(&summoner.puuid), summoner))
+            .collect::<HashMap<_, _>>();
+
+        for alias in &aliases {
+            let Some(summoner) = summoner_map.get(&normalize_puuid(&alias.puuid)) else {
+                continue;
+            };
+
+            candidates.push(SummonerSearchCandidate {
+                puuid: alias.puuid.clone(),
+                game_name: alias.alias.game_name.clone(),
+                tag_line: alias.alias.tag_line.clone(),
+                sgp_server_id: server_id.clone(),
+                profile_icon_id: summoner.profile_icon_id,
+                summoner_level: summoner.summoner_level,
+                privacy: summoner.privacy.clone(),
+            });
+        }
+    }
+
+    Ok(candidates)
+}
+
+#[tauri::command]
 pub async fn search_player(
     query: String,
     depth: usize,
@@ -792,6 +911,8 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
 }
 
 async fn resolve_summoner(clients: &Clients, query: &str) -> AppResult<SummonerInfo> {
+    let query = normalize_query_text(query);
+    let query = query.as_str();
     if query.is_empty() {
         return Err(AppError::PlayerNotFound("搜索内容为空".to_string()));
     }
@@ -1190,6 +1311,19 @@ fn assign_premade_group(
 
 fn normalize_puuid(puuid: &str) -> String {
     puuid.to_ascii_lowercase()
+}
+
+fn normalize_search_name(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn normalize_query_text(value: &str) -> String {
+    value
+        .trim()
+        .replace('＃', "#")
+        .replace('﹟', "#")
+        .replace('\u{FEFF}', "")
+        .replace('\u{200B}', "")
 }
 
 /// 实时战绩使用当前对局模式筛选历史记录，最多从近 150 场里凑 100 场。

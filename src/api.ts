@@ -8,6 +8,7 @@ import type {
   MatchDetailResponse,
   PlayerStatsResponse,
   RankedStatsResponse,
+  SummonerSearchCandidate,
 } from "./types"
 
 export function checkAppUpdate() {
@@ -48,6 +49,10 @@ export function loadLcuAsset(path: string) {
 
 export function loadLcuAssets(paths: string[]) {
   return invoke<Record<string, string>>("load_lcu_assets", { paths })
+}
+
+export function searchSummonerCandidates(query: string, sgpServerId?: string) {
+  return invoke<SummonerSearchCandidate[]>("search_summoner_candidates", { query, sgpServerId })
 }
 
 export function loadSelfStats(depth: number, forceRefresh = false, persistCache = true) {

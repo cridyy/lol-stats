@@ -20,6 +20,7 @@ pub fn run() {
             commands::load_lcu_assets,
             commands::load_self_stats,
             commands::load_self_stats_with_progress,
+            commands::search_summoner_candidates,
             commands::search_player,
             commands::search_player_with_progress,
             commands::load_match_detail,

@@ -8,7 +8,7 @@ use super::error::{AppError, AppResult};
 use super::lcu::LcuClient;
 use super::models::{
     ClientAuth, Game, IdentityPlayer, Participant, ParticipantIdentity, ParticipantStats,
-    ParticipantTimeline, RankedQueueEntry, RankedQueueMap, RankedStatsResponse,
+    ParticipantTimeline, RankedQueueEntry, RankedQueueMap, RankedStatsResponse, SummonerInfo,
 };
 
 const USER_AGENT: &str = "LeagueOfLegendsClient/14.13.596.7996 (rcp-be-lol-match-history)";
@@ -85,6 +85,43 @@ impl SgpClient {
         let ranked = parse_sgp_json::<SgpRankedStats>(response, "SGP 段位").await?;
 
         Ok(sgp_ranked_stats_to_ranked_response(ranked))
+    }
+
+    pub async fn summoners_by_puuids(&self, puuids: &[String]) -> AppResult<Vec<SummonerInfo>> {
+        if puuids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sub_id = self
+            .sgp_server_id
+            .strip_prefix("TENCENT_")
+            .unwrap_or(&self.sgp_server_id)
+            .to_ascii_lowercase();
+
+        let response = self
+            .http
+            .post(format!(
+                "{}/summoner-ledge/v1/regions/{}/summoners/puuids",
+                self.base_url, sub_id
+            ))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.league_session_token),
+            )
+            .header("User-Agent", USER_AGENT)
+            .json(puuids)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(AppError::SgpUnavailable(format!(
+                "SGP 召唤师查询返回 {}",
+                response.status()
+            )));
+        }
+
+        let summoners = parse_sgp_json::<Vec<SgpSummoner>>(response, "SGP 召唤师").await?;
+        Ok(summoners.into_iter().map(sgp_summoner_to_lcu).collect())
     }
 
     pub async fn match_history(
@@ -299,6 +336,25 @@ struct SgpRankedQueue {
     previous_season_achieved_tier: String,
     #[serde(default, alias = "previousSeasonAchievedDivision")]
     previous_season_achieved_rank: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpSummoner {
+    #[serde(default)]
+    id: u64,
+    #[serde(default)]
+    puuid: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    internal_name: String,
+    #[serde(default)]
+    profile_icon_id: u32,
+    #[serde(default)]
+    level: u32,
+    #[serde(default)]
+    privacy: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -566,6 +622,19 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
         queue_id: game.queue_id,
         participant_identities: identities,
         participants,
+    }
+}
+
+fn sgp_summoner_to_lcu(summoner: SgpSummoner) -> SummonerInfo {
+    SummonerInfo {
+        display_name: summoner.name,
+        internal_name: summoner.internal_name,
+        profile_icon_id: summoner.profile_icon_id,
+        puuid: summoner.puuid,
+        summoner_id: summoner.id,
+        summoner_level: summoner.level,
+        privacy: summoner.privacy,
+        ..Default::default()
     }
 }
 

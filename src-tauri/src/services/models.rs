@@ -316,6 +316,8 @@ pub struct ChampionSummaryItem {
     #[serde(default)]
     pub alias: String,
     #[serde(default)]
+    pub title: String,
+    #[serde(default)]
     pub square_portrait_path: String,
     #[serde(default)]
     pub roles: Vec<String>,
@@ -665,4 +667,16 @@ pub struct RiotAlias {
 pub struct RiotAliasName {
     pub game_name: String,
     pub tag_line: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummonerSearchCandidate {
+    pub puuid: String,
+    pub game_name: String,
+    pub tag_line: String,
+    pub sgp_server_id: String,
+    pub profile_icon_id: u32,
+    pub summoner_level: u32,
+    pub privacy: String,
 }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from "vue"
-import { searchPlayer } from "../api"
+import { ref, watch } from "vue"
+import { loadRankedStats, searchPlayer } from "../api"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
   OpenMatchPayload,
   PlayerStatsResponse,
+  RankedStatsResponse,
   ShareSettings,
 } from "../types"
 import RecordView from "./RecordView.vue"
@@ -28,11 +29,13 @@ const emit = defineEmits<{
 
 const recentStats = ref<PlayerStatsResponse | null>(null)
 const fullStats = ref<PlayerStatsResponse | null>(null)
+const rankedStats = ref<RankedStatsResponse | null>(null)
 const recentDepth = ref(RECENT_PAGE_SIZE)
 const recentHasMore = ref(true)
 const statsDepth = ref(DEFAULT_STATS_DEPTH)
 const recentLoading = ref(false)
 const statsLoading = ref(false)
+const rankedLoading = ref(false)
 const error = ref("")
 
 function errorMessage(error: unknown) {
@@ -106,6 +109,20 @@ async function loadStats(forceRefresh = false) {
   }
 }
 
+async function loadRanked(forceRefresh = false) {
+  if (rankedStats.value && !forceRefresh) return
+  if (rankedLoading.value) return
+  rankedLoading.value = true
+
+  try {
+    rankedStats.value = await loadRankedStats(props.query, props.sgpServerId)
+  } catch {
+    rankedStats.value = null
+  } finally {
+    rankedLoading.value = false
+  }
+}
+
 function changeStatsDepth(depth: number) {
   const nextDepth = Math.min(1000, Math.max(50, Math.round(Number(depth) || DEFAULT_STATS_DEPTH)))
   if (nextDepth === statsDepth.value && fullStats.value) return
@@ -114,12 +131,23 @@ function changeStatsDepth(depth: number) {
   fullStats.value = null
   void loadStats()
 }
+
+watch(
+  () => [props.query, props.sgpServerId],
+  () => {
+    rankedStats.value = null
+    void loadRanked(true)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <RecordView
     :recent-stats="recentStats"
     :full-stats="fullStats"
+    :ranked-stats="rankedStats"
+    :ranked-loading="rankedLoading"
     :share-settings="shareSettings"
     :champions="champions"
     :game-assets="gameAssets"

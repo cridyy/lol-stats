@@ -12,8 +12,11 @@ pub enum AppError {
     #[error("发现了客户端进程，但没有读到可用的 LCU 连接参数")]
     ClientAuthNotFound,
 
-    #[error("未连接到国服英雄联盟客户端：{0}")]
+    #[error("客户端接口请求失败：{0}")]
     LcuUnavailable(String),
+
+    #[error("输入格式不正确：{0}")]
+    InvalidInput(String),
 
     #[error("Riot Client 接口不可用：{0}")]
     RiotClientUnavailable(String),

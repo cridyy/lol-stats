@@ -37,6 +37,7 @@ const emit = defineEmits<{
 }>()
 
 const selectedChampionId = ref<number | null>(null)
+const championSearch = ref("")
 const shareBusy = ref<"champions" | "games" | null>(null)
 const statsRootRef = ref<HTMLElement | null>(null)
 const tableWrapRef = ref<HTMLElement | null>(null)
@@ -52,8 +53,18 @@ const selectedChampionGames = computed(() => {
 const selectedChampionLabel = computed(() =>
   championName(props.champions, selectedChampionId.value || undefined),
 )
+const topChampionIds = computed(
+  () => props.stats?.championStats.slice(0, 5).map((champ) => champ.championId) || [],
+)
+const filteredChampionStats = computed(() => {
+  const champions = props.stats?.championStats || []
+  const keyword = normalizeSearchText(championSearch.value)
+  if (!keyword) return champions
+
+  return champions.filter((champ) => championSearchText(champ.championId).includes(keyword))
+})
 const shareChampionStats = computed(
-  () => props.stats?.championStats.slice(0, props.shareSettings.championAnalysisLimit) || [],
+  () => filteredChampionStats.value.slice(0, props.shareSettings.championAnalysisLimit),
 )
 const shareSelectedChampionGames = computed(() =>
   selectedChampionGames.value.slice(0, props.shareSettings.championGamesAnalysisLimit),
@@ -83,8 +94,28 @@ const abilityCards = computed(() => [
   playerProfile.value.abilities.support,
 ])
 const roleBarColors = ["#2f78d6", "#d08a20", "#d44b7a", "#8b5cf6", "#d34f4f", "#5c6f7a"]
+const displayRoleDistribution = computed(() => {
+  const grouped = new Map<string, { games: number; wins: number }>()
+  for (const role of playerProfile.value.roleDistribution) {
+    const label = roleBarLabel(role.label)
+    const current = grouped.get(label) || { games: 0, wins: 0 }
+    current.games += role.games
+    current.wins += role.wins
+    grouped.set(label, current)
+  }
+
+  return Array.from(grouped.entries())
+    .map(([label, value]) => ({
+      label,
+      games: value.games,
+      wins: value.wins,
+      rate: ratio(value.games, playerProfile.value.games),
+      winRate: ratio(value.wins, value.games),
+    }))
+    .sort((a, b) => b.games - a.games || b.rate - a.rate)
+})
 const roleBars = computed(() =>
-  playerProfile.value.roleDistribution.slice(0, roleBarColors.length).map((role, index) => ({
+  displayRoleDistribution.value.slice(0, roleBarColors.length).map((role, index) => ({
     ...role,
     color: roleBarColors[index],
     width: `${Math.max(role.rate * 100, 4)}%`,
@@ -98,10 +129,33 @@ function indexAssets(entries: GameAssetBundle["items"]) {
   }, {})
 }
 
+function normalizeSearchText(value: string) {
+  return value.toLowerCase().replace(/[\s·.'’_-]/g, "")
+}
+
+function championSearchText(championId: number) {
+  const champion = props.champions[championId]
+  return normalizeSearchText(
+    [
+      champion?.name,
+      champion?.title,
+      champion?.alias,
+      championName(props.champions, championId),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  )
+}
+
+function roleBarLabel(label: string) {
+  return ["战士", "刺客", "纯刺客", "战士刺客", "半肉刺客"].includes(label) ? "战刺" : label
+}
+
 watch(
   () => props.stats,
   () => {
     selectedChampionId.value = null
+    championSearch.value = ""
   },
 )
 
@@ -402,9 +456,11 @@ function errorMessage(error: unknown) {
           <div class="metric">
             <span>英雄池</span>
             <strong>{{ stats.summary.uniqueChampions }}</strong>
-            <small class="metric-avatar">
+            <small class="metric-avatar metric-avatar-stack">
               <ChampionAvatar
-                :champion-id="stats.summary.mostPlayedChampionId"
+                v-for="championId in topChampionIds"
+                :key="championId"
+                :champion-id="championId"
                 :champions="champions"
                 :size="30"
               />
@@ -493,14 +549,25 @@ function errorMessage(error: unknown) {
       <section class="panel table-panel" v-if="!selectedChampionId">
         <div class="panel-heading">
           <div class="section-title">单英雄战绩</div>
-          <button
-            class="share-action"
-            :disabled="shareBusy !== null || shareChampionStats.length === 0"
-            @click="copyChampionStatsImage"
-          >
-            <ClipboardCopy :size="14" />
-            {{ shareBusy === "champions" ? "生成中" : `分享前 ${shareChampionStats.length} 个` }}
-          </button>
+          <div class="panel-heading-actions">
+            <label class="champion-search">
+              <input
+                v-model="championSearch"
+                type="search"
+                placeholder="搜索英雄 / 称号"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            <button
+              class="share-action"
+              :disabled="shareBusy !== null || shareChampionStats.length === 0"
+              @click="copyChampionStatsImage"
+            >
+              <ClipboardCopy :size="14" />
+              {{ shareBusy === "champions" ? "生成中" : `分享前 ${shareChampionStats.length} 个` }}
+            </button>
+          </div>
         </div>
         <div class="table-wrap" ref="tableWrapRef">
           <table>
@@ -521,7 +588,7 @@ function errorMessage(error: unknown) {
             </thead>
             <tbody>
               <tr
-                v-for="champ in stats.championStats"
+                v-for="champ in filteredChampionStats"
                 :key="champ.championId"
                 class="champion-row"
                 tabindex="0"
@@ -602,6 +669,9 @@ function errorMessage(error: unknown) {
               </tr>
             </tbody>
           </table>
+          <div class="table-empty" v-if="filteredChampionStats.length === 0">
+            没有匹配到英雄
+          </div>
         </div>
       </section>
 
@@ -991,6 +1061,14 @@ function errorMessage(error: unknown) {
   min-height: 32px;
 }
 
+.metric-avatar-stack {
+  gap: 4px;
+}
+
+.metric-avatar-stack :deep(.champion-avatar) {
+  flex: 0 0 auto;
+}
+
 .profile-panel {
   display: flex;
   flex-direction: column;
@@ -1319,6 +1397,38 @@ function errorMessage(error: unknown) {
   margin-bottom: 0;
 }
 
+.panel-heading-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.champion-search {
+  display: inline-flex;
+  min-width: 190px;
+  align-items: center;
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  background: #f8fbfa;
+  padding: 7px 10px;
+}
+
+.champion-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: #20333a;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.champion-search input::placeholder {
+  color: #8a9aa0;
+}
+
 .share-action {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1340,9 +1450,19 @@ function errorMessage(error: unknown) {
 }
 
 .table-wrap {
+  position: relative;
   min-height: 420px;
   max-height: 560px;
   overflow: auto;
+}
+
+.table-empty {
+  display: grid;
+  min-height: 160px;
+  place-items: center;
+  color: #718087;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 table {

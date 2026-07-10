@@ -12,6 +12,7 @@ import type {
   RecentGame,
   ShareSettings,
 } from "../types"
+import { rankIconLarge } from "../rankIcons"
 import { mitigationValue, riotId, teamMitigationValue } from "../utils"
 import MatchHistoryPanel from "./MatchHistoryPanel.vue"
 import StatsPanel from "./StatsPanel.vue"
@@ -54,7 +55,11 @@ const activeTab = ref<RecordTab>("recent")
 const selectedQueue = ref<QueueFilterKey | null>(null)
 const statsDepthInput = ref(String(props.statsDepth))
 const statsDepthPickerOpen = ref(false)
+const statsDateStart = ref("")
+const statsDateEnd = ref("")
+const statsDatePickerOpen = ref(false)
 let statsDepthCloseTimer = 0
+let statsDateCloseTimer = 0
 
 const rankedQueueIds = new Set([420, 440])
 const normalQueueIds = new Set([400, 430, 480, 490])
@@ -112,7 +117,20 @@ const activeQueueOption = computed(() =>
 
 const filteredStats = computed(() => {
   if (!props.fullStats || !activeQueueOption.value) return null
-  return buildFilteredStats(props.fullStats, activeQueueOption.value.matches)
+  const queueOption = activeQueueOption.value
+  return buildFilteredStats(
+    props.fullStats,
+    (game) => queueOption.matches(game) && dateFilterMatches(game),
+  )
+})
+
+const statsDateLabel = computed(() => {
+  if (!statsDateStart.value && !statsDateEnd.value) return "不限"
+  if (statsDateStart.value && statsDateEnd.value) {
+    return `${formatDateInputLabel(statsDateStart.value)} - ${formatDateInputLabel(statsDateEnd.value)}`
+  }
+  if (statsDateStart.value) return `${formatDateInputLabel(statsDateStart.value)} 起`
+  return `至 ${formatDateInputLabel(statsDateEnd.value)}`
 })
 
 const rankCards = computed(() => {
@@ -195,6 +213,60 @@ function selectStatsDepth(depth: number) {
 function normalizeStatsDepthInput(event: Event) {
   const input = event.target as HTMLInputElement
   statsDepthInput.value = input.value.replace(/\D/g, "").slice(0, 4)
+}
+
+function toggleStatsDatePicker() {
+  window.clearTimeout(statsDateCloseTimer)
+  statsDatePickerOpen.value = !statsDatePickerOpen.value
+}
+
+function openStatsDatePicker() {
+  window.clearTimeout(statsDateCloseTimer)
+  statsDatePickerOpen.value = true
+}
+
+function scheduleStatsDatePickerClose() {
+  window.clearTimeout(statsDateCloseTimer)
+  statsDateCloseTimer = window.setTimeout(() => {
+    statsDatePickerOpen.value = false
+  }, 120)
+}
+
+function closeStatsDatePicker() {
+  window.clearTimeout(statsDateCloseTimer)
+  statsDatePickerOpen.value = false
+}
+
+function clearStatsDateFilter() {
+  statsDateStart.value = ""
+  statsDateEnd.value = ""
+  closeStatsDatePicker()
+}
+
+function dateFilterMatches(game: RecentGame) {
+  const timestamp = game.gameCreation
+  const start = dateStartTimestamp(statsDateStart.value)
+  const end = dateEndTimestamp(statsDateEnd.value)
+  if (start !== null && timestamp < start) return false
+  if (end !== null && timestamp > end) return false
+  return true
+}
+
+function dateStartTimestamp(value: string) {
+  if (!value) return null
+  const date = new Date(`${value}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date.getTime()
+}
+
+function dateEndTimestamp(value: string) {
+  if (!value) return null
+  const date = new Date(`${value}T23:59:59.999`)
+  return Number.isNaN(date.getTime()) ? null : date.getTime()
+}
+
+function formatDateInputLabel(value: string) {
+  const [, month = "", day = ""] = value.split("-")
+  return month && day ? `${Number(month)}月${Number(day)}日` : value
 }
 
 function refreshActiveTab() {
@@ -399,8 +471,11 @@ function round2(value: number) {
         :key="card.label"
         :class="['rank-card', rankTierClass(card.tier)]"
       >
-        <span>{{ card.label }}</span>
-        <strong>{{ card.value }}</strong>
+        <img class="rank-card-icon" :src="rankIconLarge(card.tier)" :alt="card.value" />
+        <div class="rank-card-text">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+        </div>
       </article>
     </section>
 
@@ -443,35 +518,61 @@ function round2(value: number) {
           >
             {{ option.label }}
           </button>
-          <label
-            class="stats-depth-control"
-            @focusin="openStatsDepthPicker"
-            @focusout="scheduleStatsDepthPickerClose"
-          >
-            <span>最大场次</span>
-            <input
-              v-model="statsDepthInput"
-              type="text"
-              inputmode="numeric"
-              pattern="[0-9]*"
-              autocomplete="off"
-              spellcheck="false"
-              :disabled="loading"
-              @click="openStatsDepthPicker"
-              @input="normalizeStatsDepthInput"
-              @keyup.enter="commitStatsDepth"
-            />
-            <div class="stats-depth-menu" v-if="statsDepthPickerOpen">
-              <button
-                v-for="depth in statsDepthOptions"
-                :key="depth"
-                type="button"
-                @mousedown.prevent="selectStatsDepth(depth)"
-              >
-                {{ depth }}
+          <div class="queue-tools">
+            <div
+              class="stats-date-control"
+              @focusin="openStatsDatePicker"
+              @focusout="scheduleStatsDatePickerClose"
+            >
+              <button type="button" class="stats-date-trigger" @click="toggleStatsDatePicker">
+                <span>日期</span>
+                <strong>{{ statsDateLabel }}</strong>
               </button>
+              <div class="stats-date-menu" v-if="statsDatePickerOpen">
+                <label>
+                  <span>起始日期</span>
+                  <input v-model="statsDateStart" type="date" :max="statsDateEnd || undefined" />
+                </label>
+                <label>
+                  <span>结束日期</span>
+                  <input v-model="statsDateEnd" type="date" :min="statsDateStart || undefined" />
+                </label>
+                <div class="stats-date-actions">
+                  <button type="button" @mousedown.prevent="clearStatsDateFilter">不限</button>
+                  <button type="button" @mousedown.prevent="closeStatsDatePicker">完成</button>
+                </div>
+              </div>
             </div>
-          </label>
+            <label
+              class="stats-depth-control"
+              @focusin="openStatsDepthPicker"
+              @focusout="scheduleStatsDepthPickerClose"
+            >
+              <span>最大场次</span>
+              <input
+                v-model="statsDepthInput"
+                type="text"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="loading"
+                @click="openStatsDepthPicker"
+                @input="normalizeStatsDepthInput"
+                @keyup.enter="commitStatsDepth"
+              />
+              <div class="stats-depth-menu" v-if="statsDepthPickerOpen">
+                <button
+                  v-for="depth in statsDepthOptions"
+                  :key="depth"
+                  type="button"
+                  @mousedown.prevent="selectStatsDepth(depth)"
+                >
+                  {{ depth }}
+                </button>
+              </div>
+            </label>
+          </div>
         </div>
 
         <StatsPanel
@@ -515,6 +616,16 @@ function round2(value: number) {
   gap: 8px;
 }
 
+.queue-tools {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .record-tabs button,
 .queue-tabs button,
 .queue-picker button {
@@ -542,7 +653,6 @@ function round2(value: number) {
   flex: 0 0 auto;
   align-items: center;
   gap: 7px;
-  margin-left: auto;
   border: 1px solid #d6e5e1;
   border-radius: 8px;
   color: #53656b;
@@ -550,11 +660,97 @@ function round2(value: number) {
   padding: 6px 8px;
 }
 
+.stats-date-control {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.stats-date-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  color: #53656b;
+  background: #ffffff;
+  cursor: pointer;
+  padding: 6px 9px;
+}
+
+.stats-date-trigger span,
 .stats-depth-control span {
   color: #63747a;
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
+}
+
+.stats-date-trigger strong {
+  max-width: 150px;
+  overflow: hidden;
+  color: #1f3f39;
+  font-size: 13px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-date-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 22;
+  display: grid;
+  min-width: 220px;
+  gap: 8px;
+  border: 1px solid #d6e5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 30px rgba(32, 67, 73, 0.16);
+  padding: 10px;
+}
+
+.stats-date-menu label {
+  display: grid;
+  gap: 5px;
+}
+
+.stats-date-menu label span {
+  color: #63747a;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.stats-date-menu input {
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  color: #1f3f39;
+  background: #f8fbfa;
+  font-size: 13px;
+  font-weight: 850;
+  padding: 7px 8px;
+}
+
+.stats-date-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.stats-date-actions button {
+  border-radius: 7px;
+  color: #315f58;
+  background: #edf5f3;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 8px 0;
+}
+
+.stats-date-actions button:hover {
+  color: #ffffff;
+  background: #1f5f56;
 }
 
 .stats-depth-control input {
@@ -653,15 +849,30 @@ function round2(value: number) {
   display: flex;
   min-width: 0;
   min-height: 54px;
-  flex-direction: column;
-  justify-content: center;
-  gap: 5px;
+  align-items: center;
+  gap: 9px;
   border: 1px solid #dce7e4;
   border-left: 4px solid var(--rank-accent);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 10px 24px rgba(32, 67, 73, 0.06);
   padding: 8px 10px;
+}
+
+.rank-card-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 8px rgba(32, 67, 73, 0.16));
+}
+
+.rank-card-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
 }
 
 .rank-card span {

@@ -448,26 +448,25 @@ function damageConversionScore(metrics: OutputRatingMetrics, base: number, range
   const rawScore = clamp01((metrics.effectiveDamageConversion - base) / range)
   if (rawScore <= 0) return 0
 
-  // High damage conversion is only reliable when deaths are controlled, or when
-  // the player dealt enough team damage to justify the risk. This prevents
-  // low-gold/high-death games from getting inflated by damage conversion alone.
+  // Deaths should correct inflated conversion, not erase a real high-damage carry game.
+  // At 30%+ team damage share, death pressure is fully forgiven.
   const deathPressure = clamp01((metrics.deathShare - 0.2) / 0.12)
-  const damageProtection = clamp01((metrics.damageShare - 0.24) / 0.12)
   const deathDamageGapRisk = clamp01((metrics.deathShare - metrics.damageShare - 0.02) / 0.12)
-  const feedRisk = Math.max(
-    deathPressure * (1 - damageProtection),
-    deathDamageGapRisk * (1 - damageProtection * 0.4),
-  )
-  const protectedFeedRisk = feedRisk * (1 - performanceProtection(metrics) * 0.65)
-  const retain = clamp(1 - protectedFeedRisk * 0.82, 0.18, 1)
+  const feedRisk = Math.max(deathPressure, deathDamageGapRisk)
+  const protectedFeedRisk = feedRisk * (1 - damageDeathProtection(metrics))
+  const retain = clamp(1 - protectedFeedRisk * 0.65, 0.6, 1)
 
   return rawScore * retain
 }
 
 function survivalScore(metrics: OutputRatingMetrics, start: number, range: number) {
   const rawPenalty = clamp01((metrics.deathShare - start) / range)
-  const protectedPenalty = rawPenalty * (1 - performanceProtection(metrics) * 0.65)
+  const protectedPenalty = rawPenalty * (1 - damageDeathProtection(metrics))
   return 1 - protectedPenalty
+}
+
+function damageDeathProtection(metrics: OutputRatingMetrics) {
+  return clamp01((metrics.damageShare - 0.2) / 0.1)
 }
 
 function performanceProtection(metrics: OutputRatingMetrics) {

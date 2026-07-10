@@ -60,6 +60,10 @@ impl LcuClient {
             return Err(AppError::PlayerNotFound(path.to_string()));
         }
 
+        if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+            return Err(lcu_unprocessable_entity_error(path));
+        }
+
         if !response.status().is_success() {
             return Err(AppError::LcuUnavailable(format!(
                 "{} 返回 {}",
@@ -81,6 +85,10 @@ impl LcuClient {
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
+        }
+
+        if response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+            return Err(lcu_unprocessable_entity_error(path));
         }
 
         if !response.status().is_success() {
@@ -200,9 +208,20 @@ impl LcuClient {
     }
 
     pub async fn champion_summary(&self) -> AppResult<Vec<ChampionSummaryItem>> {
-        let champions: Vec<ChampionSummaryItem> = self
+        let mut champions: Vec<ChampionSummaryItem> = self
             .get_json("/lol-game-data/assets/v1/champion-summary.json")
             .await?;
+
+        for champion in &mut champions {
+            if champion.id <= 0 || !champion.title.is_empty() {
+                continue;
+            }
+
+            let path = format!("/lol-game-data/assets/v1/champions/{}.json", champion.id);
+            if let Ok(detail) = self.get_json::<serde_json::Value>(&path).await {
+                champion.title = read_string_field(&detail, &["title", "titleTRA", "titleCn"]);
+            }
+        }
 
         // LCU 的 champion-summary 第一项通常是 id=-1 的 None 占位项。
         // 前端统计只需要真实英雄，过滤掉占位项也能避免无效数据进入映射表。
@@ -309,6 +328,16 @@ fn read_u32_field(value: &serde_json::Value, field: &str) -> Option<u32> {
     raw.as_u64()
         .and_then(|id| u32::try_from(id).ok())
         .or_else(|| raw.as_str()?.parse::<u32>().ok())
+}
+
+fn lcu_unprocessable_entity_error(path: &str) -> AppError {
+    if path.starts_with("/lol-summoner/v1/summoners?name=") {
+        return AppError::InvalidInput(
+            "召唤师名称格式不正确。Riot ID 请使用半角 #，例如 ivy#49164".to_string(),
+        );
+    }
+
+    AppError::InvalidInput(format!("客户端不接受这个请求参数：{path}"))
 }
 
 fn read_string_field(value: &serde_json::Value, fields: &[&str]) -> String {
