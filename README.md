@@ -130,13 +130,57 @@ npm run tauri build
 打包产物默认位于：
 
 ```text
-lol-stats/src-tauri/target/release/bundle/nsis/lol-stats_0.1.0_x64-setup.exe
+lol-stats/src-tauri/target/release/bundle/nsis/lol-stats_<版本号>_x64-setup.exe
 ```
 
 同时会生成 release 主程序：
 
 ```text
 lol-stats/src-tauri/target/release/lol-stats.exe
+```
+
+## 自动发布 Release
+
+提交代码并更新 `update.json` 后，可以用一条命令完成构建、推送标签、创建 GitHub/Gitee Release 和上传 NSIS 安装包：
+
+```pwsh
+npm run release:publish
+```
+
+发布脚本会自动执行以下检查和操作：
+
+- 校验 `package.json`、`Cargo.toml`、`tauri.conf.json` 与 `update.json` 的版本号一致。
+- 要求 Git 工作区没有未提交改动。
+- 执行 `npm run tauri build` 生成 NSIS 安装包。
+- 创建并推送 `v<版本号>` Git 标签。
+- 从 `update.json` 生成 Release 标题和更新说明。
+- 创建或更新 GitHub、Gitee Release，并覆盖上传同名安装包。
+- 在 Release 说明中写入安装包 SHA256。
+
+GitHub 会优先复用系统中的 GitHub 网页授权凭据，也支持环境变量 `GH_TOKEN` 或 `GITHUB_TOKEN`。
+
+Gitee API 不能直接使用普通 Git 推送密码。首次运行时，脚本会提示输入一次 Gitee 私人令牌，并使用 Windows 当前用户加密保存在：
+
+```text
+%LOCALAPPDATA%\lol-stats\release\gitee-token.txt
+```
+
+私人令牌可在 [Gitee 私人令牌页面](https://gitee.com/profile/personal_access_tokens) 创建，至少勾选 `projects` 仓库操作权限。后续发布不再需要输入。
+
+常用参数：
+
+```pwsh
+# 只发布 GitHub
+pwsh -NoLogo -NoProfile -File .\scripts\publish-release.ps1 -Target GitHub
+
+# 已经编译时跳过重复构建
+pwsh -NoLogo -NoProfile -File .\scripts\publish-release.ps1 -SkipBuild
+
+# 重新配置 Gitee 私人令牌
+pwsh -NoLogo -NoProfile -File .\scripts\publish-release.ps1 -Target Gitee -ResetGiteeToken
+
+# 只检查配置，不构建、不推送、不上传
+pwsh -NoLogo -NoProfile -File .\scripts\publish-release.ps1 -DryRun
 ```
 
 ## 数据来源与连接方式

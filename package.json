@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release:publish": "pwsh -NoLogo -NoProfile -File ./scripts/publish-release.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
