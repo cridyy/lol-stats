@@ -159,7 +159,8 @@ function Read-SavedGiteeToken {
     }
 
     try {
-        $secureToken = Get-Content -Path $giteeTokenPath -Raw | ConvertTo-SecureString
+        $encryptedToken = (Get-Content -Path $giteeTokenPath -Raw).Trim()
+        $secureToken = $encryptedToken | ConvertTo-SecureString
         return [System.Net.NetworkCredential]::new("", $secureToken).Password
     }
     catch {
@@ -355,10 +356,14 @@ function Publish-GiteeRelease {
             -Uri "$attachmentsUri/$($existingAttachment.id)?access_token=$encodedToken" | Out-Null
     }
 
-    Invoke-RestMethod `
+    $uploadedAttachment = Invoke-RestMethod `
         -Method Post `
-        -Uri $attachmentsUri `
-        -Form @{ access_token = $Token; file = Get-Item -LiteralPath $AssetPath } | Out-Null
+        -Uri "$attachmentsUri`?access_token=$encodedToken" `
+        -Form @{ file = (Get-Item -LiteralPath $AssetPath) }
+
+    if ($null -eq $uploadedAttachment -or $uploadedAttachment.name -ne $assetName) {
+        throw "Gitee 附件接口没有返回预期的安装包信息，上传结果无法确认。"
+    }
 
     Write-Host "Gitee 安装包上传完成：$assetName" -ForegroundColor Green
 }
