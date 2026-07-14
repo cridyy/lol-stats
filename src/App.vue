@@ -221,7 +221,6 @@ const settingsOpen = ref(false)
 const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
-const windowSizeDraft = ref<WindowStartupSize>({ ...savedStartupSize.value })
 const appCurrentVersion = ref("")
 const releaseNotesDialog = ref<ReleaseNotesDialog | null>(null)
 const updateDialog = ref<AppUpdateInfo | null>(null)
@@ -276,8 +275,6 @@ const progressOverlay = ref({
 })
 
 let unlistenProgress: UnlistenFn | null = null
-let unlistenWindowResize: UnlistenFn | null = null
-let windowSizeWatchTimer: number | null = null
 let liveRefreshTimer: number | null = null
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
@@ -322,16 +319,6 @@ const activeDrillTab = computed(
 )
 const canGoBack = computed(() => navigationHistoryIndex.value > 0)
 const canGoForward = computed(() => navigationHistoryIndex.value < navigationHistory.value.length - 1)
-const windowStartupSizeDirty = computed(
-  () =>
-    !windowSizeEquals(
-      normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value),
-      savedStartupSize.value,
-    ),
-)
-const windowStartupSizeIsDefault = computed(() =>
-  windowSizeEquals(savedStartupSize.value, DEFAULT_WINDOW_SIZE),
-)
 const liveAramkitChampionId = computed(() => {
   const game = liveGame.value
   if (!game) return null
@@ -490,21 +477,6 @@ function normalizeWindowSize(value: Partial<WindowStartupSize>, fallback: Window
   }
 }
 
-function windowSizeEquals(left: WindowStartupSize, right: WindowStartupSize) {
-  return left.width === right.width && left.height === right.height
-}
-
-async function applyWindowSizeInput() {
-  const nextSize = normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value)
-  windowSizeDraft.value = { ...nextSize }
-
-  try {
-    await setAppWindowSize(nextSize)
-  } catch (error) {
-    notifyError("窗口尺寸调整失败", error)
-  }
-}
-
 function wait(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 }
@@ -527,59 +499,39 @@ async function setAppWindowSize(size: WindowStartupSize) {
 
 async function readCurrentLogicalWindowSize() {
   const appWindow = getCurrentWindow()
-  const [size, scaleFactor] = await Promise.all([appWindow.outerSize(), appWindow.scaleFactor()])
+  const [size, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()])
   return {
     width: Math.round(size.width / scaleFactor),
     height: Math.round(size.height / scaleFactor),
   }
 }
 
-async function refreshWindowSizeDraft() {
-  try {
-    windowSizeDraft.value = normalizeWindowSize(
-      await readCurrentLogicalWindowSize(),
-      savedStartupSize.value,
-    )
-  } catch {
-    // Tauri 窗口 API 在普通浏览器预览中不可用，保留当前草稿即可。
-  }
-}
-
-function startWindowSizeWatchTimer() {
-  if (windowSizeWatchTimer !== null) return
-  windowSizeWatchTimer = window.setInterval(() => {
-    if (settingsOpen.value) void refreshWindowSizeDraft()
-  }, 300)
-}
-
 async function initWindowSizeSettings() {
-  startWindowSizeWatchTimer()
-
   try {
     await setAppWindowSize(savedStartupSize.value)
-    await refreshWindowSizeDraft()
-    unlistenWindowResize = await getCurrentWindow().onResized(() => {
-      void refreshWindowSizeDraft()
-    })
   } catch {
-    windowSizeDraft.value = { ...savedStartupSize.value }
+    // 普通浏览器预览中没有 Tauri 窗口 API，忽略即可。
   }
 }
 
 async function saveStartupWindowSize() {
-  const nextSize = normalizeWindowSize(windowSizeDraft.value, savedStartupSize.value)
-  savedStartupSize.value = nextSize
-  windowSizeDraft.value = { ...nextSize }
-  localStorage.setItem(WINDOW_STARTUP_SIZE_KEY, JSON.stringify(nextSize))
-
   try {
-    await setAppWindowSize(nextSize)
-    showToast({ kind: "success", title: "启动尺寸已保存", message: `${nextSize.width} × ${nextSize.height}` })
+    const nextSize = normalizeWindowSize(
+      await readCurrentLogicalWindowSize(),
+      savedStartupSize.value,
+    )
+    savedStartupSize.value = nextSize
+    localStorage.setItem(WINDOW_STARTUP_SIZE_KEY, JSON.stringify(nextSize))
+    showToast({
+      kind: "success",
+      title: "当前大小已保存",
+      message: `${nextSize.width} × ${nextSize.height}`,
+    })
   } catch (error) {
     showToast({
-      kind: "info",
-      title: "启动尺寸已保存",
-      message: `当前窗口暂时未调整成功，下次启动生效：${errorMessage(error)}`,
+      kind: "error",
+      title: "当前大小保存失败",
+      message: errorMessage(error),
       duration: 7000,
     })
   }
@@ -587,7 +539,6 @@ async function saveStartupWindowSize() {
 
 async function resetStartupWindowSize() {
   savedStartupSize.value = { ...DEFAULT_WINDOW_SIZE }
-  windowSizeDraft.value = { ...DEFAULT_WINDOW_SIZE }
   localStorage.removeItem(WINDOW_STARTUP_SIZE_KEY)
 
   try {
@@ -1806,10 +1757,6 @@ watch(activePage, (page, previousPage) => {
   }
 })
 
-watch(settingsOpen, (open) => {
-  if (open) void refreshWindowSizeDraft()
-})
-
 onMounted(async () => {
   void initWindowSizeSettings()
   await initAppVersionAndReleaseNotes()
@@ -1826,11 +1773,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenProgress?.()
-  unlistenWindowResize?.()
-  if (windowSizeWatchTimer !== null) {
-    window.clearInterval(windowSizeWatchTimer)
-    windowSizeWatchTimer = null
-  }
   stopGameflowWatcher()
   stopLiveAutoRefresh()
   if (drillCachePruneTimer !== null) {
@@ -2127,36 +2069,9 @@ onUnmounted(() => {
             <strong>软件初始大小</strong>
           </div>
 
-          <div class="window-size-grid">
-            <label>
-              <span>宽度</span>
-              <input
-                v-model.number="windowSizeDraft.width"
-                type="number"
-                :min="MIN_WINDOW_SIZE.width"
-                max="9999"
-                @change="applyWindowSizeInput"
-                @keyup.enter="applyWindowSizeInput"
-              />
-            </label>
-            <label>
-              <span>高度</span>
-              <input
-                v-model.number="windowSizeDraft.height"
-                type="number"
-                :min="MIN_WINDOW_SIZE.height"
-                max="9999"
-                @change="applyWindowSizeInput"
-                @keyup.enter="applyWindowSizeInput"
-              />
-            </label>
-          </div>
-
           <div class="settings-actions">
-            <button :disabled="!windowStartupSizeDirty" @click="saveStartupWindowSize">保存</button>
-            <button :disabled="windowStartupSizeIsDefault && !windowStartupSizeDirty" @click="resetStartupWindowSize">
-              重置
-            </button>
+            <button @click="saveStartupWindowSize">保存当前大小</button>
+            <button @click="resetStartupWindowSize">重置</button>
           </div>
         </section>
 
@@ -2927,12 +2842,6 @@ button:disabled {
   font-size: 15px;
 }
 
-.window-size-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
 .settings-modal header button {
   border-radius: 8px;
   color: #315f58;
@@ -2962,10 +2871,6 @@ button:disabled {
   background: #ffffff;
   padding: 8px 9px;
   font-weight: 800;
-}
-
-.window-size-grid input {
-  width: 108px;
 }
 
 .settings-modal input[type="checkbox"] {
