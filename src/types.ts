@@ -27,6 +27,24 @@ export interface ConnectionStatus {
   message: string
 }
 
+export interface ChatStatus {
+  availability: string
+  statusMessage: string
+}
+
+export interface FriendToolEntry {
+  id: string
+  puuid: string
+  gameName: string
+  tagLine: string
+  displayName: string
+  iconId: number
+  summonerId: number
+  availability: string
+  statusMessage: string
+  friendsSince?: string | null
+}
+
 export interface AppUpdateInfo {
   currentVersion: string
   latestVersion: string
@@ -106,12 +124,18 @@ export interface ChampionStat {
   lastPlayedAt: number
 }
 
+export interface RatingCompositionEntry {
+  championId: number
+  itemIds: number[]
+}
+
 export interface RecentGame {
   gameId: number
   championId: number
   queueId: number
   gameMode: string
   win: boolean
+  teamId: number
   spell1Id: number
   spell2Id: number
   itemIds: number[]
@@ -128,12 +152,21 @@ export interface RecentGame {
   assists: number
   teamKills: number
   teamDeaths: number
+  gameKills?: number
+  gameDeaths?: number
+  teamTowerKills: number
+  gameTowerKills: number
+  teamPlayerCount?: number
+  gamePlayerCount?: number
   teamPuuids: string[]
+  teamComposition?: RatingCompositionEntry[]
+  gameComposition?: RatingCompositionEntry[]
   kda: number
   cs: number
   goldEarned: number
   damageToChampions: number
   teamDamageToChampions: number
+  gameDamageToChampions?: number
   damageSelfMitigated: number
   totalDamageTaken: number
   teamDamageSelfMitigated: number
@@ -141,6 +174,7 @@ export interface RecentGame {
   totalHeal: number
   teamTotalHeal: number
   teamGoldEarned: number
+  gameGoldEarned?: number
   enemyChampionImmobilizations: number
   teamEnemyChampionImmobilizations: number
   immobilizeAndKillWithAlly: number
@@ -162,6 +196,7 @@ export interface MatchDetailTeam {
   teamId: number
   name: string
   win: boolean
+  towerKills: number
   players: MatchDetailPlayer[]
 }
 

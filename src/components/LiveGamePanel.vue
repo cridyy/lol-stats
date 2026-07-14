@@ -17,19 +17,28 @@ import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamM
 const LIVE_DISPLAY_DEPTH = 50
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
 
-const props = defineProps<{
-  liveGame: LiveGameResponse | null
-  champions: Record<number, ChampionSummaryItem>
-  gameAssets: GameAssetBundle
-  loading: boolean
-  error: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    liveGame: LiveGameResponse | null
+    champions: Record<number, ChampionSummaryItem>
+    gameAssets: GameAssetBundle
+    loading: boolean
+    error: string
+    cardExtraHeight?: number
+  }>(),
+  {
+    cardExtraHeight: 0,
+  },
+)
 
 const emit = defineEmits<{
   openPlayer: [player: LivePlayer]
 }>()
 
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
+const livePanelStyle = computed(() => ({
+  "--live-card-extra-height": `${Math.min(480, Math.max(0, props.cardExtraHeight))}px`,
+}))
 const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
@@ -275,7 +284,7 @@ function premadeTitle(marker: LivePremadeMarker) {
 </script>
 
 <template>
-  <section class="live">
+  <section class="live" :style="livePanelStyle">
     <header class="live-header">
       <div>
         <div class="label">实战读取</div>
@@ -660,7 +669,7 @@ h2 {
 .player-card {
   display: flex;
   min-width: var(--live-player-card-min);
-  min-height: 330px;
+  min-height: calc(330px + var(--live-card-extra-height, 0px));
   flex-direction: column;
   gap: 8px;
   border: 1px solid #dce7e4;
@@ -1013,7 +1022,7 @@ h2 {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  max-height: 185px;
+  max-height: calc(185px + var(--live-card-extra-height, 0px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;

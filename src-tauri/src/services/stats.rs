@@ -10,7 +10,8 @@ use super::error::AppResult;
 use super::lcu::LcuClient;
 use super::models::{
     ChampionStat, ClientAuth, Game, IdentityPlayer, MatchDetailPlayer, MatchDetailResponse,
-    MatchDetailTeam, Participant, PlayerStatsResponse, PlayerSummary, RecentGame, SummonerInfo,
+    MatchDetailTeam, Participant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry,
+    RecentGame, SummonerInfo,
 };
 use super::sgp::{resolve_sgp_server_id, SgpClient};
 
@@ -24,7 +25,7 @@ const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
-const CACHE_SCHEMA_VERSION: i64 = 11;
+const CACHE_SCHEMA_VERSION: i64 = 12;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 
 static STATS_CACHE: LazyLock<Mutex<HashMap<StatsCacheKey, StatsCacheEntry>>> =
@@ -297,7 +298,18 @@ fn read_db_cached_stats(key: &StatsCacheKey, allow_stale: bool) -> Option<Player
         return None;
     }
 
-    serde_json::from_str(&response_json).ok()
+    let response = serde_json::from_str::<PlayerStatsResponse>(&response_json).ok()?;
+    if response.recent_games.iter().any(|game| {
+        game.game_player_count == 0
+            || game.team_player_count == 0
+            || game.team_id == 0
+            || game.team_composition.is_empty()
+            || game.game_composition.is_empty()
+    }) {
+        return None;
+    }
+
+    Some(response)
 }
 
 /// 写入 SQLite 统计缓存，写入失败不会影响正常查战绩流程。
@@ -1012,6 +1024,7 @@ fn match_detail_from_game(game: Game) -> MatchDetailResponse {
                 team_id,
                 name: team_name(team_id),
                 win,
+                tower_kills: tower_kills_for_team(&game, team_id),
                 players,
             }
         })
@@ -1030,6 +1043,12 @@ fn match_detail_from_game(game: Game) -> MatchDetailResponse {
 fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentGame {
     let cs = participant.stats.total_minions_killed + participant.stats.neutral_minions_killed;
     let team_totals = team_totals_for_participant(game, participant);
+    let game_totals = game_totals(game);
+    let team_player_count = game
+        .participants
+        .iter()
+        .filter(|candidate| same_stat_team(game, participant, candidate))
+        .count() as u32;
     let accolades = game_accolades_for_participant(game, participant, &team_totals);
     let kda = calc_kda(
         participant.stats.kills,
@@ -1043,6 +1062,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         queue_id: game.queue_id,
         game_mode: game.game_mode.clone(),
         win: participant.stats.win,
+        team_id: participant.team_id,
         spell1_id: participant.spell1_id,
         spell2_id: participant.spell2_id,
         item_ids: nonzero_values([
@@ -1081,12 +1101,30 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         assists: participant.stats.assists,
         team_kills: team_totals.kills,
         team_deaths: team_totals.deaths,
+        game_kills: game_totals.kills,
+        game_deaths: game_totals.deaths,
+        team_tower_kills: tower_kills_for_team(game, participant.team_id),
+        game_tower_kills: game_tower_kills(game),
+        team_player_count,
+        game_player_count: game.participants.len() as u32,
         team_puuids: team_puuids_for_participant(game, participant),
+        team_composition: game
+            .participants
+            .iter()
+            .filter(|candidate| same_stat_team(game, participant, candidate))
+            .map(rating_composition_entry)
+            .collect(),
+        game_composition: game
+            .participants
+            .iter()
+            .map(rating_composition_entry)
+            .collect(),
         kda,
         cs,
         gold_earned: participant.stats.gold_earned,
         damage_to_champions: participant.stats.total_damage_dealt_to_champions,
         team_damage_to_champions: team_totals.damage_to_champions,
+        game_damage_to_champions: game_totals.damage_to_champions,
         damage_self_mitigated: participant.stats.damage_self_mitigated,
         total_damage_taken: participant.stats.total_damage_taken,
         team_damage_self_mitigated: team_totals.damage_self_mitigated,
@@ -1094,12 +1132,28 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         total_heal: participant.stats.total_heal,
         team_total_heal: team_totals.total_heal,
         team_gold_earned: team_totals.gold_earned,
+        game_gold_earned: game_totals.gold_earned,
         enemy_champion_immobilizations: participant.stats.enemy_champion_immobilizations,
         team_enemy_champion_immobilizations: team_totals.enemy_champion_immobilizations,
         immobilize_and_kill_with_ally: participant.stats.immobilize_and_kill_with_ally,
         team_immobilize_and_kill_with_ally: team_totals.immobilize_and_kill_with_ally,
         game_creation: game.game_creation,
         game_duration: game.game_duration,
+    }
+}
+
+fn rating_composition_entry(participant: &Participant) -> RatingCompositionEntry {
+    RatingCompositionEntry {
+        champion_id: participant.champion_id,
+        item_ids: nonzero_values([
+            participant.stats.item0,
+            participant.stats.item1,
+            participant.stats.item2,
+            participant.stats.item3,
+            participant.stats.item4,
+            participant.stats.item5,
+            participant.stats.item6,
+        ]),
     }
 }
 
@@ -1206,6 +1260,50 @@ fn team_totals_for_participant(game: &Game, participant: &Participant) -> TeamTo
             totals.deaths += candidate.stats.deaths;
             totals
         })
+}
+
+fn game_totals(game: &Game) -> TeamTotals {
+    game.participants
+        .iter()
+        .fold(TeamTotals::default(), |mut totals, participant| {
+            totals.damage_to_champions += participant.stats.total_damage_dealt_to_champions;
+            totals.gold_earned += participant.stats.gold_earned;
+            totals.damage_self_mitigated += participant.stats.damage_self_mitigated;
+            totals.total_damage_taken += participant.stats.total_damage_taken;
+            totals.total_heal += participant.stats.total_heal;
+            totals.enemy_champion_immobilizations +=
+                participant.stats.enemy_champion_immobilizations;
+            totals.immobilize_and_kill_with_ally += participant.stats.immobilize_and_kill_with_ally;
+            totals.kills += participant.stats.kills;
+            totals.deaths += participant.stats.deaths;
+            totals
+        })
+}
+
+fn tower_kills_for_team(game: &Game, team_id: u32) -> u32 {
+    game.teams
+        .iter()
+        .find(|team| team.team_id == team_id)
+        .map(|team| team.tower_kills)
+        .unwrap_or_else(|| {
+            game.participants
+                .iter()
+                .filter(|participant| participant.team_id == team_id)
+                .map(|participant| participant.stats.turret_kills)
+                .sum()
+        })
+}
+
+fn game_tower_kills(game: &Game) -> u32 {
+    if game.teams.is_empty() {
+        return game
+            .participants
+            .iter()
+            .map(|participant| participant.stats.turret_kills)
+            .sum();
+    }
+
+    game.teams.iter().map(|team| team.tower_kills).sum()
 }
 
 fn game_accolades_for_participant(

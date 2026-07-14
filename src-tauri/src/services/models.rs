@@ -137,6 +137,62 @@ impl SummonerInfo {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChatMe {
+    #[serde(default)]
+    pub availability: String,
+    #[serde(default)]
+    pub status_message: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LcuFriend {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub puuid: String,
+    #[serde(default)]
+    pub game_name: String,
+    #[serde(default)]
+    pub game_tag: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub icon: u32,
+    #[serde(default)]
+    pub summoner_id: u64,
+    #[serde(default)]
+    pub availability: String,
+    #[serde(default)]
+    pub status_message: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GiftableFriend {
+    #[serde(default)]
+    pub friends_since: String,
+    #[serde(default)]
+    pub summoner_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendToolEntry {
+    pub id: String,
+    pub puuid: String,
+    pub game_name: String,
+    pub tag_line: String,
+    pub display_name: String,
+    pub icon_id: u32,
+    pub summoner_id: u64,
+    pub availability: String,
+    pub status_message: String,
+    pub friends_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MatchHistoryResponse {
     #[serde(default)]
     pub games: MatchHistoryPage,
@@ -168,6 +224,17 @@ pub struct Game {
     pub participant_identities: Vec<ParticipantIdentity>,
     #[serde(default)]
     pub participants: Vec<Participant>,
+    #[serde(default)]
+    pub teams: Vec<GameTeam>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameTeam {
+    #[serde(default)]
+    pub team_id: u32,
+    #[serde(default)]
+    pub tower_kills: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -222,6 +289,8 @@ pub struct ParticipantStats {
     pub deaths: u32,
     #[serde(default)]
     pub assists: u32,
+    #[serde(default)]
+    pub turret_kills: u32,
     #[serde(default)]
     pub gold_earned: u32,
     #[serde(default)]
@@ -368,12 +437,22 @@ pub struct ChampionStat {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RatingCompositionEntry {
+    pub champion_id: u32,
+    #[serde(default)]
+    pub item_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentGame {
     pub game_id: u64,
     pub champion_id: u32,
     pub queue_id: u32,
     pub game_mode: String,
     pub win: bool,
+    #[serde(default)]
+    pub team_id: u32,
     #[serde(default)]
     pub spell1_id: u32,
     #[serde(default)]
@@ -403,12 +482,30 @@ pub struct RecentGame {
     pub team_kills: u32,
     #[serde(default)]
     pub team_deaths: u32,
+    #[serde(default)]
+    pub game_kills: u32,
+    #[serde(default)]
+    pub game_deaths: u32,
+    #[serde(default)]
+    pub team_tower_kills: u32,
+    #[serde(default)]
+    pub game_tower_kills: u32,
+    #[serde(default)]
+    pub team_player_count: u32,
+    #[serde(default)]
+    pub game_player_count: u32,
     /// 这局里与当前玩家同一统计队伍的 PUUID 列表。
     ///
     /// 普通 5v5 按 teamId 计算；CHERRY / 海克斯等多小队模式按 playerSubteamId 计算。
     /// 实时战绩的组排推断会用它统计“当前对局玩家近期是否反复同队”。
     #[serde(default)]
     pub team_puuids: Vec<String>,
+    /// 评分用的本队阵容证据。前端会复用统一定位分类器统计坦克和辅助数量。
+    #[serde(default)]
+    pub team_composition: Vec<RatingCompositionEntry>,
+    /// 评分用的全场阵容证据，用于从本队阵容推导对方阵容。
+    #[serde(default)]
+    pub game_composition: Vec<RatingCompositionEntry>,
     pub kda: f64,
     pub cs: u32,
     #[serde(default)]
@@ -416,6 +513,8 @@ pub struct RecentGame {
     pub damage_to_champions: u32,
     #[serde(default)]
     pub team_damage_to_champions: u32,
+    #[serde(default)]
+    pub game_damage_to_champions: u32,
     #[serde(default)]
     pub damage_self_mitigated: u32,
     #[serde(default)]
@@ -430,6 +529,8 @@ pub struct RecentGame {
     pub team_total_heal: u32,
     #[serde(default)]
     pub team_gold_earned: u32,
+    #[serde(default)]
+    pub game_gold_earned: u32,
     #[serde(default)]
     pub enemy_champion_immobilizations: u32,
     #[serde(default)]
@@ -459,6 +560,7 @@ pub struct MatchDetailTeam {
     pub team_id: u32,
     pub name: String,
     pub win: bool,
+    pub tower_kills: u32,
     pub players: Vec<MatchDetailPlayer>,
 }
 

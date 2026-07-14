@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core"
 import type {
   AppUpdateInfo,
   ChampionSummaryItem,
+  ChatStatus,
   ConnectionStatus,
+  FriendToolEntry,
   GameAssetBundle,
   LiveGameResponse,
   MatchDetailResponse,
@@ -10,6 +12,38 @@ import type {
   RankedStatsResponse,
   SummonerSearchCandidate,
 } from "./types"
+
+export function acceptReadyCheck() {
+  return invoke<void>("accept_ready_check")
+}
+
+export function dismissEndOfGame() {
+  return invoke<void>("dismiss_end_of_game")
+}
+
+export function getGameSettingsLocked() {
+  return invoke<boolean>("get_game_settings_locked")
+}
+
+export function setGameSettingsLocked(locked: boolean) {
+  return invoke<boolean>("set_game_settings_locked", { locked })
+}
+
+export function getChatStatus() {
+  return invoke<ChatStatus>("get_chat_status")
+}
+
+export function setChatAvailability(availability: string) {
+  return invoke<void>("set_chat_availability", { availability })
+}
+
+export function setChatStatusMessage(statusMessage: string) {
+  return invoke<void>("set_chat_status_message", { statusMessage })
+}
+
+export function loadFriends(includeSince = true) {
+  return invoke<FriendToolEntry[]>("load_friends", { includeSince })
+}
 
 export function checkAppUpdate() {
   return invoke<AppUpdateInfo>("check_app_update")

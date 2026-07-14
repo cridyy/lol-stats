@@ -1,6 +1,19 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, ref, watch } from "vue"
-import { ClipboardCopy } from "lucide-vue-next"
+import { ClipboardCopy, Sparkles } from "lucide-vue-next"
+import {
+  calculateAugmentStats,
+  calculateEquipmentStats,
+  calculateFunStats,
+  calculatePenetrationStats,
+  funStatsCacheKey,
+  loadCachedFunStats,
+  persistFunStats,
+  type FunAugmentFilter,
+  type FunEquipmentFilter,
+  type FunGoldRange,
+  type FunStatsResult,
+} from "../funStats"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
 import type {
@@ -13,6 +26,7 @@ import type {
 } from "../types"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import FunStatsPanel from "./FunStatsPanel.vue"
 import GameRecordList from "./GameRecordList.vue"
 import {
   buildChampionProfiles,
@@ -21,6 +35,8 @@ import {
   profileTierLabel,
 } from "../playerProfile"
 import { championName, fixed, mitigationValue, percent, teamMitigationValue } from "../utils"
+
+const DATA_FILTER_HINT_SEEN_KEY = "lol-stats.data-filter-hint-seen"
 
 const props = defineProps<{
   stats: PlayerStatsResponse | null
@@ -43,6 +59,10 @@ const statsRootRef = ref<HTMLElement | null>(null)
 const tableWrapRef = ref<HTMLElement | null>(null)
 const championStatsCaptureRef = ref<HTMLElement | null>(null)
 const championGamesCaptureRef = ref<HTMLElement | null>(null)
+const funStatsResult = ref<FunStatsResult | null>(null)
+const funStatsVisible = ref(false)
+const funStatsLoading = ref(false)
+const dataFilterHintVisible = ref(localStorage.getItem(DATA_FILTER_HINT_SEEN_KEY) !== "1")
 const notify = inject(notifyKey, () => 0)
 let savedTableScrollTop = 0
 let savedPageScrollTop = 0
@@ -73,9 +93,12 @@ const spellMap = computed(() => indexAssets(props.gameAssets.summonerSpells))
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
 const perkMap = computed(() => indexAssets(props.gameAssets.perks))
 const augmentMap = computed(() => indexAssets(props.gameAssets.augments))
+const combinedAugmentMap = computed(() => ({ ...perkMap.value, ...augmentMap.value }))
+const funAugmentAssets = computed(() => Object.values(combinedAugmentMap.value))
 const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
+  augments: combinedAugmentMap.value,
 }))
 const playerProfile = computed(() =>
   buildPlayerProfile(props.stats?.recentGames || [], ratingContext.value),
@@ -156,8 +179,130 @@ watch(
   () => {
     selectedChampionId.value = null
     championSearch.value = ""
+    funStatsResult.value = null
+    funStatsVisible.value = false
   },
 )
+
+async function toggleFunStats() {
+  if (dataFilterHintVisible.value) {
+    dataFilterHintVisible.value = false
+    localStorage.setItem(DATA_FILTER_HINT_SEEN_KEY, "1")
+  }
+
+  if (funStatsVisible.value) {
+    funStatsVisible.value = false
+    return
+  }
+
+  funStatsVisible.value = true
+  if (funStatsResult.value) return
+  await loadFunStats(false)
+}
+
+async function loadFunStats(force: boolean) {
+  const games = props.stats?.recentGames || []
+  if (!games.length || funStatsLoading.value) return
+
+  funStatsLoading.value = true
+  try {
+    const key = funStatsCacheKey(
+      games,
+      props.ownerPuuid,
+      props.ownerLabel,
+      props.sgpServerId,
+    )
+    if (!force) {
+      const cached = loadCachedFunStats(key)
+      if (cached) {
+        funStatsResult.value = cached
+        return
+      }
+    }
+
+    await nextTick()
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    const result = calculateFunStats(
+      games,
+      ratingContext.value,
+      funStatsResult.value?.equipment.filter,
+      funStatsResult.value?.penetration.goldRange,
+      funStatsResult.value?.augment,
+    )
+    funStatsResult.value = result
+    persistCurrentFunStats(key, result)
+  } catch (error) {
+    funStatsVisible.value = false
+    notify({
+      kind: "error",
+      title: "数据筛选统计失败",
+      message: errorMessage(error),
+      duration: 7000,
+    })
+  } finally {
+    funStatsLoading.value = false
+  }
+}
+
+function updateFunEquipment(filter: FunEquipmentFilter) {
+  const games = props.stats?.recentGames || []
+  if (!games.length || !funStatsResult.value) return
+
+  const result: FunStatsResult = {
+    ...funStatsResult.value,
+    generatedAt: Date.now(),
+    equipment: calculateEquipmentStats(games, ratingContext.value, filter),
+  }
+  funStatsResult.value = result
+  persistCurrentFunStats(
+    funStatsCacheKey(games, props.ownerPuuid, props.ownerLabel, props.sgpServerId),
+    result,
+  )
+}
+
+function updateFunPenetration(goldRange: FunGoldRange) {
+  const games = props.stats?.recentGames || []
+  if (!games.length || !funStatsResult.value) return
+
+  const result: FunStatsResult = {
+    ...funStatsResult.value,
+    generatedAt: Date.now(),
+    penetration: calculatePenetrationStats(games, ratingContext.value, goldRange),
+  }
+  funStatsResult.value = result
+  persistCurrentFunStats(
+    funStatsCacheKey(games, props.ownerPuuid, props.ownerLabel, props.sgpServerId),
+    result,
+  )
+}
+
+function updateFunAugment(filter: FunAugmentFilter) {
+  const games = props.stats?.recentGames || []
+  if (!games.length || !funStatsResult.value) return
+
+  const result: FunStatsResult = {
+    ...funStatsResult.value,
+    generatedAt: Date.now(),
+    augment: calculateAugmentStats(games, ratingContext.value, filter),
+  }
+  funStatsResult.value = result
+  persistCurrentFunStats(
+    funStatsCacheKey(games, props.ownerPuuid, props.ownerLabel, props.sgpServerId),
+    result,
+  )
+}
+
+function persistCurrentFunStats(key: string, result: FunStatsResult) {
+  try {
+    persistFunStats(key, result)
+  } catch (error) {
+    notify({
+      kind: "warning",
+      title: "数据筛选已生成",
+      message: `本地缓存写入失败：${errorMessage(error)}`,
+    })
+  }
+}
 
 function openChampionGames(championId: number) {
   savedTableScrollTop = tableWrapRef.value?.scrollTop ?? 0
@@ -544,6 +689,33 @@ function errorMessage(error: unknown) {
         </div>
       </aside>
     </div>
+
+    <div class="fun-stats-entry" v-if="!selectedChampionId">
+      <button
+        class="data-filter-button"
+        type="button"
+        :disabled="funStatsLoading || stats.recentGames.length === 0"
+        @click="toggleFunStats"
+      >
+        <span v-if="dataFilterHintVisible" class="data-filter-hint" aria-hidden="true"></span>
+        <Sparkles :size="16" />
+        {{ funStatsLoading ? "统计中" : funStatsVisible ? "收起数据筛选" : "数据筛选" }}
+      </button>
+    </div>
+
+    <FunStatsPanel
+      v-if="!selectedChampionId && funStatsVisible && funStatsResult"
+      :result="funStatsResult"
+      :loading="funStatsLoading"
+      :games="stats.recentGames"
+      :items="gameAssets.items"
+      :augments="funAugmentAssets"
+      :champions="champions"
+      @refresh="loadFunStats(true)"
+      @equipment-change="updateFunEquipment"
+      @penetration-change="updateFunPenetration"
+      @augment-change="updateFunAugment"
+    />
 
     <div class="content-grid">
       <section class="panel table-panel" v-if="!selectedChampionId">
@@ -1371,6 +1543,51 @@ function errorMessage(error: unknown) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+}
+
+.fun-stats-entry {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.fun-stats-entry button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 13px;
+  border: 1px solid #b9c9d9;
+  border-radius: 7px;
+  color: #253d5a;
+  background: #eef4fa;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.data-filter-hint {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #e33c4e;
+  box-shadow: 0 1px 5px rgb(205 37 55 / 35%);
+}
+
+.fun-stats-entry button:hover:not(:disabled) {
+  border-color: #7693b3;
+  color: #17395e;
+  background: #e2edf8;
+}
+
+.fun-stats-entry button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .panel {

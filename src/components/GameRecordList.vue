@@ -3,6 +3,7 @@ import { computed, inject, ref } from "vue"
 import { ClipboardCopy } from "lucide-vue-next"
 import { loadMatchDetail } from "../api"
 import { copyElementAsPng } from "../imageShare"
+import { matchTeamSummary } from "../matchTeamSummary"
 import { notifyKey } from "../notifications"
 import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
@@ -221,6 +222,10 @@ function errorMessage(error: unknown) {
 function playerLabel(player: MatchDetailPlayer) {
   if (player.gameName && player.tagLine) return `${player.gameName}#${player.tagLine}`
   return player.summonerName || player.puuid || "未知玩家"
+}
+
+function teamSummary(team: MatchDetailResponse["teams"][number]) {
+  return matchTeamSummary(team)
 }
 
 function detailStatLeader(game: RecentGame, kind: "damage" | "gold" | "mitigation" | "healing" | "conversion") {
@@ -482,10 +487,14 @@ async function openMatchDetail(game: RecentGame) {
                 <strong>{{ team.name }}</strong>
                 <span>{{ team.win ? "胜利" : "失败" }}</span>
               </div>
-              <span>技能</span>
-              <span>装备</span>
-              <span>符文</span>
-              <span>K/D/A</span>
+              <div class="match-detail-team-summary">
+                <span>队伍总经济 <b>{{ kNumber(teamSummary(team).goldEarned) }}</b></span>
+                <span>队伍总伤害 <b>{{ kNumber(teamSummary(team).damageToChampions) }}</b></span>
+                <span>队伍总推塔数 <b>{{ teamSummary(team).towerKills }}</b></span>
+              </div>
+              <strong class="match-detail-team-kda">
+                {{ teamSummary(team).kills }}/{{ teamSummary(team).deaths }}/{{ teamSummary(team).assists }}
+              </strong>
               <span>伤害</span>
               <span>经济</span>
               <span>承伤</span>
@@ -1151,6 +1160,36 @@ async function openMatchDetail(game: RecentGame) {
   font-weight: 800;
   line-height: 1;
   white-space: nowrap;
+}
+
+.match-detail-team-summary {
+  display: grid;
+  min-width: 0;
+  grid-column: span 3;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 4px;
+}
+
+.match-detail-team-summary span {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.match-detail-team-summary b,
+.match-detail-team-kda {
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.match-detail-team-kda {
+  text-align: center;
 }
 
 .match-detail-team-header > span {

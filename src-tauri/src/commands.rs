@@ -9,14 +9,18 @@ use crate::services::client_discovery::discover_primary_client;
 use crate::services::error::{AppError, AppResult};
 use crate::services::lcu::{LcuClient, RiotClient};
 use crate::services::models::{
-    ChampSelectPlayer, ChampionSummaryItem, ClientAuth, ConnectionStatus, GameAssetBundle,
-    GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LivePremadeMarker, LiveTeam,
-    MatchDetailResponse, PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse,
-    RecentGame, SafeClientInfo, SummonerInfo, SummonerSearchCandidate,
+    ChampSelectPlayer, ChampionSummaryItem, ChatMe, ClientAuth, ConnectionStatus, FriendToolEntry,
+    GameAssetBundle, GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer,
+    LivePremadeMarker, LiveTeam, MatchDetailResponse, PlayerStatsResponse, PlayerSummary,
+    RankedQueueEntry, RankedStatsResponse, RecentGame, SafeClientInfo, SummonerInfo,
+    SummonerSearchCandidate,
 };
 use crate::services::stats::{
     load_match_detail as load_match_detail_service, load_player_stats,
     load_player_stats_with_progress, normalize_depth,
+};
+use crate::services::tools::{
+    game_settings_locked, set_game_settings_locked as set_settings_locked,
 };
 
 const EMPTY_PUUID: &str = "00000000-0000-0000-0000-000000000000";
@@ -89,6 +93,127 @@ fn app_error(error: AppError) -> String {
 #[tauri::command]
 pub fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub async fn accept_ready_check() -> Result<(), String> {
+    let clients = create_clients().map_err(app_error)?;
+    clients.lcu.accept_ready_check().await.map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn dismiss_end_of_game() -> Result<(), String> {
+    let clients = create_clients().map_err(app_error)?;
+    clients.lcu.dismiss_end_of_game().await.map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn get_game_settings_locked() -> Result<bool, String> {
+    let clients = create_clients().map_err(app_error)?;
+    game_settings_locked(&clients.lcu, &clients.auth)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn set_game_settings_locked(locked: bool) -> Result<bool, String> {
+    let clients = create_clients().map_err(app_error)?;
+    set_settings_locked(&clients.lcu, &clients.auth, locked)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn get_chat_status() -> Result<ChatMe, String> {
+    let clients = create_clients().map_err(app_error)?;
+    clients.lcu.chat_me().await.map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn set_chat_availability(availability: String) -> Result<(), String> {
+    const ALLOWED: [&str; 7] = [
+        "chat",
+        "away",
+        "dnd",
+        "offline",
+        "online",
+        "mobile",
+        "spectating",
+    ];
+    let availability = availability.trim().to_ascii_lowercase();
+    if !ALLOWED.contains(&availability.as_str()) {
+        return Err(app_error(AppError::InvalidInput(
+            "不支持的聊天状态".to_string(),
+        )));
+    }
+
+    let clients = create_clients().map_err(app_error)?;
+    clients
+        .lcu
+        .set_chat_availability(&availability)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn set_chat_status_message(status_message: String) -> Result<(), String> {
+    let status_message = status_message.trim();
+    if status_message.chars().count() > 200 {
+        return Err(app_error(AppError::InvalidInput(
+            "聊天签名不能超过 200 个字符".to_string(),
+        )));
+    }
+
+    let clients = create_clients().map_err(app_error)?;
+    clients
+        .lcu
+        .set_chat_status_message(status_message)
+        .await
+        .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn load_friends(include_since: Option<bool>) -> Result<Vec<FriendToolEntry>, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let friends = clients.lcu.friends().await.map_err(app_error)?;
+    let friends_since = if include_since.unwrap_or(true) {
+        clients
+            .lcu
+            .giftable_friends()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|friend| (friend.summoner_id, friend.friends_since))
+            .collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+
+    Ok(friends
+        .into_iter()
+        .map(|friend| {
+            let display_name = if !friend.game_name.is_empty() && !friend.game_tag.is_empty() {
+                format!("{}#{}", friend.game_name, friend.game_tag)
+            } else if !friend.name.is_empty() {
+                friend.name.clone()
+            } else {
+                friend.puuid.clone()
+            };
+
+            FriendToolEntry {
+                id: friend.id,
+                puuid: friend.puuid,
+                game_name: friend.game_name,
+                tag_line: friend.game_tag,
+                display_name,
+                icon_id: friend.icon,
+                summoner_id: friend.summoner_id,
+                availability: friend.availability,
+                status_message: friend.status_message,
+                friends_since: friends_since.get(&friend.summoner_id).cloned(),
+            }
+        })
+        .collect())
 }
 
 #[tauri::command]

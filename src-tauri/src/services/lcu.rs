@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use reqwest::{header::CONTENT_TYPE, Client, StatusCode};
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
 use super::error::{AppError, AppResult};
 use super::models::{
-    ChampSelectSession, ChampionSummaryItem, ClientAuth, GameAssetBundle, GameAssetEntry,
-    GameflowSession, MatchHistoryResponse, RankedStatsResponse, RiotAlias, SummonerInfo,
+    ChampSelectSession, ChampionSummaryItem, ChatMe, ClientAuth, GameAssetBundle, GameAssetEntry,
+    GameflowSession, GiftableFriend, LcuFriend, MatchHistoryResponse, RankedStatsResponse,
+    RiotAlias, SummonerInfo,
 };
 
 #[derive(serde::Deserialize)]
@@ -129,6 +130,45 @@ impl LcuClient {
         Ok((bytes, content_type))
     }
 
+    async fn post_empty(&self, path: &str) -> AppResult<()> {
+        let response = self
+            .http
+            .post(format!("{}{}", self.base_url, path))
+            .header("Authorization", &self.auth_header)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(AppError::LcuUnavailable(format!(
+                "{} 返回 {}",
+                path,
+                response.status()
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn put_json<B: Serialize + ?Sized>(&self, path: &str, body: &B) -> AppResult<()> {
+        let response = self
+            .http
+            .put(format!("{}{}", self.base_url, path))
+            .header("Authorization", &self.auth_header)
+            .json(body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(AppError::LcuUnavailable(format!(
+                "{} 返回 {}",
+                path,
+                response.status()
+            )));
+        }
+
+        Ok(())
+    }
+
     pub async fn ping(&self) -> AppResult<()> {
         let _: serde_json::Value = self.get_json("/riotclient/auth-token").await?;
         Ok(())
@@ -180,6 +220,48 @@ impl LcuClient {
 
     pub async fn gameflow_phase(&self) -> AppResult<String> {
         self.get_json("/lol-gameflow/v1/gameflow-phase").await
+    }
+
+    pub async fn accept_ready_check(&self) -> AppResult<()> {
+        self.post_empty("/lol-matchmaking/v1/ready-check/accept")
+            .await
+    }
+
+    pub async fn dismiss_end_of_game(&self) -> AppResult<()> {
+        self.post_empty("/lol-end-of-game/v1/state/dismiss-stats")
+            .await
+    }
+
+    pub async fn chat_me(&self) -> AppResult<ChatMe> {
+        self.get_json("/lol-chat/v1/me").await
+    }
+
+    pub async fn set_chat_availability(&self, availability: &str) -> AppResult<()> {
+        self.put_json(
+            "/lol-chat/v1/me",
+            &serde_json::json!({ "availability": availability }),
+        )
+        .await
+    }
+
+    pub async fn set_chat_status_message(&self, status_message: &str) -> AppResult<()> {
+        self.put_json(
+            "/lol-chat/v1/me",
+            &serde_json::json!({ "statusMessage": status_message }),
+        )
+        .await
+    }
+
+    pub async fn friends(&self) -> AppResult<Vec<LcuFriend>> {
+        self.get_json("/lol-chat/v1/friends").await
+    }
+
+    pub async fn giftable_friends(&self) -> AppResult<Vec<GiftableFriend>> {
+        self.get_json("/lol-store/v1/giftablefriends").await
+    }
+
+    pub async fn install_dir(&self) -> AppResult<String> {
+        self.get_json("/data-store/v1/install-dir").await
     }
 
     pub async fn gameflow_session(&self) -> AppResult<Option<GameflowSession>> {

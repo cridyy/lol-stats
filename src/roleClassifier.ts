@@ -15,6 +15,7 @@ export type RoleVector = Record<RoleKey, number>
 export interface RatingContext {
   items?: Record<number, GameAssetEntry>
   champions?: Record<number, ChampionSummaryItem>
+  augments?: Record<number, GameAssetEntry>
 }
 
 export interface RoleAnalysis {

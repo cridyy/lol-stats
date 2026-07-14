@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-vue-next"
 import {
+  acceptReadyCheck,
   appVersion,
   cancelStatsLoad,
   checkAppUpdate,
@@ -42,6 +43,7 @@ import RecordView from "./components/RecordView.vue"
 import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
+import { AUTO_ACCEPT_ENABLED_KEY, readBooleanSetting } from "./toolSettings"
 import { championName, riotId } from "./utils"
 import type {
   AppUpdateInfo,
@@ -124,6 +126,7 @@ type ReleaseNotesDialog = {
 const SEARCH_HISTORY_KEY = "lol-stats.search-history"
 const SHARE_SETTINGS_KEY = "lol-stats.share-settings"
 const WINDOW_STARTUP_SIZE_KEY = "lol-stats.window-startup-size"
+const LIVE_CARD_EXTRA_HEIGHT_KEY = "lol-stats.live-card-extra-height"
 const RELEASE_NOTES_SEEN_VERSION_KEY = "lol-stats.release-notes.seen-version"
 const RELEASE_NOTES_DISABLED_KEY = "lol-stats.release-notes.disabled"
 const MIN_PROGRESS_VISIBLE_MS = 700
@@ -131,6 +134,8 @@ const HIDDEN_DRILL_CACHE_MS = 10 * 60 * 1000
 const HIDDEN_DRILL_CACHE_LIMIT = 20
 const DEFAULT_WINDOW_SIZE: WindowStartupSize = { width: 1363, height: 836 }
 const MIN_WINDOW_SIZE: WindowStartupSize = { width: 1040, height: 680 }
+const DEFAULT_LIVE_CARD_EXTRA_HEIGHT = 0
+const MAX_LIVE_CARD_EXTRA_HEIGHT = 480
 const ALL_SEARCH_SERVER_ID = "ALL"
 const DEFAULT_SEARCH_SERVER_ID = "TENCENT_HN1"
 const RECENT_PAGE_SIZE = 20
@@ -157,6 +162,12 @@ const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.7.0": [
+    "数据统计新增数据筛选入口，支持阵营、装备、经济区间、百分比穿透和核心担当分析。",
+    "新增海克斯分析，可按英雄和位置筛选同色有效机会、登场率与胜率。",
+    "设置新增实时战绩高度，可扩大个人卡片中的小战绩预览区域。",
+    "工具页新增好友管理、快捷工具与海克斯设计功能。",
+  ],
   "0.6.1": [
     "提高各定位的伤转满分门槛：输出和法师 1.40、战士类 1.35、前排 1.20。",
     "输出和法师从伤转权重中转移 3 分给伤害占比，提高实际输出贡献的重要性。",
@@ -208,6 +219,7 @@ const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
 const shareSettings = ref<ShareSettings>(loadShareSettings())
+const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
 const windowSizeDraft = ref<WindowStartupSize>({ ...savedStartupSize.value })
 const appCurrentVersion = ref("")
@@ -269,6 +281,9 @@ let windowSizeWatchTimer: number | null = null
 let liveRefreshTimer: number | null = null
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
+let autoAcceptInFlight = false
+let autoAcceptHandled = false
+let autoAcceptErrorShown = false
 let searchServerTouched = false
 let searchServerInitializedFromClient = false
 let searchRankedRequestKey = ""
@@ -391,6 +406,25 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) return fallback
   return Math.min(max, Math.max(min, Math.round(numberValue)))
+}
+
+function loadLiveCardExtraHeight() {
+  return clampInteger(
+    localStorage.getItem(LIVE_CARD_EXTRA_HEIGHT_KEY),
+    DEFAULT_LIVE_CARD_EXTRA_HEIGHT,
+    0,
+    MAX_LIVE_CARD_EXTRA_HEIGHT,
+  )
+}
+
+function persistLiveCardExtraHeight() {
+  liveCardExtraHeight.value = clampInteger(
+    liveCardExtraHeight.value,
+    DEFAULT_LIVE_CARD_EXTRA_HEIGHT,
+    0,
+    MAX_LIVE_CARD_EXTRA_HEIGHT,
+  )
+  localStorage.setItem(LIVE_CARD_EXTRA_HEIGHT_KEY, String(liveCardExtraHeight.value))
 }
 
 function loadShareSettings(): ShareSettings {
@@ -1104,6 +1138,16 @@ function openLivePlayerDrillTab(player: LivePlayer) {
   activateDrillTab(tab.id)
 }
 
+function openFriendDrillTab(payload: { puuid: string; label: string }) {
+  if (!payload.puuid) {
+    showToast({ kind: "error", title: "无法打开好友战绩", message: "该好友缺少 PUUID" })
+    return
+  }
+
+  const tab = ensureDrillTab(playerHistoryPayloadFromParts(payload.puuid, payload.label))
+  activateDrillTab(tab.id)
+}
+
 function applyNavigationSnapshot(snapshot: NavigationSnapshot) {
   applyingNavigationHistory = true
   try {
@@ -1696,6 +1740,7 @@ function shouldAutoOpenLive(phase?: string | null) {
 
 async function checkGameflowForAutoLive() {
   const phase = await loadGameflowPhase().catch(() => null)
+  void checkAutoAccept(phase)
   const shouldOpen = shouldAutoOpenLive(phase)
 
   if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
@@ -1712,6 +1757,28 @@ async function checkGameflowForAutoLive() {
 
   navigateToPage("live")
   void refreshLiveGame({ silent: true, switchPage: false })
+}
+
+async function checkAutoAccept(phase?: string | null) {
+  if (phase !== "ReadyCheck") {
+    autoAcceptHandled = false
+    autoAcceptErrorShown = false
+    return
+  }
+  if (!readBooleanSetting(AUTO_ACCEPT_ENABLED_KEY) || autoAcceptInFlight || autoAcceptHandled) return
+
+  autoAcceptInFlight = true
+  try {
+    await acceptReadyCheck()
+    autoAcceptHandled = true
+  } catch (error) {
+    if (!autoAcceptErrorShown) {
+      autoAcceptErrorShown = true
+      notifyError("自动接受对局失败", error)
+    }
+  } finally {
+    autoAcceptInFlight = false
+  }
 }
 
 function startGameflowWatcher() {
@@ -1892,12 +1959,17 @@ onUnmounted(() => {
           :game-assets="gameAssets"
           :loading="liveLoading"
           :error="liveError"
+          :card-extra-height="liveCardExtraHeight"
           @open-player="openLivePlayerDrillTab"
         />
       </section>
 
       <section class="tools-page" v-show="activePage === 'tools'">
-        <ToolsPanel :champions="championMap" :live-champion-id="liveAramkitChampionId" />
+        <ToolsPanel
+          :champions="championMap"
+          :live-champion-id="liveAramkitChampionId"
+          @open-friend="openFriendDrillTab"
+        />
       </section>
 
       <section class="search-page" v-show="activePage === 'search'">
@@ -2044,7 +2116,7 @@ onUnmounted(() => {
         <header>
           <div>
             <span>软件设置</span>
-            <strong>窗口与截图</strong>
+            <strong>界面与截图</strong>
           </div>
           <button @click="settingsOpen = false">关闭</button>
         </header>
@@ -2086,6 +2158,28 @@ onUnmounted(() => {
               重置
             </button>
           </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">
+            <span>实时战绩</span>
+            <strong>个人卡片高度</strong>
+          </div>
+
+          <label class="settings-range">
+            <span>
+              实时战绩高度
+              <b>{{ liveCardExtraHeight ? `+${liveCardExtraHeight}px` : "默认" }}</b>
+            </span>
+            <input
+              v-model.number="liveCardExtraHeight"
+              type="range"
+              min="0"
+              :max="MAX_LIVE_CARD_EXTRA_HEIGHT"
+              step="40"
+              @input="persistLiveCardExtraHeight"
+            />
+          </label>
         </section>
 
         <section class="settings-section">
@@ -2878,6 +2972,31 @@ button:disabled {
   width: 18px;
   height: 18px;
   accent-color: #1f5f56;
+  cursor: pointer;
+}
+
+.settings-modal .settings-range {
+  align-items: center;
+}
+
+.settings-range > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-range > span b {
+  color: #25433e;
+  font-size: 13px;
+}
+
+.settings-modal .settings-range input[type="range"] {
+  width: 230px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  accent-color: #286b61;
+  background: transparent;
   cursor: pointer;
 }
 

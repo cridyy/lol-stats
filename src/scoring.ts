@@ -37,8 +37,73 @@ export interface OutputRating {
   label: string
   level: "excellent" | "good" | "average" | "poor"
   role: RoleAnalysis
+  /** 原始队内指标，用于界面展示和多局画像。 */
   metrics: OutputRatingMetrics
+  /** 本局评分和标签实际采用的指标；未采用碾压校准时与 metrics 相同。 */
+  scoringMetrics: OutputRatingMetrics
   parts: OutputRatingParts
+  contextAdjustment: MatchContextAdjustment
+}
+
+export interface MatchContextAdjustment {
+  active: boolean
+  scoringApplied: boolean
+  reason: string
+  severity: number
+  blendWeight: number
+  imbalance: number
+  winnerKillDeathRatio: number
+  loserKillDeathRatio: number
+  combatGap: number
+  damageGap: number
+  killDeathGateActive: boolean
+  damageGateActive: boolean
+  towerGateActive: boolean
+  winnerTowerKills: number
+  loserTowerKills: number
+  maxKdaWeight: number
+  kdaWeight: number
+  kdaPoints: number
+  originalScore: number
+  contextualScore: number
+  outcomeAdjustment: number
+  maxScoreDelta: number
+  unprotectedScoreDelta: number
+  loserResistanceProtection: number
+  scoreDelta: number
+}
+
+interface ContextRatingCandidate {
+  scoringApplied: boolean
+  kdaWeight: number
+  parts: OutputRatingParts
+  contextualTotal: number
+  contextualScore: number
+  outcomeAdjustment: number
+  maxScoreDelta: number
+  unprotectedScoreDelta: number
+  loserResistanceProtection: number
+  scoreDelta: number
+  finalScore: number
+}
+
+interface StompMatchContext {
+  active: boolean
+  reason: string
+  severity: number
+  blendWeight: number
+  imbalance: number
+  winnerKillDeathRatio: number
+  loserKillDeathRatio: number
+  combatGap: number
+  damageGap: number
+  killDeathGateActive: boolean
+  damageGateActive: boolean
+  towerGateActive: boolean
+  winnerTowerKills: number
+  loserTowerKills: number
+  participantScale: number
+  teamKillStrength: number
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -48,6 +113,20 @@ function clamp(value: number, min: number, max: number) {
 
 function clamp01(value: number) {
   return clamp(value, 0, 1)
+}
+
+function smoothstep01(value: number) {
+  const t = clamp01(value)
+  return t * t * (3 - 2 * t)
+}
+
+function smoothstepRange(value: number, start: number, end: number) {
+  if (end <= start) return value >= end ? 1 : 0
+  return smoothstep01((value - start) / (end - start))
+}
+
+function mix(from: number, to: number, weight: number) {
+  return from + (to - from) * clamp01(weight)
 }
 
 function ratio(part: number | undefined, total: number | undefined) {
@@ -125,18 +204,507 @@ export function calculateOutputRating(game: RecentGame, context: RatingContext =
   const metrics = outputRatingMetrics(game)
   const role = analyzePlayerRole(game, context)
   const family = ratingFamily(role.role)
-  const parts = calculateRatingParts(metrics, role, family)
-  const rawScore = Object.values(parts).reduce((sum, value) => sum + value, 0)
-  const score = Math.round(clamp(rawScore, 0, 100))
+  const rawParts = calculateRatingParts(metrics, role, family)
+  const rawTotal = Object.values(rawParts).reduce((sum, value) => sum + value, 0)
+  const originalScore = clamp(rawTotal, 0, 100)
+  const calibrated = calibratedMetrics(game, metrics, context)
+  const maxKdaWeight = calibrated.context.active
+    ? stompKdaWeight(game.gameDuration, family)
+    : 0
+  const originalCandidate = originalRatingCandidate(rawParts, originalScore)
+  const selectedCandidate = calibrated.context.active
+    ? game.win
+      ? selectBestWinnerCandidate(
+        game,
+        metrics,
+        calibrated.metrics,
+        role,
+        family,
+        calibrated.context,
+        originalCandidate,
+        maxKdaWeight,
+      )
+      : evaluateContextCandidate(
+        game,
+        metrics,
+        calibrated.metrics,
+        role,
+        family,
+        calibrated.context,
+        originalScore,
+        maxKdaWeight,
+      )
+    : originalCandidate
+  const finalScore = selectedCandidate.finalScore
+  const score = Math.round(finalScore)
+  const parts = { ...selectedCandidate.parts }
+  const finalReconciliation = selectedCandidate.scoringApplied
+    ? finalScore - selectedCandidate.contextualTotal
+    : 0
+  if (Math.abs(finalReconciliation) >= 0.005) {
+    parts.matchContext = finalReconciliation
+  }
+
+  const contextAdjustment: MatchContextAdjustment = {
+    active: calibrated.context.active,
+    scoringApplied: selectedCandidate.scoringApplied,
+    reason: calibrated.context.reason,
+    severity: calibrated.context.severity,
+    blendWeight: calibrated.context.blendWeight,
+    imbalance: calibrated.context.imbalance,
+    winnerKillDeathRatio: calibrated.context.winnerKillDeathRatio,
+    loserKillDeathRatio: calibrated.context.loserKillDeathRatio,
+    combatGap: calibrated.context.combatGap,
+    damageGap: calibrated.context.damageGap,
+    killDeathGateActive: calibrated.context.killDeathGateActive,
+    damageGateActive: calibrated.context.damageGateActive,
+    towerGateActive: calibrated.context.towerGateActive,
+    winnerTowerKills: calibrated.context.winnerTowerKills,
+    loserTowerKills: calibrated.context.loserTowerKills,
+    maxKdaWeight,
+    kdaWeight: selectedCandidate.kdaWeight,
+    kdaPoints: selectedCandidate.parts.kda || 0,
+    originalScore,
+    contextualScore: selectedCandidate.contextualScore,
+    outcomeAdjustment: selectedCandidate.outcomeAdjustment,
+    maxScoreDelta: selectedCandidate.maxScoreDelta,
+    unprotectedScoreDelta: selectedCandidate.unprotectedScoreDelta,
+    loserResistanceProtection: selectedCandidate.loserResistanceProtection,
+    scoreDelta: selectedCandidate.scoreDelta,
+  }
 
   return {
     score,
-    label: outputRatingLabel(game, metrics, score, role, family),
+    label: outputRatingLabel(
+      game,
+      selectedCandidate.scoringApplied ? calibrated.metrics : metrics,
+      score,
+      role,
+      family,
+    ),
     level: outputRatingLevel(score),
     role,
     metrics,
+    scoringMetrics: selectedCandidate.scoringApplied ? calibrated.metrics : metrics,
     parts,
+    contextAdjustment,
   }
+}
+
+function originalRatingCandidate(
+  parts: OutputRatingParts,
+  originalScore: number,
+): ContextRatingCandidate {
+  return {
+    scoringApplied: false,
+    kdaWeight: 0,
+    parts,
+    contextualTotal: originalScore,
+    contextualScore: originalScore,
+    outcomeAdjustment: 0,
+    maxScoreDelta: 0,
+    unprotectedScoreDelta: 0,
+    loserResistanceProtection: 0,
+    scoreDelta: 0,
+    finalScore: originalScore,
+  }
+}
+
+function evaluateContextCandidate(
+  game: RecentGame,
+  rawMetrics: OutputRatingMetrics,
+  scoringMetrics: OutputRatingMetrics,
+  role: RoleAnalysis,
+  family: RatingFamily,
+  matchContext: StompMatchContext,
+  originalScore: number,
+  kdaWeight: number,
+): ContextRatingCandidate {
+  const parts = calculateRatingParts(scoringMetrics, role, family, kdaWeight)
+  const contextualTotal = Object.values(parts).reduce((sum, value) => sum + value, 0)
+  const outcomeAdjustment = stompOutcomeAdjustment(
+    game,
+    contextualTotal,
+    scoringMetrics,
+    matchContext,
+  )
+  const contextualScore = clamp(contextualTotal + outcomeAdjustment, 0, 100)
+  const maxScoreDelta = Math.max(matchContext.severity * 25, Math.min(kdaWeight, 25))
+  const unprotectedScoreDelta = clamp(
+    contextualScore - originalScore,
+    -maxScoreDelta,
+    maxScoreDelta,
+  )
+  const loserResistanceProtection = !game.win && unprotectedScoreDelta < 0
+    ? stompLoserResistanceProtection(rawMetrics)
+    : 0
+  const scoreDelta = unprotectedScoreDelta < 0
+    ? unprotectedScoreDelta * (1 - loserResistanceProtection)
+    : unprotectedScoreDelta
+  const unclampedFinalScore = clamp(originalScore + scoreDelta, 0, 100)
+  const finalScore = game.win
+    ? unclampedFinalScore
+    : Math.min(originalScore, unclampedFinalScore)
+
+  return {
+    scoringApplied: true,
+    kdaWeight,
+    parts,
+    contextualTotal,
+    contextualScore,
+    outcomeAdjustment,
+    maxScoreDelta,
+    unprotectedScoreDelta,
+    loserResistanceProtection,
+    scoreDelta: finalScore - originalScore,
+    finalScore,
+  }
+}
+
+function selectBestWinnerCandidate(
+  game: RecentGame,
+  rawMetrics: OutputRatingMetrics,
+  scoringMetrics: OutputRatingMetrics,
+  role: RoleAnalysis,
+  family: RatingFamily,
+  matchContext: StompMatchContext,
+  originalCandidate: ContextRatingCandidate,
+  maxKdaWeight: number,
+) {
+  let best = originalCandidate
+  const weights = stompKdaWeightCandidates(maxKdaWeight)
+
+  for (const kdaWeight of weights) {
+    const candidate = evaluateContextCandidate(
+      game,
+      rawMetrics,
+      scoringMetrics,
+      role,
+      family,
+      matchContext,
+      originalCandidate.finalScore,
+      kdaWeight,
+    )
+
+    // 同分时保留原始算法或更低权重，避免为了相同结果引入额外校准。
+    if (candidate.finalScore > best.finalScore + 0.0001) {
+      best = candidate
+    }
+  }
+
+  return best
+}
+
+function stompKdaWeightCandidates(maxKdaWeight: number) {
+  const safeMax = Math.max(0, maxKdaWeight)
+  const weights = [0]
+
+  for (let weight = 0.5; weight < safeMax; weight += 0.5) {
+    weights.push(weight)
+  }
+  if (safeMax > 0) weights.push(safeMax)
+
+  return weights
+}
+
+function stompKdaWeight(gameDurationSeconds: number, family: RatingFamily) {
+  if (family === "frontline" || family === "support") return 0
+
+  const minutes = Number(gameDurationSeconds || 0) / 60
+  if (!Number.isFinite(minutes) || minutes <= 0) return 0
+  if (minutes <= 12) return 35
+  return mix(35, 0, (minutes - 12) / 4)
+}
+
+function stompKdaQuality(metrics: OutputRatingMetrics) {
+  return clamp01((metrics.kda - 1) / 4)
+}
+
+function stompLoserResistanceProtection(metrics: OutputRatingMetrics) {
+  if (metrics.damageShare < 0.27 || metrics.damageConversion < 1.2) return 0
+
+  const damageProgress = clamp01((metrics.damageShare - 0.27) / 0.08)
+  const conversionProgress = clamp01((metrics.damageConversion - 1.2) / 0.25)
+  return Math.sqrt(damageProgress * conversionProgress)
+}
+
+function calibratedMetrics(
+  game: RecentGame,
+  metrics: OutputRatingMetrics,
+  ratingContext: RatingContext,
+) {
+  const context = stompMatchContext(game, ratingContext)
+  if (!context.active) return { metrics, context }
+
+  const globalDamageShare = clamp01(
+    ratio(game.damageToChampions, game.gameDamageToChampions) * context.participantScale,
+  )
+  const globalGoldShare = clamp01(
+    ratio(game.goldEarned, game.gameGoldEarned) * context.participantScale,
+  )
+  const globalKillShare = clamp01(
+    ratio(game.kills, game.gameKills) * context.participantScale,
+  )
+  const globalDeathShare = clamp01(
+    ratio(game.deaths, game.gameDeaths) * context.participantScale,
+  )
+  const damageShare = mix(metrics.damageShare, globalDamageShare, context.blendWeight)
+  const goldShare = mix(metrics.goldShare, globalGoldShare, context.blendWeight)
+  const killShare = mix(metrics.killShare, globalKillShare, context.blendWeight)
+  const deathShare = mix(metrics.deathShare, globalDeathShare, context.blendWeight)
+  const killParticipation = clamp01(
+    metrics.killParticipation * mix(1, context.teamKillStrength, context.blendWeight),
+  )
+  const damageConversion = goldShare > 0 ? damageShare / goldShare : 0
+  const effectiveGoldShare = killAdjustedGoldShare(damageShare, goldShare, killShare)
+
+  return {
+    context,
+    metrics: {
+      ...metrics,
+      damageShare,
+      goldShare,
+      killShare,
+      killParticipation,
+      deathShare,
+      damageConversion,
+      effectiveDamageConversion: effectiveGoldShare > 0 ? damageShare / effectiveGoldShare : 0,
+    },
+  }
+}
+
+interface StompCompositionRoleCounts {
+  tank: number
+  support: number
+}
+
+function stompCompositionCounts(game: RecentGame, context: RatingContext) {
+  const teamEntries = game.teamComposition || []
+  const gameEntries = game.gameComposition || []
+  const empty = (): StompCompositionRoleCounts => ({ tank: 0, support: 0 })
+
+  // 旧缓存缺少完整阵容时回退到基础 115% 门槛，避免只识别到单边阵容。
+  if (!teamEntries.length || gameEntries.length < teamEntries.length) {
+    return { team: empty(), opponent: empty() }
+  }
+
+  const countRoles = (entries: typeof teamEntries) => {
+    const counts = empty()
+    for (const entry of entries) {
+      const role = analyzePlayerRole(
+        {
+          ...game,
+          championId: entry.championId,
+          itemIds: entry.itemIds,
+        },
+        context,
+      ).role
+      if (role === "tank") counts.tank += 1
+      if (role === "support") counts.support += 1
+    }
+    return counts
+  }
+
+  const team = countRoles(teamEntries)
+  const all = countRoles(gameEntries)
+  return {
+    team,
+    opponent: {
+      tank: Math.max(0, all.tank - team.tank),
+      support: Math.max(0, all.support - team.support),
+    },
+  }
+}
+
+function stompMatchContext(game: RecentGame, ratingContext: RatingContext): StompMatchContext {
+  const inactive = (
+    reason: string,
+    imbalance = 0,
+    diagnostics: Partial<
+      Pick<
+        StompMatchContext,
+        | "winnerKillDeathRatio"
+        | "loserKillDeathRatio"
+        | "combatGap"
+        | "damageGap"
+        | "killDeathGateActive"
+        | "damageGateActive"
+        | "towerGateActive"
+        | "winnerTowerKills"
+        | "loserTowerKills"
+      >
+    > = {},
+  ): StompMatchContext => ({
+    active: false,
+    reason,
+    severity: 0,
+    blendWeight: 0,
+    imbalance,
+    winnerKillDeathRatio: diagnostics.winnerKillDeathRatio ?? 0,
+    loserKillDeathRatio: diagnostics.loserKillDeathRatio ?? 0,
+    combatGap: diagnostics.combatGap ?? 0,
+    damageGap: diagnostics.damageGap ?? 0,
+    killDeathGateActive: diagnostics.killDeathGateActive ?? false,
+    damageGateActive: diagnostics.damageGateActive ?? false,
+    towerGateActive: diagnostics.towerGateActive ?? false,
+    winnerTowerKills: diagnostics.winnerTowerKills ?? 0,
+    loserTowerKills: diagnostics.loserTowerKills ?? 0,
+    participantScale: 1,
+    teamKillStrength: 1,
+  })
+
+  const gamePlayerCount = Number(game.gamePlayerCount || 0)
+  const teamPlayerCount = Number(game.teamPlayerCount || 0)
+  if (gamePlayerCount < 2 || teamPlayerCount < 1) return inactive("缺少全场数据")
+  if (gamePlayerCount !== teamPlayerCount * 2) return inactive("不是两支等人数队伍")
+  if (
+    Number(game.gameDamageToChampions || 0) <= Number(game.teamDamageToChampions || 0) ||
+    Number(game.gameGoldEarned || 0) <= Number(game.teamGoldEarned || 0)
+  ) return inactive("全场伤害或经济数据不完整")
+
+  const gameMinutes = Number(game.gameDuration || 0) / 60
+  if (!Number.isFinite(gameMinutes) || gameMinutes <= 0) return inactive("对局时长无效")
+
+  const teamDamage = Number(game.teamDamageToChampions || 0)
+  const gameDamage = Number(game.gameDamageToChampions || 0)
+  const opponentDamage = gameDamage - teamDamage
+  const teamGold = Number(game.teamGoldEarned || 0)
+  const gameGold = Number(game.gameGoldEarned || 0)
+  const opponentGold = gameGold - teamGold
+  const teamKills = Number(game.teamKills || 0)
+  const gameKills = Number(game.gameKills || 0)
+  const opponentKills = Math.max(0, gameKills - teamKills)
+  const teamDeaths = Number(game.teamDeaths || 0)
+  const gameDeaths = Number(game.gameDeaths || 0)
+  const opponentDeaths = Math.max(0, gameDeaths - teamDeaths)
+  const teamTowerKills = Number(game.teamTowerKills || 0)
+  const gameTowerKills = Number(game.gameTowerKills || 0)
+  const opponentTowerKills = Math.max(0, gameTowerKills - teamTowerKills)
+
+  if (opponentDamage <= 0 || opponentGold <= 0 || gameDeaths <= 0) {
+    return inactive("对方数据不完整")
+  }
+
+  const winnerDamage = game.win ? teamDamage : opponentDamage
+  const loserDamage = game.win ? opponentDamage : teamDamage
+  const winnerGold = game.win ? teamGold : opponentGold
+  const loserGold = game.win ? opponentGold : teamGold
+  const winnerKills = game.win ? teamKills : opponentKills
+  const loserKills = game.win ? opponentKills : teamKills
+  const winnerDeaths = game.win ? teamDeaths : opponentDeaths
+  const loserDeaths = game.win ? opponentDeaths : teamDeaths
+  const winnerTowerKills = game.win ? teamTowerKills : opponentTowerKills
+  const loserTowerKills = game.win ? opponentTowerKills : teamTowerKills
+  const damageRatio = winnerDamage / Math.max(loserDamage, 1)
+  const damageGap = damageRatio - 1
+  const composition = stompCompositionCounts(game, ratingContext)
+  const winnerComposition = game.win ? composition.team : composition.opponent
+  const loserComposition = game.win ? composition.opponent : composition.team
+  const damageThresholdRatio =
+    1.15 -
+    (winnerComposition.tank - loserComposition.tank) * 0.1 -
+    (winnerComposition.support - loserComposition.support) * 0.05
+  const goldGap = Math.abs(teamGold - opponentGold) / Math.max(gameGold, 1)
+  const winnerKillDeathRatio = winnerKills / Math.max(winnerDeaths, 1)
+  const loserKillDeathRatio = loserKills / Math.max(loserDeaths, 1)
+  const combatGap = clamp01(
+    (winnerKillDeathRatio - loserKillDeathRatio) /
+      Math.max(winnerKillDeathRatio + loserKillDeathRatio, 0.001),
+  )
+  const killLead = winnerKills - loserKills
+  const killDeathGateActive =
+    killLead >= 6 &&
+    winnerKillDeathRatio >= 1.3
+  const damageGateActive = damageRatio >= damageThresholdRatio
+  const towerGateActive =
+    gameMinutes <= 13 &&
+    winnerTowerKills >= 2 &&
+    loserTowerKills === 0
+  const imbalance = Math.max(combatGap, damageGap, 0) * 0.78 + goldGap * 0.22
+  const diagnostics = {
+    winnerKillDeathRatio,
+    loserKillDeathRatio,
+    combatGap,
+    damageGap,
+    killDeathGateActive,
+    damageGateActive,
+    towerGateActive,
+    winnerTowerKills,
+    loserTowerKills,
+  }
+
+  if (gameMinutes > 16) return inactive("对局时长超过16分钟", imbalance, diagnostics)
+  if (!killDeathGateActive && !damageGateActive && !towerGateActive) {
+    return inactive("K/D、伤害差和推塔差均未达到门槛", imbalance, diagnostics)
+  }
+
+  const durationFactor = gameMinutes <= 12
+    ? 1
+    : mix(1, 10 / 35, (gameMinutes - 12) / 4)
+  const combatStrength = killDeathGateActive
+    ? mix(0.18, 1, smoothstepRange(winnerKillDeathRatio, 1.3, 3))
+    : 0
+  const damageStrength = damageGateActive
+    ? mix(
+      0.18,
+      1,
+      smoothstepRange(damageRatio, damageThresholdRatio, damageThresholdRatio + 0.2),
+    )
+    : 0
+  const primaryStrength = Math.max(combatStrength, damageStrength)
+  const winnerGoldGap = (winnerGold - loserGold) / Math.max(gameGold, 1)
+  const goldAmplifier = mix(0.82, 1, smoothstepRange(winnerGoldGap, 0.03, 0.18))
+  const severity = durationFactor * primaryStrength * goldAmplifier
+  if (severity < 0.01 && !towerGateActive) {
+    return inactive("短时碾压强度不足", imbalance, diagnostics)
+  }
+
+  const calibrationGates = [
+    killDeathGateActive ? "K/D差" : "",
+    damageGateActive ? "伤害差" : "",
+  ].filter(Boolean)
+  const reason = calibrationGates.length
+    ? `已触发${calibrationGates.join("、")}校准${towerGateActive ? "，同时命中推塔门控" : ""}`
+    : "推塔门控命中，仅启用K/D评分"
+
+  return {
+    active: true,
+    reason,
+    severity,
+    blendWeight: severity * 0.65,
+    imbalance,
+    winnerKillDeathRatio,
+    loserKillDeathRatio,
+    combatGap,
+    damageGap,
+    killDeathGateActive,
+    damageGateActive,
+    towerGateActive,
+    winnerTowerKills,
+    loserTowerKills,
+    participantScale: gamePlayerCount / teamPlayerCount,
+    teamKillStrength: clamp(Math.sqrt((teamKills + 2) / (opponentKills + 2)), 0.65, 1.25),
+  }
+}
+
+function stompOutcomeAdjustment(
+  game: RecentGame,
+  contextualScore: number,
+  metrics: OutputRatingMetrics,
+  context: StompMatchContext,
+) {
+  if (game.win) {
+    const contributionEvidence = clamp01((contextualScore - 45) / 20)
+    return 3 * context.severity * contributionEvidence
+  }
+
+  const expectedDamageShare = 1 / Math.max(Number(game.teamPlayerCount || 5), 1)
+  const damageResistance = clamp01(
+    (metrics.damageShare - expectedDamageShare * 1.1) / (expectedDamageShare * 0.65),
+  )
+  const scoreResistance = clamp01((contextualScore - 65) / 20)
+  const resistance = Math.max(damageResistance, scoreResistance)
+  return -3 * context.severity * (1 - resistance)
 }
 
 function ratingFamily(role: PlayerRole): RatingFamily {
@@ -212,6 +780,7 @@ function calculateRatingParts(
   metrics: OutputRatingMetrics,
   role: RoleAnalysis,
   family: RatingFamily,
+  kdaWeight = 0,
 ): OutputRatingParts {
   if (family === "frontline") {
     const damageControl = frontlineDamageControlParts(metrics)
@@ -245,6 +814,7 @@ function calculateRatingParts(
       advantageRange: 0.35,
       maxControlWeight: dynamicControlMaxWeight(role),
       controlAdvantageRange: 0.45,
+      reservedWeight: kdaWeight,
     })
 
     return {
@@ -252,6 +822,7 @@ function calculateRatingParts(
       efficiency: combat.efficiency,
       mitigation: combat.mitigation,
       ...dynamicControlPart(role, combat.control),
+      ...(kdaWeight > 0 ? { kda: kdaWeight * stompKdaQuality(metrics) } : {}),
       participation: 8 * clamp01((metrics.killParticipation - 0.43) / 0.37),
       survival: 8 * survivalScore(metrics, 0.24, 0.2),
       killQuality: 5 * killQualityScore(metrics),
@@ -278,6 +849,7 @@ function calculateRatingParts(
         advantageRange: 0.45,
         maxControlWeight: 30,
         controlAdvantageRange: 0.45,
+        reservedWeight: kdaWeight,
       },
       mageControlQualityScore(metrics),
     )
@@ -286,6 +858,7 @@ function calculateRatingParts(
       damage: combat.damage,
       efficiency: combat.efficiency,
       ...dynamicControlPart(role, combat.control),
+      ...(kdaWeight > 0 ? { kda: kdaWeight * stompKdaQuality(metrics) } : {}),
       participation: 14 * clamp01((metrics.killParticipation - 0.45) / 0.35),
       killQuality: 9 * killQualityScore(metrics),
       survival: 8 * survivalScore(metrics, 0.2, 0.18),
@@ -325,11 +898,13 @@ function calculateRatingParts(
     advantageRange: 0.45,
     maxControlWeight: dynamicControlMaxWeight(role),
     controlAdvantageRange: 0.45,
+    reservedWeight: kdaWeight,
   })
 
   return {
     damage: combat.damage,
     efficiency: combat.efficiency,
+    ...(kdaWeight > 0 ? { kda: kdaWeight * stompKdaQuality(metrics) } : {}),
     participation: 8 * clamp01((metrics.killParticipation - 0.45) / 0.35),
     killQuality: 9 * killQualityScore(metrics),
     survival: 8 * survivalScore(metrics, 0.2, 0.18),
@@ -356,6 +931,7 @@ interface DynamicCombatConfig {
   advantageRange: number
   maxControlWeight?: number
   controlAdvantageRange?: number
+  reservedWeight?: number
 }
 
 function dynamicCombatContributionParts(
@@ -375,6 +951,8 @@ function dynamicCombatContributionParts(
     config.mitigationTargetShare,
     config.mitigationTargetPerDeath,
   )
+  const reservedWeight = clamp(config.reservedWeight || 0, 0, config.pool)
+  const allocatablePool = config.pool - reservedWeight
   const comparisonDamageRatio = clamp01(
     config.damageWeightRatio + (config.damageWeightShift || 0) / config.pool,
   )
@@ -404,14 +982,14 @@ function dynamicCombatContributionParts(
     controlWeight = (config.maxControlWeight || 0) * qualityGate * scoreGate
   }
 
-  const specialWeight = Math.min(config.pool, mitigationWeight + controlWeight)
+  const specialWeight = Math.min(allocatablePool, mitigationWeight + controlWeight)
   if (specialWeight < mitigationWeight + controlWeight && mitigationWeight + controlWeight > 0) {
     const scale = specialWeight / (mitigationWeight + controlWeight)
     mitigationWeight *= scale
     controlWeight *= scale
   }
 
-  const baseWeight = config.pool - mitigationWeight - controlWeight
+  const baseWeight = allocatablePool - mitigationWeight - controlWeight
   const damageWeightShift = Math.min(
     config.damageWeightShift || 0,
     baseWeight * (1 - config.damageWeightRatio),
@@ -458,8 +1036,8 @@ function damageConversionScore(metrics: OutputRatingMetrics, base: number, range
   const rawScore = clamp01((metrics.effectiveDamageConversion - base) / range)
   if (rawScore <= 0) return 0
 
-  // Deaths should correct inflated conversion, not erase a real high-damage carry game.
-  // At 30%+ team damage share, death pressure is fully forgiven.
+  // 死亡只用于修正虚高伤转，不应抹掉真正打出高伤害的对局。
+  // 正常局使用队内伤害占比；碾压局使用校准后的有效伤害占比。
   const deathPressure = clamp01((metrics.deathShare - 0.2) / 0.12)
   const deathDamageGapRisk = clamp01((metrics.deathShare - metrics.damageShare - 0.02) / 0.12)
   const feedRisk = Math.max(deathPressure, deathDamageGapRisk)
@@ -763,6 +1341,8 @@ const RATING_PART_LABELS: Record<string, string> = {
   roleFit: "定位匹配",
   healing: "治疗",
   protection: "保护",
+  kda: "碾压KDA",
+  matchContext: "碾压校准",
 }
 
 function ratingPartLines(parts: OutputRatingParts) {

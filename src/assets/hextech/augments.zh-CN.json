@@ -1,0 +1,1969 @@
+[
+  {
+    "file": "404_Augment_Not_Found_augment.png",
+    "id": 0,
+    "name": "404 Augment Not Found",
+    "englishName": "404 Augment Not Found",
+    "rarity": ""
+  },
+  {
+    "file": "Purist_Caster_augment.png",
+    "id": 0,
+    "name": "Purist Caster",
+    "englishName": "Purist Caster",
+    "rarity": ""
+  },
+  {
+    "file": "Quantum_Computing_augment.png",
+    "id": 66,
+    "name": "量子计算",
+    "englishName": "Quantum Computing",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Quest_Angel_of_Retribution_augment.png",
+    "id": 192,
+    "name": "任务：惩戒天使",
+    "englishName": "Quest Angel of Retribution",
+    "rarity": "gold"
+  },
+  {
+    "file": "Quest_Icathia's_Fall_augment.png",
+    "id": 0,
+    "name": "Quest Icathia's Fall",
+    "englishName": "Quest Icathia's Fall",
+    "rarity": ""
+  },
+  {
+    "file": "Quest_Mad_Hatter_augment.png",
+    "id": 318,
+    "name": "任务：疯狂帽子人",
+    "englishName": "Quest Mad Hatter",
+    "rarity": "gold"
+  },
+  {
+    "file": "Quest_Sneakerhead_augment.png",
+    "id": 1343,
+    "name": "王中王，靴中靴",
+    "englishName": "Quest Sneakerhead",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Quest_Steel_Your_Heart_augment.png",
+    "id": 152,
+    "name": "任务：钢化你心",
+    "englishName": "Quest Steel Your Heart",
+    "rarity": "gold"
+  },
+  {
+    "file": "Quest_Three_Sacred_Treasures_augment.png",
+    "id": 319,
+    "name": "任务：三圣宝",
+    "englishName": "Quest Three Sacred Treasures",
+    "rarity": "gold"
+  },
+  {
+    "file": "Quest_Urf's_Champion_augment.png",
+    "id": 154,
+    "name": "任务：海牛阿福的勇士",
+    "englishName": "Quest Urf's Champion",
+    "rarity": "gold"
+  },
+  {
+    "file": "Quest_Wooglet's_Witchcap_augment.png",
+    "id": 156,
+    "name": "任务：沃格勒特的巫师帽",
+    "englishName": "Quest Wooglet's Witchcap",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Rabble_Rousing_augment.png",
+    "id": 67,
+    "name": "古式佳酿",
+    "englishName": "Rabble Rousing",
+    "rarity": "gold"
+  },
+  {
+    "file": "Raid_Boss_augment.png",
+    "id": 125,
+    "name": "副本BOSS",
+    "englishName": "Raid Boss",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Recursion_augment.png",
+    "id": 68,
+    "name": "循环往复",
+    "englishName": "Recursion",
+    "rarity": "gold"
+  },
+  {
+    "file": "Red_Envelopes_augment.png",
+    "id": 1391,
+    "name": "红包",
+    "englishName": "Red Envelopes",
+    "rarity": "gold"
+  },
+  {
+    "file": "Reenergize_augment.png",
+    "id": 1330,
+    "name": "活力再生",
+    "englishName": "Reenergize",
+    "rarity": "silver"
+  },
+  {
+    "file": "Repulsor_augment.png",
+    "id": 69,
+    "name": "退敌力场",
+    "englishName": "Repulsor",
+    "rarity": "silver"
+  },
+  {
+    "file": "Restart_augment.png",
+    "id": 165,
+    "name": "重启",
+    "englishName": "Restart",
+    "rarity": "gold"
+  },
+  {
+    "file": "Skilled_Sniper_augment.png",
+    "id": 113,
+    "name": "老练狙神",
+    "englishName": "Skilled Sniper",
+    "rarity": "gold"
+  },
+  {
+    "file": "Shrink_Ray_augment.png",
+    "id": 74,
+    "name": "缩小射线",
+    "englishName": "Shrink Ray",
+    "rarity": "gold"
+  },
+  {
+    "file": "Shrink_Engine_augment.png",
+    "id": 1373,
+    "name": "缩小引擎",
+    "englishName": "Shrink Engine",
+    "rarity": "gold"
+  },
+  {
+    "file": "Shadow_Runner_augment.png",
+    "id": 73,
+    "name": "暗影疾奔",
+    "englishName": "Shadow Runner",
+    "rarity": "silver"
+  },
+  {
+    "file": "Serve_Beyond_Death_augment.png",
+    "id": 120,
+    "name": "超越死亡的效劳",
+    "englishName": "Serve Beyond Death",
+    "rarity": "silver"
+  },
+  {
+    "file": "Self_Destruct_augment.png",
+    "id": 108,
+    "name": "自我毁灭",
+    "englishName": "Self Destruct",
+    "rarity": "silver"
+  },
+  {
+    "file": "Protein_Shake_augment.png",
+    "id": 0,
+    "name": "Protein Shake",
+    "englishName": "Protein Shake",
+    "rarity": ""
+  },
+  {
+    "file": "Searing_Dawn_augment.png",
+    "id": 72,
+    "name": "炽烈黎明",
+    "englishName": "Searing Dawn",
+    "rarity": "gold"
+  },
+  {
+    "file": "Scopier_Weapons_augment.png",
+    "id": 71,
+    "name": "更万用的瞄准镜",
+    "englishName": "Scopier Weapons",
+    "rarity": "gold"
+  },
+  {
+    "file": "Scoped_Weapons_augment.png",
+    "id": 170,
+    "name": "万用瞄准镜",
+    "englishName": "Scoped Weapons",
+    "rarity": "silver"
+  },
+  {
+    "file": "Sacrifice_For_Silver_augment.png",
+    "id": 0,
+    "name": "Sacrifice For Silver",
+    "englishName": "Sacrifice For Silver",
+    "rarity": ""
+  },
+  {
+    "file": "Sacrifice_For_Prismatic_augment.png",
+    "id": 0,
+    "name": "Sacrifice For Prismatic",
+    "englishName": "Sacrifice For Prismatic",
+    "rarity": ""
+  },
+  {
+    "file": "Sacrifice_For_Gold_augment.png",
+    "id": 0,
+    "name": "Sacrifice For Gold",
+    "englishName": "Sacrifice For Gold",
+    "rarity": ""
+  },
+  {
+    "file": "Restless_Restoration_augment.png",
+    "id": 70,
+    "name": "无休回复",
+    "englishName": "Restless Restoration",
+    "rarity": "gold"
+  },
+  {
+    "file": "Scopiest_Weapons_augment.png",
+    "id": 115,
+    "name": "最万用的瞄准镜",
+    "englishName": "Scopiest Weapons",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Slap_Around_augment.png",
+    "id": 136,
+    "name": "扇巴掌",
+    "englishName": "Slap Around",
+    "rarity": "silver"
+  },
+  {
+    "file": "Prom_Queen_augment.png",
+    "id": 1421,
+    "name": "舞会女王",
+    "englishName": "Prom Queen",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Poro_Blaster_augment.png",
+    "id": 0,
+    "name": "Poro Blaster",
+    "englishName": "Poro Blaster",
+    "rarity": ""
+  },
+  {
+    "file": "Master_of_Duality_augment.png",
+    "id": 54,
+    "name": "物法皆修",
+    "englishName": "Master of Duality",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Midnight_Express_augment.png",
+    "id": 55,
+    "name": "午夜快递",
+    "englishName": "Midnight Express",
+    "rarity": "silver"
+  },
+  {
+    "file": "Mighty_Shield_augment.png",
+    "id": 1314,
+    "name": "强力护盾",
+    "englishName": "Mighty Shield",
+    "rarity": "silver"
+  },
+  {
+    "file": "Mind_to_Matter_augment.png",
+    "id": 56,
+    "name": "由心及物",
+    "englishName": "Mind to Matter",
+    "rarity": "silver"
+  },
+  {
+    "file": "Minionmancer_augment.png",
+    "id": 104,
+    "name": "仆从大师",
+    "englishName": "Minionmancer",
+    "rarity": "gold"
+  },
+  {
+    "file": "Mirror_Image_augment.png",
+    "id": 172,
+    "name": "镜花水月",
+    "englishName": "Mirror Image",
+    "rarity": "silver"
+  },
+  {
+    "file": "Missing_Pings_augment.png",
+    "id": 0,
+    "name": "Missing Pings",
+    "englishName": "Missing Pings",
+    "rarity": ""
+  },
+  {
+    "file": "Mountain_Soul_augment.png",
+    "id": 57,
+    "name": "山脉龙魂",
+    "englishName": "Mountain Soul",
+    "rarity": "silver"
+  },
+  {
+    "file": "Mystic_Punch_augment.png",
+    "id": 58,
+    "name": "秘术冲拳",
+    "englishName": "Mystic Punch",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Mythical_augment.png",
+    "id": 59,
+    "name": "神话化身",
+    "englishName": "Mythical",
+    "rarity": "gold"
+  },
+  {
+    "file": "Nesting_Doll_augment.png",
+    "id": 177,
+    "name": "套娃",
+    "englishName": "Nesting Doll",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Nightstalking_augment.png",
+    "id": 1326,
+    "name": "夜狩",
+    "englishName": "Nightstalking",
+    "rarity": "gold"
+  },
+  {
+    "file": "Now_You_See_Me_augment.png",
+    "id": 43,
+    "name": "位移魔术",
+    "englishName": "Now You See Me",
+    "rarity": "silver"
+  },
+  {
+    "file": "Numb_to_Pain_augment.png",
+    "id": 251,
+    "name": "疼痛钝感",
+    "englishName": "Numb to Pain",
+    "rarity": "silver"
+  },
+  {
+    "file": "Oathsworn_augment.png",
+    "id": 109,
+    "name": "誓约者",
+    "englishName": "Oathsworn",
+    "rarity": "gold"
+  },
+  {
+    "file": "Ocean_Soul_augment.png",
+    "id": 60,
+    "name": "海洋龙魂",
+    "englishName": "Ocean Soul",
+    "rarity": "silver"
+  },
+  {
+    "file": "OK_Boomerang_augment.png",
+    "id": 61,
+    "name": "回力OK镖",
+    "englishName": "OK Boomerang",
+    "rarity": "gold"
+  },
+  {
+    "file": "Poltergeist_augment.png",
+    "id": 1347,
+    "name": "吵闹鬼",
+    "englishName": "Poltergeist",
+    "rarity": "silver"
+  },
+  {
+    "file": "Plaguebearer_augment.png",
+    "id": 0,
+    "name": "Plaguebearer",
+    "englishName": "Plaguebearer",
+    "rarity": ""
+  },
+  {
+    "file": "Pinball_augment.png",
+    "id": 0,
+    "name": "Pinball",
+    "englishName": "Pinball",
+    "rarity": ""
+  },
+  {
+    "file": "Phenomenal_Evil_augment.png",
+    "id": 65,
+    "name": "超凡邪恶",
+    "englishName": "Phenomenal Evil",
+    "rarity": "gold"
+  },
+  {
+    "file": "Perseverance_augment.png",
+    "id": 64,
+    "name": "坚韧",
+    "englishName": "Perseverance",
+    "rarity": "gold"
+  },
+  {
+    "file": "Parasitic_Relationship_augment.png",
+    "id": 175,
+    "name": "寄生关系",
+    "englishName": "Parasitic Relationship",
+    "rarity": "gold"
+  },
+  {
+    "file": "Prismatic_Egg_augment.png",
+    "id": 224,
+    "name": "棱彩蛋",
+    "englishName": "Prismatic Egg",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Parasitic_Mutation_augment.png",
+    "id": 240,
+    "name": "寄生突变",
+    "englishName": "Parasitic Mutation",
+    "rarity": "silver"
+  },
+  {
+    "file": "Pandora's_Box_augment.png",
+    "id": 317,
+    "name": "潘朵拉的盒子",
+    "englishName": "Pandora's Box",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Overflow_augment.png",
+    "id": 311,
+    "name": "溢流",
+    "englishName": "Overflow",
+    "rarity": "gold"
+  },
+  {
+    "file": "Outlaw's_Grit_augment.png",
+    "id": 63,
+    "name": "狂徒豪气",
+    "englishName": "Outlaw's Grit",
+    "rarity": "gold"
+  },
+  {
+    "file": "Orbital_Laser_augment.png",
+    "id": 208,
+    "name": "轨道镭射",
+    "englishName": "Orbital Laser",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Omni_Soul_augment.png",
+    "id": 62,
+    "name": "全能龙魂",
+    "englishName": "Omni Soul",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Ominous_Pact_augment.png",
+    "id": 1332,
+    "name": "不祥契约",
+    "englishName": "Ominous Pact",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Pandoras_Box_augment.png",
+    "id": 317,
+    "name": "潘朵拉的盒子",
+    "englishName": "Pandoras Box",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Slime_Time_augment.png",
+    "id": 232,
+    "name": "史莱姆时间",
+    "englishName": "Slime Time",
+    "rarity": "silver"
+  },
+  {
+    "file": "Slow_and_Steady_augment.png",
+    "id": 250,
+    "name": "一板一眼",
+    "englishName": "Slow and Steady",
+    "rarity": "gold"
+  },
+  {
+    "file": "Slow_Cooker_augment.png",
+    "id": 75,
+    "name": "慢炖",
+    "englishName": "Slow Cooker",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Trueshot_Prodigy_augment.png",
+    "id": 86,
+    "name": "精准奇才",
+    "englishName": "Trueshot Prodigy",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Twice_Thrice_augment.png",
+    "id": 107,
+    "name": "接二连三",
+    "englishName": "Twice Thrice",
+    "rarity": "gold"
+  },
+  {
+    "file": "Twin_Fire_augment.png",
+    "id": 1415,
+    "name": "双生火焰",
+    "englishName": "Twin Fire",
+    "rarity": "silver"
+  },
+  {
+    "file": "Typhoon_augment.png",
+    "id": 87,
+    "name": "台风",
+    "englishName": "Typhoon",
+    "rarity": "silver"
+  },
+  {
+    "file": "Ultimate_Awakening_augment.png",
+    "id": 1349,
+    "name": "终极唤醒",
+    "englishName": "Ultimate Awakening",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Ultimate_Revolution_augment.png",
+    "id": 88,
+    "name": "终极刷新",
+    "englishName": "Ultimate Revolution",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Ultimate_Unstoppable_augment.png",
+    "id": 112,
+    "name": "终极不可阻挡",
+    "englishName": "Ultimate Unstoppable",
+    "rarity": "silver"
+  },
+  {
+    "file": "Upgrade_Collector_augment.png",
+    "id": 0,
+    "name": "Upgrade Collector",
+    "englishName": "Upgrade Collector",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Cutlass_augment.png",
+    "id": 0,
+    "name": "Upgrade Cutlass",
+    "englishName": "Upgrade Cutlass",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Hubris_augment.png",
+    "id": 0,
+    "name": "Upgrade Hubris",
+    "englishName": "Upgrade Hubris",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Immolate_augment.png",
+    "id": 0,
+    "name": "Upgrade Immolate",
+    "englishName": "Upgrade Immolate",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Infinity_Edge_augment.png",
+    "id": 0,
+    "name": "Upgrade Infinity Edge",
+    "englishName": "Upgrade Infinity Edge",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Mikael's_Blessing_augment.png",
+    "id": 1340,
+    "name": "升级：米凯尔的祝福",
+    "englishName": "Upgrade Mikael's Blessing",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Upgrade_Sheen_augment.png",
+    "id": 0,
+    "name": "Upgrade Sheen",
+    "englishName": "Upgrade Sheen",
+    "rarity": ""
+  },
+  {
+    "file": "Upgrade_Zhonya's_augment.png",
+    "id": 0,
+    "name": "Upgrade Zhonya's",
+    "englishName": "Upgrade Zhonya's",
+    "rarity": ""
+  },
+  {
+    "file": "Vampirism_augment.png",
+    "id": 1346,
+    "name": "吸血习性",
+    "englishName": "Vampirism",
+    "rarity": "gold"
+  },
+  {
+    "file": "Vanish_augment.png",
+    "id": 89,
+    "name": "遁入暗影",
+    "englishName": "Vanish",
+    "rarity": "gold"
+  },
+  {
+    "file": "With_Haste_augment.png",
+    "id": 98,
+    "name": "急急小子",
+    "englishName": "With Haste",
+    "rarity": "gold"
+  },
+  {
+    "file": "Witchful_Thinking_augment.png",
+    "id": 97,
+    "name": "巫师式思考",
+    "englishName": "Witchful Thinking",
+    "rarity": "silver"
+  },
+  {
+    "file": "Wisdom_of_Ages_augment.png",
+    "id": 96,
+    "name": "时光之智慧",
+    "englishName": "Wisdom of Ages",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Windspeaker's_Blessing_augment.png",
+    "id": 95,
+    "name": "风语者的祝福",
+    "englishName": "Windspeaker's Blessing",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Wind_Beneath_Blade_augment.png",
+    "id": 1316,
+    "name": "刃下生风",
+    "englishName": "Wind Beneath Blade",
+    "rarity": "silver"
+  },
+  {
+    "file": "Willing_Sacrifice_augment.png",
+    "id": 94,
+    "name": "自愿牺牲",
+    "englishName": "Willing Sacrifice",
+    "rarity": "gold"
+  },
+  {
+    "file": "Trickster_Demon_augment.png",
+    "id": 236,
+    "name": "诡术恶魔",
+    "englishName": "Trickster Demon",
+    "rarity": "gold"
+  },
+  {
+    "file": "Weighted_Popoffs_augment.png",
+    "id": 0,
+    "name": "Weighted Popoffs",
+    "englishName": "Weighted Popoffs",
+    "rarity": ""
+  },
+  {
+    "file": "Warmup_Routine_augment.png",
+    "id": 93,
+    "name": "热身动作",
+    "englishName": "Warmup Routine",
+    "rarity": "silver"
+  },
+  {
+    "file": "Vulnerability_augment.png",
+    "id": 92,
+    "name": "易损",
+    "englishName": "Vulnerability",
+    "rarity": "gold"
+  },
+  {
+    "file": "Void_Rift_augment.png",
+    "id": 0,
+    "name": "Void Rift",
+    "englishName": "Void Rift",
+    "rarity": ""
+  },
+  {
+    "file": "Virtuous_Cycle_augment.png",
+    "id": 91,
+    "name": "良性循环",
+    "englishName": "Virtuous Cycle",
+    "rarity": "silver"
+  },
+  {
+    "file": "Vengeance_augment.png",
+    "id": 90,
+    "name": "复仇",
+    "englishName": "Vengeance",
+    "rarity": "gold"
+  },
+  {
+    "file": "Veil_Of_Warding_augment.png",
+    "id": 1034,
+    "name": "防护面纱",
+    "englishName": "Veil Of Warding",
+    "rarity": "silver"
+  },
+  {
+    "file": "We'll_Be_Right_Back_augment.png",
+    "id": 312,
+    "name": "我们马上就回来",
+    "englishName": "We'll Be Right Back",
+    "rarity": "gold"
+  },
+  {
+    "file": "Transmute_Prismatic_augment.png",
+    "id": 238,
+    "name": "质变：棱彩阶",
+    "englishName": "Transmute Prismatic",
+    "rarity": "gold"
+  },
+  {
+    "file": "Transmute_Gold_augment.png",
+    "id": 237,
+    "name": "质变：黄金阶",
+    "englishName": "Transmute Gold",
+    "rarity": "silver"
+  },
+  {
+    "file": "Transmute_Chaos_augment.png",
+    "id": 243,
+    "name": "质变：混沌",
+    "englishName": "Transmute Chaos",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Spiritual_Purification_augment.png",
+    "id": 0,
+    "name": "Spiritual Purification",
+    "englishName": "Spiritual Purification",
+    "rarity": ""
+  },
+  {
+    "file": "Spirit_Link_augment.png",
+    "id": 78,
+    "name": "灵魂连接",
+    "englishName": "Spirit Link",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Spirit_Infusion_augment.png",
+    "id": 326,
+    "name": "灵之灌注",
+    "englishName": "Spirit Infusion",
+    "rarity": "silver"
+  },
+  {
+    "file": "Spin_To_Win_augment.png",
+    "id": 214,
+    "name": "旋转至胜",
+    "englishName": "Spin To Win",
+    "rarity": "silver"
+  },
+  {
+    "file": "Spin_Me_Right_Round_augment.png",
+    "id": 0,
+    "name": "Spin Me Right Round",
+    "englishName": "Spin Me Right Round",
+    "rarity": ""
+  },
+  {
+    "file": "Spellwake_augment.png",
+    "id": 135,
+    "name": "法术苏醒",
+    "englishName": "Spellwake",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Stackosaurus_Rex_augment.png",
+    "id": 204,
+    "name": "叠角龙",
+    "englishName": "Stackosaurus Rex",
+    "rarity": "silver"
+  },
+  {
+    "file": "Speed_Demon_augment.png",
+    "id": 0,
+    "name": "Speed Demon",
+    "englishName": "Speed Demon",
+    "rarity": ""
+  },
+  {
+    "file": "Soul_Eater_augment.png",
+    "id": 1375,
+    "name": "吞噬灵魂",
+    "englishName": "Soul Eater",
+    "rarity": "gold"
+  },
+  {
+    "file": "Sonic_Boom_augment.png",
+    "id": 76,
+    "name": "天音爆",
+    "englishName": "Sonic Boom",
+    "rarity": "silver"
+  },
+  {
+    "file": "Sonata_augment.png",
+    "id": 1420,
+    "name": "咏叹奏鸣",
+    "englishName": "Sonata",
+    "rarity": "gold"
+  },
+  {
+    "file": "Snowball_Upgrade_augment.png",
+    "id": 1334,
+    "name": "升级：雪球",
+    "englishName": "Snowball Upgrade",
+    "rarity": "gold"
+  },
+  {
+    "file": "Snowball_Roulette_augment.png",
+    "id": 1342,
+    "name": "雪球扭蛋机",
+    "englishName": "Snowball Roulette",
+    "rarity": "gold"
+  },
+  {
+    "file": "Snowball_Fight!_augment.png",
+    "id": 176,
+    "name": "雪球大战！",
+    "englishName": "Snowball Fight!",
+    "rarity": "silver"
+  },
+  {
+    "file": "Soul_Siphon_augment.png",
+    "id": 77,
+    "name": "灵魂虹吸",
+    "englishName": "Soul Siphon",
+    "rarity": "gold"
+  },
+  {
+    "file": "Marksmage_augment.png",
+    "id": 129,
+    "name": "神射法师",
+    "englishName": "Marksmage",
+    "rarity": "gold"
+  },
+  {
+    "file": "Stats_on_Stats_on_Stats!_augment.png",
+    "id": 228,
+    "name": "属性叠属性叠属性！",
+    "englishName": "Stats on Stats on Stats!",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Stats!_augment.png",
+    "id": 226,
+    "name": "属性！",
+    "englishName": "Stats!",
+    "rarity": "silver"
+  },
+  {
+    "file": "Trailblazer_augment.png",
+    "id": 221,
+    "name": "引路者",
+    "englishName": "Trailblazer",
+    "rarity": "silver"
+  },
+  {
+    "file": "Tormentor_augment.png",
+    "id": 85,
+    "name": "折磨之叉",
+    "englishName": "Tormentor",
+    "rarity": "silver"
+  },
+  {
+    "file": "Thread_the_Needle_augment.png",
+    "id": 84,
+    "name": "穿针引线",
+    "englishName": "Thread the Needle",
+    "rarity": "gold"
+  },
+  {
+    "file": "Thief's_Gloves_augment.png",
+    "id": 83,
+    "name": "窃贼手套",
+    "englishName": "Thief's Gloves",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "The_Brutalizer_augment.png",
+    "id": 82,
+    "name": "残暴之力",
+    "englishName": "The Brutalizer",
+    "rarity": "silver"
+  },
+  {
+    "file": "Tap_Dancer_augment.png",
+    "id": 81,
+    "name": "踢踏舞",
+    "englishName": "Tap Dancer",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Stats_on_Stats!_augment.png",
+    "id": 227,
+    "name": "属性叠属性！",
+    "englishName": "Stats on Stats!",
+    "rarity": "gold"
+  },
+  {
+    "file": "Tank_It_Or_Leave_It_augment.png",
+    "id": 80,
+    "name": "会心防守",
+    "englishName": "Tank It Or Leave It",
+    "rarity": "silver"
+  },
+  {
+    "file": "Symphony_of_War_augment.png",
+    "id": 79,
+    "name": "战争交响乐",
+    "englishName": "Symphony of War",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Symbiotic_Mutation_augment.png",
+    "id": 239,
+    "name": "共生突变",
+    "englishName": "Symbiotic Mutation",
+    "rarity": "gold"
+  },
+  {
+    "file": "Swift_And_Safe_augment.png",
+    "id": 1315,
+    "name": "快中求稳",
+    "englishName": "Swift And Safe",
+    "rarity": "silver"
+  },
+  {
+    "file": "Summoner's_Roulette_augment.png",
+    "id": 123,
+    "name": "召唤师峡谷的轮盘",
+    "englishName": "Summoner's Roulette",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Summoner_Revolution_augment.png",
+    "id": 223,
+    "name": "召唤师革新",
+    "englishName": "Summoner Revolution",
+    "rarity": "gold"
+  },
+  {
+    "file": "Stuck_In_Here_With_Me_augment.png",
+    "id": 0,
+    "name": "Stuck In Here With Me",
+    "englishName": "Stuck In Here With Me",
+    "rarity": ""
+  },
+  {
+    "file": "Tank_Engine_augment.png",
+    "id": 313,
+    "name": "坦克引擎",
+    "englishName": "Tank Engine",
+    "rarity": "gold"
+  },
+  {
+    "file": "Zealot_augment.png",
+    "id": 0,
+    "name": "Zealot",
+    "englishName": "Zealot",
+    "rarity": ""
+  },
+  {
+    "file": "Magic_Missile_augment.png",
+    "id": 133,
+    "name": "魔法飞弹",
+    "englishName": "Magic Missile",
+    "rarity": "gold"
+  },
+  {
+    "file": "Lightning_Strikes_augment.png",
+    "id": 52,
+    "name": "闪电打击",
+    "englishName": "Lightning Strikes",
+    "rarity": "gold"
+  },
+  {
+    "file": "Clothesline_augment.png",
+    "id": 110,
+    "name": "晾衣绳",
+    "englishName": "Clothesline",
+    "rarity": "silver"
+  },
+  {
+    "file": "Clown_College_augment.png",
+    "id": 310,
+    "name": "小丑学院",
+    "englishName": "Clown College",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Combo_Master_augment.png",
+    "id": 16,
+    "name": "连招大师",
+    "englishName": "Combo Master",
+    "rarity": "gold"
+  },
+  {
+    "file": "Contract_Killer_augment.png",
+    "id": 17,
+    "name": "职业杀手",
+    "englishName": "Contract Killer",
+    "rarity": "silver"
+  },
+  {
+    "file": "Courage_of_the_Colossus_augment.png",
+    "id": 18,
+    "name": "巨像的勇气",
+    "englishName": "Courage of the Colossus",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Crack_Open_That_Egg_augment.png",
+    "id": 0,
+    "name": "Crack Open That Egg",
+    "englishName": "Crack Open That Egg",
+    "rarity": ""
+  },
+  {
+    "file": "Crit_'n_Cast_augment.png",
+    "id": 2024,
+    "name": "由暴生急",
+    "englishName": "Crit 'n Cast",
+    "rarity": "silver"
+  },
+  {
+    "file": "Critical_Healing_augment.png",
+    "id": 118,
+    "name": "会心治疗",
+    "englishName": "Critical Healing",
+    "rarity": "gold"
+  },
+  {
+    "file": "Critical_Missile_augment.png",
+    "id": 1356,
+    "name": "暴击飞弹",
+    "englishName": "Critical Missile",
+    "rarity": "gold"
+  },
+  {
+    "file": "Critical_Rhythm_augment.png",
+    "id": 1328,
+    "name": "暴击律动",
+    "englishName": "Critical Rhythm",
+    "rarity": "gold"
+  },
+  {
+    "file": "Cruelty_augment.png",
+    "id": 0,
+    "name": "Cruelty",
+    "englishName": "Cruelty",
+    "rarity": ""
+  },
+  {
+    "file": "Dark_Blessing_augment.png",
+    "id": 215,
+    "name": "黑暗赐福",
+    "englishName": "Dark Blessing",
+    "rarity": "gold"
+  },
+  {
+    "file": "Dashing_augment.png",
+    "id": 19,
+    "name": "全凭身法",
+    "englishName": "Dashing",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Dawnbringer's_Resolve_augment.png",
+    "id": 20,
+    "name": "黎明使者的坚决",
+    "englishName": "Dawnbringer's Resolve",
+    "rarity": "gold"
+  },
+  {
+    "file": "Deathtouch_augment.png",
+    "id": 217,
+    "name": "死亡触摸",
+    "englishName": "Deathtouch",
+    "rarity": "gold"
+  },
+  {
+    "file": "Defensive_Maneuvers_augment.png",
+    "id": 21,
+    "name": "防御计略",
+    "englishName": "Defensive Maneuvers",
+    "rarity": "gold"
+  },
+  {
+    "file": "Deft_augment.png",
+    "id": 22,
+    "name": "灵巧",
+    "englishName": "Deft",
+    "rarity": "silver"
+  },
+  {
+    "file": "Dropkick_augment.png",
+    "id": 0,
+    "name": "Dropkick",
+    "englishName": "Dropkick",
+    "rarity": ""
+  },
+  {
+    "file": "Draw_Your_Sword_augment.png",
+    "id": 134,
+    "name": "亮出你的剑",
+    "englishName": "Draw Your Sword",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Double_Tap_augment.png",
+    "id": 0,
+    "name": "Double Tap",
+    "englishName": "Double Tap",
+    "rarity": ""
+  },
+  {
+    "file": "Doomsayer_augment.png",
+    "id": 219,
+    "name": "末日预言者",
+    "englishName": "Doomsayer",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Donation_augment.png",
+    "id": 1384,
+    "name": "捐赠",
+    "englishName": "Donation",
+    "rarity": "gold"
+  },
+  {
+    "file": "Don't_Chase_augment.png",
+    "id": 102,
+    "name": "请勿追击",
+    "englishName": "Don't Chase",
+    "rarity": "silver"
+  },
+  {
+    "file": "Circle_of_Death_augment.png",
+    "id": 15,
+    "name": "死亡之环",
+    "englishName": "Circle of Death",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Don't_Blink_augment.png",
+    "id": 26,
+    "name": "唯快不破",
+    "englishName": "Don't Blink",
+    "rarity": "silver"
+  },
+  {
+    "file": "Dive_Bomber_augment.png",
+    "id": 25,
+    "name": "俯冲轰炸",
+    "englishName": "Dive Bomber",
+    "rarity": "silver"
+  },
+  {
+    "file": "Die_Another_Day_augment.png",
+    "id": 24,
+    "name": "择日赴死",
+    "englishName": "Die Another Day",
+    "rarity": "gold"
+  },
+  {
+    "file": "Devil_On_Your_Shoulder_augment.png",
+    "id": 0,
+    "name": "Devil On Your Shoulder",
+    "englishName": "Devil On Your Shoulder",
+    "rarity": ""
+  },
+  {
+    "file": "Desecrator_augment.png",
+    "id": 218,
+    "name": "亵渎者",
+    "englishName": "Desecrator",
+    "rarity": "silver"
+  },
+  {
+    "file": "Demon's_Dance_augment.png",
+    "id": 23,
+    "name": "魔鬼之舞",
+    "englishName": "Demon's Dance",
+    "rarity": "gold"
+  },
+  {
+    "file": "Dematerialize_augment.png",
+    "id": 171,
+    "name": "去质",
+    "englishName": "Dematerialize",
+    "rarity": "silver"
+  },
+  {
+    "file": "Divine_Intervention_augment.png",
+    "id": 301,
+    "name": "神圣干预",
+    "englishName": "Divine Intervention",
+    "rarity": "gold"
+  },
+  {
+    "file": "Dual_Wield_augment.png",
+    "id": 225,
+    "name": "双刀流",
+    "englishName": "Dual Wield",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Cheating_augment.png",
+    "id": 0,
+    "name": "Cheating",
+    "englishName": "Cheating",
+    "rarity": ""
+  },
+  {
+    "file": "Chain_Lightning_augment.png",
+    "id": 166,
+    "name": "连锁闪电",
+    "englishName": "Chain Lightning",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Accelerating_Sorcery_augment.png",
+    "id": 1,
+    "name": "加速巫术",
+    "englishName": "Accelerating Sorcery",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Adamant_augment.png",
+    "id": 1327,
+    "name": "坚若磐石",
+    "englishName": "Adamant",
+    "rarity": "silver"
+  },
+  {
+    "file": "ADAPt_augment.png",
+    "id": 205,
+    "name": "物理转魔法",
+    "englishName": "ADAPt",
+    "rarity": "silver"
+  },
+  {
+    "file": "Aim_For_The_Head_augment.png",
+    "id": 336,
+    "name": "瞄准脑袋",
+    "englishName": "Aim For The Head",
+    "rarity": "gold"
+  },
+  {
+    "file": "All_For_You_augment.png",
+    "id": 141,
+    "name": "全心为你",
+    "englishName": "All For You",
+    "rarity": "gold"
+  },
+  {
+    "file": "And_My_Axe!_augment.png",
+    "id": 309,
+    "name": "还有我的斧头！",
+    "englishName": "And My Axe!",
+    "rarity": "gold"
+  },
+  {
+    "file": "Apex_Inventor_augment.png",
+    "id": 2,
+    "name": "尖端发明家",
+    "englishName": "Apex Inventor",
+    "rarity": "gold"
+  },
+  {
+    "file": "Augment_405_augment.png",
+    "id": 405,
+    "name": "强化符文405",
+    "englishName": "Augment 405",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Augmented_Power_augment.png",
+    "id": 322,
+    "name": "强化之能量",
+    "englishName": "Augmented Power",
+    "rarity": "silver"
+  },
+  {
+    "file": "Back_to_Basics_augment.png",
+    "id": 4,
+    "name": "回归基本功",
+    "englishName": "Back to Basics",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Banner_of_Command_augment.png",
+    "id": 5,
+    "name": "号令之旗",
+    "englishName": "Banner of Command",
+    "rarity": "gold"
+  },
+  {
+    "file": "Big_Brain_augment.png",
+    "id": 180,
+    "name": "超强大脑",
+    "englishName": "Big Brain",
+    "rarity": "gold"
+  },
+  {
+    "file": "Biggest_Snowball_Ever_augment.png",
+    "id": 1329,
+    "name": "史上最大雪球",
+    "englishName": "Biggest Snowball Ever",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Blade_Waltz_augment.png",
+    "id": 6,
+    "name": "利刃华尔兹",
+    "englishName": "Blade Waltz",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Blood_Brother_augment.png",
+    "id": 200,
+    "name": "血亲兄弟",
+    "englishName": "Blood Brother",
+    "rarity": "gold"
+  },
+  {
+    "file": "Blunt_Force_augment.png",
+    "id": 7,
+    "name": "大力",
+    "englishName": "Blunt Force",
+    "rarity": "silver"
+  },
+  {
+    "file": "Bodyguard_augment.png",
+    "id": 321,
+    "name": "保镖",
+    "englishName": "Bodyguard",
+    "rarity": "gold"
+  },
+  {
+    "file": "Cerberus_augment.png",
+    "id": 323,
+    "name": "地狱三头犬",
+    "englishName": "Cerberus",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Center_of_the_Universe_augment.png",
+    "id": 193,
+    "name": "星原之准",
+    "englishName": "Center of the Universe",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Celestial_Body_augment.png",
+    "id": 13,
+    "name": "星界躯体",
+    "englishName": "Celestial Body",
+    "rarity": "gold"
+  },
+  {
+    "file": "Castle_augment.png",
+    "id": 12,
+    "name": "王车易位",
+    "englishName": "Castle",
+    "rarity": "silver"
+  },
+  {
+    "file": "Cannon_Fodder_augment.png",
+    "id": 10,
+    "name": "炮灰",
+    "englishName": "Cannon Fodder",
+    "rarity": "silver"
+  },
+  {
+    "file": "Can't_Touch_This_augment.png",
+    "id": 11,
+    "name": "你摸不到",
+    "englishName": "Can't Touch This",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Chauffeur_augment.png",
+    "id": 14,
+    "name": "专属司机",
+    "englishName": "Chauffeur",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Calculated_Risk_augment.png",
+    "id": 320,
+    "name": "精算风险",
+    "englishName": "Calculated Risk",
+    "rarity": "silver"
+  },
+  {
+    "file": "Buckle_Up_augment.png",
+    "id": 8,
+    "name": "雪橇战术",
+    "englishName": "Buckle Up",
+    "rarity": "silver"
+  },
+  {
+    "file": "Bread_And_Jam_augment.png",
+    "id": 150,
+    "name": "面包和果酱",
+    "englishName": "Bread And Jam",
+    "rarity": "gold"
+  },
+  {
+    "file": "Bread_And_Cheese_augment.png",
+    "id": 151,
+    "name": "面包和奶酪",
+    "englishName": "Bread And Cheese",
+    "rarity": "gold"
+  },
+  {
+    "file": "Bread_And_Butter_augment.png",
+    "id": 103,
+    "name": "面包和黄油",
+    "englishName": "Bread And Butter",
+    "rarity": "gold"
+  },
+  {
+    "file": "Bravest_of_the_Brave_augment.png",
+    "id": 324,
+    "name": "勇中最勇",
+    "englishName": "Bravest of the Brave",
+    "rarity": "silver"
+  },
+  {
+    "file": "Bounce_Of_The_Poro_King_augment.png",
+    "id": 0,
+    "name": "Bounce Of The Poro King",
+    "englishName": "Bounce Of The Poro King",
+    "rarity": ""
+  },
+  {
+    "file": "Buff_Buddies_augment.png",
+    "id": 9,
+    "name": "霸符兄弟",
+    "englishName": "Buff Buddies",
+    "rarity": "silver"
+  },
+  {
+    "file": "Earthwake_augment.png",
+    "id": 27,
+    "name": "大地苏醒",
+    "englishName": "Earthwake",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Empowered_By_The_Faithful_augment.png",
+    "id": 0,
+    "name": "Empowered By The Faithful",
+    "englishName": "Empowered By The Faithful",
+    "rarity": ""
+  },
+  {
+    "file": "Empyrean_Promise_augment.png",
+    "id": 1331,
+    "name": "至高天诺言",
+    "englishName": "Empyrean Promise",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Guilty_Pleasure_augment.png",
+    "id": 42,
+    "name": "恶趣味",
+    "englishName": "Guilty Pleasure",
+    "rarity": "silver"
+  },
+  {
+    "file": "Hand_Of_Baron_augment.png",
+    "id": 1389,
+    "name": "男爵之手",
+    "englishName": "Hand Of Baron",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Hat_On_A_Hat_augment.png",
+    "id": 1341,
+    "name": "帽上加帽",
+    "englishName": "Hat On A Hat",
+    "rarity": "silver"
+  },
+  {
+    "file": "Hat_Trick_augment.png",
+    "id": 241,
+    "name": "帽子戏法",
+    "englishName": "Hat Trick",
+    "rarity": "gold"
+  },
+  {
+    "file": "Heads_Up_Cupcake!_augment.png",
+    "id": 0,
+    "name": "Heads Up Cupcake!",
+    "englishName": "Heads Up Cupcake!",
+    "rarity": ""
+  },
+  {
+    "file": "Heavy_Hitter_augment.png",
+    "id": 181,
+    "name": "重量级打击手",
+    "englishName": "Heavy Hitter",
+    "rarity": "silver"
+  },
+  {
+    "file": "Hive_Mind_augment.png",
+    "id": 338,
+    "name": "蜂巢思维",
+    "englishName": "Hive Mind",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Hold_Very_Still_augment.png",
+    "id": 207,
+    "name": "纹丝不动",
+    "englishName": "Hold Very Still",
+    "rarity": "silver"
+  },
+  {
+    "file": "Holy_Fire_augment.png",
+    "id": 198,
+    "name": "圣火",
+    "englishName": "Holy Fire",
+    "rarity": "gold"
+  },
+  {
+    "file": "Holy_Snowball_augment.png",
+    "id": 0,
+    "name": "Holy Snowball",
+    "englishName": "Holy Snowball",
+    "rarity": ""
+  },
+  {
+    "file": "Homeguard_augment.png",
+    "id": 105,
+    "name": "家园卫士",
+    "englishName": "Homeguard",
+    "rarity": "silver"
+  },
+  {
+    "file": "I'm_A_Baby_Kitty_Where_Is_Mama_augment.png",
+    "id": 0,
+    "name": "I'm A Baby Kitty Where Is Mama",
+    "englishName": "I'm A Baby Kitty Where Is Mama",
+    "rarity": ""
+  },
+  {
+    "file": "Ice_Cold_augment.png",
+    "id": 44,
+    "name": "冰寒",
+    "englishName": "Ice Cold",
+    "rarity": "silver"
+  },
+  {
+    "file": "Impassable_augment.png",
+    "id": 149,
+    "name": "不动如山",
+    "englishName": "Impassable",
+    "rarity": "gold"
+  },
+  {
+    "file": "Infernal_Conduit_augment.png",
+    "id": 45,
+    "name": "炼狱导管",
+    "englishName": "Infernal Conduit",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Infernal_Soul_augment.png",
+    "id": 46,
+    "name": "炼狱龙魂",
+    "englishName": "Infernal Soul",
+    "rarity": "silver"
+  },
+  {
+    "file": "Infinite_Recursion_augment.png",
+    "id": 1388,
+    "name": "无限循环往复",
+    "englishName": "Infinite Recursion",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Light_Warden_augment.png",
+    "id": 231,
+    "name": "光明守望者",
+    "englishName": "Light Warden",
+    "rarity": "gold"
+  },
+  {
+    "file": "Light_'em_Up!_augment.png",
+    "id": 51,
+    "name": "点亮他们！",
+    "englishName": "Light 'em Up!",
+    "rarity": "silver"
+  },
+  {
+    "file": "Leg_Day_augment.png",
+    "id": 305,
+    "name": "练腿日",
+    "englishName": "Leg Day",
+    "rarity": "silver"
+  },
+  {
+    "file": "Laser_Heal_augment.png",
+    "id": 1339,
+    "name": "激光治疗",
+    "englishName": "Laser Heal",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Laser_Eyes_augment.png",
+    "id": 174,
+    "name": "镭射眼",
+    "englishName": "Laser Eyes",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "King_Me_augment.png",
+    "id": 1337,
+    "name": "尊我为王",
+    "englishName": "King Me",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Growth_Spurt_augment.png",
+    "id": 1401,
+    "name": "生机迸发",
+    "englishName": "Growth Spurt",
+    "rarity": "gold"
+  },
+  {
+    "file": "Kill_Secured_augment.png",
+    "id": 2026,
+    "name": "杀意翻涌",
+    "englishName": "Kill Secured",
+    "rarity": "silver"
+  },
+  {
+    "file": "Juiced_augment.png",
+    "id": 0,
+    "name": "Juiced",
+    "englishName": "Juiced",
+    "rarity": ""
+  },
+  {
+    "file": "Juice_Press_augment.png",
+    "id": 242,
+    "name": "榨汁机",
+    "englishName": "Juice Press",
+    "rarity": "silver"
+  },
+  {
+    "file": "Juice_Box_augment.png",
+    "id": 49,
+    "name": "果汁盒",
+    "englishName": "Juice Box",
+    "rarity": "silver"
+  },
+  {
+    "file": "Jeweled_Gauntlet_augment.png",
+    "id": 48,
+    "name": "珠光护手",
+    "englishName": "Jeweled Gauntlet",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "It's_Killing_Time_augment.png",
+    "id": 211,
+    "name": "杀戮时间到了",
+    "englishName": "It's Killing Time",
+    "rarity": "gold"
+  },
+  {
+    "file": "It's_Critical_augment.png",
+    "id": 47,
+    "name": "关键暴击",
+    "englishName": "It's Critical",
+    "rarity": "gold"
+  },
+  {
+    "file": "Keystone_Conjurer_augment.png",
+    "id": 50,
+    "name": "基石法师",
+    "englishName": "Keystone Conjurer",
+    "rarity": "gold"
+  },
+  {
+    "file": "Grandma's_Chili_Oil_augment.png",
+    "id": 1406,
+    "name": "祖母的辣椒油",
+    "englishName": "Grandma's Chili Oil",
+    "rarity": "gold"
+  },
+  {
+    "file": "Goredrink_augment.png",
+    "id": 138,
+    "name": "渴血",
+    "englishName": "Goredrink",
+    "rarity": "silver"
+  },
+  {
+    "file": "Goliath_augment.png",
+    "id": 41,
+    "name": "歌利亚巨人",
+    "englishName": "Goliath",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Final_Form_augment.png",
+    "id": 1344,
+    "name": "最终形态",
+    "englishName": "Final Form",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Fey_Magic_augment.png",
+    "id": 194,
+    "name": "精怪魔法",
+    "englishName": "Fey Magic",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Fetch_augment.png",
+    "id": 0,
+    "name": "Fetch",
+    "englishName": "Fetch",
+    "rarity": ""
+  },
+  {
+    "file": "Feel_the_Burn_augment.png",
+    "id": 35,
+    "name": "感受燃烧",
+    "englishName": "Feel the Burn",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Fan_the_Hammer_augment.png",
+    "id": 220,
+    "name": "连拨击锤",
+    "englishName": "Fan the Hammer",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Fallen_Aegis_augment.png",
+    "id": 34,
+    "name": "堕落圣盾",
+    "englishName": "Fallen Aegis",
+    "rarity": "silver"
+  },
+  {
+    "file": "Fire_Sale_augment.png",
+    "id": 229,
+    "name": "火爆甩卖",
+    "englishName": "Fire Sale",
+    "rarity": "silver"
+  },
+  {
+    "file": "Extendo-Arm_augment.png",
+    "id": 33,
+    "name": "弹簧飞爪",
+    "englishName": "Extendo-Arm",
+    "rarity": "gold"
+  },
+  {
+    "file": "Evocation_augment.png",
+    "id": 31,
+    "name": "活力焕发",
+    "englishName": "Evocation",
+    "rarity": "silver"
+  },
+  {
+    "file": "Eureka_augment.png",
+    "id": 30,
+    "name": "尤里卡",
+    "englishName": "Eureka",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Ethereal_Weapon_augment.png",
+    "id": 29,
+    "name": "虚幻武器",
+    "englishName": "Ethereal Weapon",
+    "rarity": "gold"
+  },
+  {
+    "file": "Escape_Plan_augment.png",
+    "id": 1333,
+    "name": "逃跑计划",
+    "englishName": "Escape Plan",
+    "rarity": "silver"
+  },
+  {
+    "file": "EscAPADe_augment.png",
+    "id": 206,
+    "name": "魔法转物理",
+    "englishName": "EscAPADe",
+    "rarity": "silver"
+  },
+  {
+    "file": "Erosion_augment.png",
+    "id": 28,
+    "name": "侵蚀",
+    "englishName": "Erosion",
+    "rarity": "silver"
+  },
+  {
+    "file": "Executioner_augment.png",
+    "id": 32,
+    "name": "裁决使",
+    "englishName": "Executioner",
+    "rarity": "silver"
+  },
+  {
+    "file": "Mad_Scientist_augment.png",
+    "id": 53,
+    "name": "科学狂人",
+    "englishName": "Mad Scientist",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Firebrand_augment.png",
+    "id": 36,
+    "name": "火上浇油",
+    "englishName": "Firebrand",
+    "rarity": "gold"
+  },
+  {
+    "file": "First_Aid_Kit_augment.png",
+    "id": 37,
+    "name": "急救用具",
+    "englishName": "First Aid Kit",
+    "rarity": "silver"
+  },
+  {
+    "file": "Goldrend_augment.png",
+    "id": 1335,
+    "name": "夺金",
+    "englishName": "Goldrend",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Glass_Cannon_augment.png",
+    "id": 1325,
+    "name": "玻璃大炮",
+    "englishName": "Glass Cannon",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Giant_Slayer_augment.png",
+    "id": 195,
+    "name": "巨人杀手",
+    "englishName": "Giant Slayer",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Get_Excited_augment.png",
+    "id": 0,
+    "name": "Get Excited",
+    "englishName": "Get Excited",
+    "rarity": ""
+  },
+  {
+    "file": "Gash_augment.png",
+    "id": 1321,
+    "name": "砍伤",
+    "englishName": "Gash",
+    "rarity": "prismatic"
+  },
+  {
+    "file": "Fully_Automated_augment.png",
+    "id": 213,
+    "name": "完全自动化",
+    "englishName": "Fully Automated",
+    "rarity": "silver"
+  },
+  {
+    "file": "Firefox_augment.png",
+    "id": 308,
+    "name": "火狐",
+    "englishName": "Firefox",
+    "rarity": "silver"
+  },
+  {
+    "file": "Fruits_of_Your_Labor_augment.png",
+    "id": 222,
+    "name": "你的劳动果实",
+    "englishName": "Fruits of Your Labor",
+    "rarity": "silver"
+  },
+  {
+    "file": "Frost_Wraith_augment.png",
+    "id": 39,
+    "name": "冰霜 幽灵",
+    "englishName": "Frost Wraith",
+    "rarity": "silver"
+  },
+  {
+    "file": "From_Beginning_to_End_augment.png",
+    "id": 38,
+    "name": "有始有终",
+    "englishName": "From Beginning to End",
+    "rarity": "gold"
+  },
+  {
+    "file": "Flashy_augment.png",
+    "id": 116,
+    "name": "闪现向前",
+    "englishName": "Flashy",
+    "rarity": "gold"
+  },
+  {
+    "file": "Flashbang_augment.png",
+    "id": 187,
+    "name": "闪光弹",
+    "englishName": "Flashbang",
+    "rarity": "silver"
+  },
+  {
+    "file": "Flash_2_augment.png",
+    "id": 1348,
+    "name": "闪闪现现",
+    "englishName": "Flash 2",
+    "rarity": "silver"
+  },
+  {
+    "file": "First-Aid_Kit_augment.png",
+    "id": 37,
+    "name": "急救用具",
+    "englishName": "First-Aid Kit",
+    "rarity": "silver"
+  },
+  {
+    "file": "Frozen_Foundations_augment.png",
+    "id": 40,
+    "name": "冰封地基",
+    "englishName": "Frozen Foundations",
+    "rarity": "silver"
+  },
+  {
+    "file": "Zhonya's_Epiphany_augment.png",
+    "id": 99,
+    "name": "中娅显灵",
+    "englishName": "Zhonya's Epiphany",
+    "rarity": "prismatic"
+  }
+]

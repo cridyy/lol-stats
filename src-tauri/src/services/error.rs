@@ -38,6 +38,9 @@ pub enum AppError {
 
     #[error("Windows API 调用失败：{0}")]
     Windows(String),
+
+    #[error("本地文件操作失败：{0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type AppResult<T> = Result<T, AppError>;

@@ -7,7 +7,7 @@ use serde_json::Value;
 use super::error::{AppError, AppResult};
 use super::lcu::LcuClient;
 use super::models::{
-    ClientAuth, Game, IdentityPlayer, Participant, ParticipantIdentity, ParticipantStats,
+    ClientAuth, Game, GameTeam, IdentityPlayer, Participant, ParticipantIdentity, ParticipantStats,
     ParticipantTimeline, RankedQueueEntry, RankedQueueMap, RankedStatsResponse, SummonerInfo,
 };
 
@@ -380,6 +380,29 @@ struct SgpGameJson {
     queue_id: u32,
     #[serde(default)]
     participants: Vec<SgpParticipant>,
+    #[serde(default)]
+    teams: Vec<SgpTeam>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpTeam {
+    #[serde(default)]
+    team_id: u32,
+    #[serde(default)]
+    objectives: SgpObjectives,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SgpObjectives {
+    #[serde(default)]
+    tower: SgpObjective,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SgpObjective {
+    #[serde(default)]
+    kills: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -411,6 +434,8 @@ struct SgpParticipant {
     deaths: u32,
     #[serde(default)]
     assists: u32,
+    #[serde(default)]
+    turret_kills: u32,
     #[serde(default)]
     gold_earned: u32,
     #[serde(default)]
@@ -573,6 +598,7 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                     kills: participant.kills,
                     deaths: participant.deaths,
                     assists: participant.assists,
+                    turret_kills: participant.turret_kills,
                     gold_earned: participant.gold_earned,
                     total_minions_killed: participant.total_minions_killed,
                     neutral_minions_killed: participant.neutral_minions_killed,
@@ -613,6 +639,15 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
         })
         .collect();
 
+    let teams = game
+        .teams
+        .into_iter()
+        .map(|team| GameTeam {
+            team_id: team.team_id,
+            tower_kills: team.objectives.tower.kills,
+        })
+        .collect();
+
     Game {
         game_id: game.game_id,
         game_creation: game.game_creation,
@@ -622,6 +657,7 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
         queue_id: game.queue_id,
         participant_identities: identities,
         participants,
+        teams,
     }
 }
 

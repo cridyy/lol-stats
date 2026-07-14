@@ -8,8 +8,11 @@ import { notifyKey } from "../notifications"
 import type { ChampionSummaryItem } from "../types"
 import { championName } from "../utils"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import FriendsTool from "./FriendsTool.vue"
+import HextechAugmentDesigner from "./HextechAugmentDesigner.vue"
+import ReservedTools from "./ReservedTools.vue"
 
-type ToolTab = "liveChampion" | "aramkit" | "tier" | "reserved"
+type ToolTab = "liveChampion" | "aramkit" | "hextech" | "friends" | "tier" | "reserved"
 type TierId = "hang" | "top" | "elite" | "npc" | "bad"
 
 type TierState = Record<TierId, number[]>
@@ -32,6 +35,9 @@ type DropTarget =
 const props = defineProps<{
   champions: Record<number, ChampionSummaryItem>
   liveChampionId?: number | null
+}>()
+const emit = defineEmits<{
+  openFriend: [payload: { puuid: string; label: string }]
 }>()
 
 const RANKING_DRAFT_KEY = "lol-stats.tools.tier-ranking.draft"
@@ -474,8 +480,10 @@ async function exportRankingImage() {
           {{ championName(champions, liveChampion.id) }}
         </button>
         <button :class="{ active: activeTab === 'aramkit' }" @click="activateTab('aramkit')">AramKit</button>
+        <button :class="{ active: activeTab === 'hextech' }" @click="activateTab('hextech')">海克斯设计</button>
+        <button :class="{ active: activeTab === 'friends' }" @click="activateTab('friends')">好友</button>
         <button :class="{ active: activeTab === 'tier' }" @click="activateTab('tier')">由夯到拉</button>
-        <button :class="{ active: activeTab === 'reserved' }" @click="activateTab('reserved')">备用工具</button>
+        <button :class="{ active: activeTab === 'reserved' }" @click="activateTab('reserved')">快捷工具</button>
       </div>
 
       <label class="ranking-switch" v-show="activeTab === 'tier'">
@@ -533,6 +541,8 @@ async function exportRankingImage() {
       ></iframe>
     </section>
 
+    <HextechAugmentDesigner v-show="activeTab === 'hextech'" />
+
     <section class="tier-tool" v-show="activeTab === 'tier'">
       <div class="tier-capture" ref="captureRef">
         <div class="tier-board">
@@ -586,9 +596,13 @@ async function exportRankingImage() {
       </section>
     </section>
 
-    <section class="tool-placeholder" v-show="activeTab === 'reserved'">
-      <strong>备用工具</strong>
-    </section>
+    <FriendsTool
+      v-show="activeTab === 'friends'"
+      :active="activeTab === 'friends'"
+      @open-friend="emit('openFriend', $event)"
+    />
+
+    <ReservedTools v-show="activeTab === 'reserved'" :active="activeTab === 'reserved'" />
 
     <div class="center-overlay" v-if="aramkitNoticeOpen" @click.self="closeAramKitNotice">
       <section class="center-dialog aramkit-notice-dialog">
