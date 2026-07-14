@@ -338,11 +338,19 @@ function Publish-GiteeRelease {
     }
 
     if ($null -eq $release) {
-        $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Body $releaseForm
+        $release = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$apiBase/releases" `
+            -ContentType "application/x-www-form-urlencoded" `
+            -Body $releaseForm
         Write-Host "Gitee Release 已创建：$Tag" -ForegroundColor Green
     }
     else {
-        $release = Invoke-RestMethod -Method Patch -Uri "$apiBase/releases/$($release.id)" -Body $releaseForm
+        $release = Invoke-RestMethod `
+            -Method Patch `
+            -Uri "$apiBase/releases/$($release.id)" `
+            -ContentType "application/x-www-form-urlencoded" `
+            -Body $releaseForm
         Write-Host "Gitee Release 已更新：$Tag" -ForegroundColor Green
     }
 
