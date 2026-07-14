@@ -73,10 +73,11 @@ const EMPTY_ABILITY: Record<AbilityKey, string> = {
 }
 const DISASTER_BAND_DOMINANT_RATE = 0.3
 const DISASTER_RATE_SCORE_LIMIT = 60
+const DEFAULT_PROFILE_RATING_CONTEXT: RatingContext = {}
 
 export function buildPlayerProfile(
   games: RecentGame[] = [],
-  context: RatingContext = {},
+  context: RatingContext = DEFAULT_PROFILE_RATING_CONTEXT,
 ): PlayerProfile {
   // 画像只聚合调用方已经加载好的对局，不在前端额外触发战绩请求。
   const ratedGames = rateGames(games, context)
@@ -110,7 +111,7 @@ export function buildPlayerProfile(
 
 export function buildChampionProfiles(
   games: RecentGame[] = [],
-  context: RatingContext = {},
+  context: RatingContext = DEFAULT_PROFILE_RATING_CONTEXT,
 ): ChampionProfile[] {
   const byChampion = new Map<number, RatedGame[]>()
   for (const entry of rateGames(games, context)) {

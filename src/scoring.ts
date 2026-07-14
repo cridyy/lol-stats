@@ -200,7 +200,28 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
 
 type RatingFamily = "carry" | "fighter" | "frontline" | "mage" | "support"
 
-export function calculateOutputRating(game: RecentGame, context: RatingContext = {}): OutputRating {
+const DEFAULT_RATING_CONTEXT: RatingContext = {}
+const outputRatingCache = new WeakMap<RecentGame, WeakMap<RatingContext, OutputRating>>()
+
+export function calculateOutputRating(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+): OutputRating {
+  let contextCache = outputRatingCache.get(game)
+  if (!contextCache) {
+    contextCache = new WeakMap<RatingContext, OutputRating>()
+    outputRatingCache.set(game, contextCache)
+  }
+
+  const cached = contextCache.get(context)
+  if (cached) return cached
+
+  const rating = calculateOutputRatingUncached(game, context)
+  contextCache.set(context, rating)
+  return rating
+}
+
+function calculateOutputRatingUncached(game: RecentGame, context: RatingContext): OutputRating {
   const metrics = outputRatingMetrics(game)
   const role = analyzePlayerRole(game, context)
   const family = ratingFamily(role.role)
@@ -1356,7 +1377,10 @@ function ratingPartLines(parts: OutputRatingParts) {
   ]
 }
 
-export function outputRatingTitle(game: RecentGame, context: RatingContext = {}) {
+export function outputRatingTitle(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+) {
   const rating = calculateOutputRating(game, context)
   const m = rating.metrics
   return [

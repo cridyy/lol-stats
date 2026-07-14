@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue"
-import { buildChampionProfiles, buildPlayerProfile, profileTierClass, profileTierLabel } from "../playerProfile"
+import {
+  buildChampionProfiles,
+  buildPlayerProfile,
+  profileTierClass,
+  profileTierLabel,
+  type ChampionProfile,
+  type PlayerProfile,
+} from "../playerProfile"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -35,6 +42,33 @@ const emit = defineEmits<{
   openPlayer: [player: LivePlayer]
 }>()
 
+interface RecentSummary {
+  winRate: number
+  averageKda: number
+  damageShare: number
+  damageConversion: number
+  mitigationShare: number
+}
+
+interface LivePlayerView {
+  player: LivePlayer
+  games: RecentGame[]
+  summary: RecentSummary
+  profile: PlayerProfile | null
+  championProfile: ChampionProfile | null
+}
+
+interface LiveTeamSummary extends RecentSummary {
+  players: number
+  averageScore: number
+}
+
+interface LiveTeamView {
+  team: LiveTeam
+  players: LivePlayerView[]
+  summary: LiveTeamSummary
+}
+
 const itemMap = computed(() => indexAssets(props.gameAssets.items))
 const livePanelStyle = computed(() => ({
   "--live-card-extra-height": `${Math.min(480, Math.max(0, props.cardExtraHeight))}px`,
@@ -43,6 +77,19 @@ const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
 }))
+const liveTeamViews = computed<LiveTeamView[]>(() => {
+  const liveGame = props.liveGame
+  if (!liveGame) return []
+
+  return liveGame.teams.map((team) => {
+    const players = team.players.map((player) => buildLivePlayerView(player, liveGame.queryStage))
+    return {
+      team,
+      players,
+      summary: summarizeTeamViews(players),
+    }
+  })
+})
 
 function indexAssets(entries: GameAssetEntry[]) {
   return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
@@ -95,7 +142,7 @@ function positionName(player: LivePlayer) {
   return map[raw] || raw || "-"
 }
 
-function recentGames(player: LivePlayer) {
+function filterRecentGames(player: LivePlayer) {
   return (
     player.stats?.recentGames
       .filter((game) => game.gameDuration >= MIN_VALID_GAME_DURATION_SECONDS)
@@ -139,8 +186,7 @@ function damageConversion(game: RecentGame) {
   return goldShare > 0 ? damageShare(game) / goldShare : 0
 }
 
-function recentSummary(player: LivePlayer) {
-  const games = recentGames(player)
+function summarizeRecentGames(games: RecentGame[]): RecentSummary {
   const wins = games.filter((game) => game.win).length
   const damage = games.reduce((sum, game) => sum + game.damageToChampions, 0)
   const teamDamage = games.reduce((sum, game) => sum + game.teamDamageToChampions, 0)
@@ -160,27 +206,41 @@ function recentSummary(player: LivePlayer) {
   }
 }
 
-function teamSummary(team: LiveTeam) {
-  const summaries = team.players
-    .filter((player) => recentGames(player).length)
-    .map((player) => ({
-      ...recentSummary(player),
-      profile: recentProfile(player),
-    }))
+function buildLivePlayerView(player: LivePlayer, queryStage: string): LivePlayerView {
+  const games = filterRecentGames(player)
+  const profile = player.stats ? buildPlayerProfile(games, ratingContext.value) : null
+  const championGames =
+    queryStage === "in-game" && player.championId
+      ? games.filter((game) => game.championId === player.championId)
+      : []
+  const championProfile = championGames.length
+    ? buildChampionProfiles(championGames, ratingContext.value)[0] || null
+    : null
 
-  const average = (selector: (summary: (typeof summaries)[number]) => number) => {
-    if (!summaries.length) return 0
-    return summaries.reduce((sum, summary) => sum + selector(summary), 0) / summaries.length
+  return {
+    player,
+    games,
+    summary: summarizeRecentGames(games),
+    profile,
+    championProfile,
+  }
+}
+
+function summarizeTeamViews(players: LivePlayerView[]): LiveTeamSummary {
+  const sampled = players.filter((player) => player.games.length)
+  const average = (selector: (player: LivePlayerView) => number) => {
+    if (!sampled.length) return 0
+    return sampled.reduce((sum, player) => sum + selector(player), 0) / sampled.length
   }
 
   return {
-    players: summaries.length,
-    winRate: average((summary) => summary.winRate),
-    damageShare: average((summary) => summary.damageShare),
-    averageKda: average((summary) => summary.averageKda),
-    damageConversion: average((summary) => summary.damageConversion),
-    mitigationShare: average((summary) => summary.mitigationShare),
-    averageScore: average((summary) => summary.profile.overallScore),
+    players: sampled.length,
+    winRate: average((player) => player.summary.winRate),
+    damageShare: average((player) => player.summary.damageShare),
+    averageKda: average((player) => player.summary.averageKda),
+    damageConversion: average((player) => player.summary.damageConversion),
+    mitigationShare: average((player) => player.summary.mitigationShare),
+    averageScore: average((player) => player.profile?.overallScore || 0),
   }
 }
 
@@ -207,56 +267,38 @@ function damageConversionTone(value: number) {
   return "tone-bad"
 }
 
-function recentProfile(player: LivePlayer) {
-  return buildPlayerProfile(recentGames(player), ratingContext.value)
-}
-
-function selectedChampionGames(player: LivePlayer) {
-  if (!player.championId) return []
-  return recentGames(player).filter((game) => game.championId === player.championId)
-}
-
-function selectedChampionProfile(player: LivePlayer) {
-  const [profile] = buildChampionProfiles(selectedChampionGames(player), ratingContext.value)
-  return profile || null
-}
-
-function selectedChampionScoreText(player: LivePlayer) {
-  const profile = selectedChampionProfile(player)
+function selectedChampionScoreText(profile: ChampionProfile | null) {
   return profile?.games ? `${Math.round(profile.averageScore)}分` : "样本不足"
 }
 
-function selectedChampionLabel(player: LivePlayer) {
-  return selectedChampionProfile(player)?.label || "暂无英雄样本"
+function selectedChampionLabel(profile: ChampionProfile | null) {
+  return profile?.label || "暂无英雄样本"
 }
 
-function selectedChampionClass(player: LivePlayer) {
-  const profile = selectedChampionProfile(player)
+function selectedChampionClass(profile: ChampionProfile | null) {
   return profile?.games ? profileTierClass(profile.averageScore) : "profile-empty"
 }
 
-function profileScoreText(player: LivePlayer) {
-  const profile = recentProfile(player)
-  return profile.games ? `${Math.round(profile.overallScore)}分` : "样本不足"
+function profileScoreText(profile: PlayerProfile | null) {
+  return profile?.games ? `${Math.round(profile.overallScore)}分` : "样本不足"
 }
 
 function abilityScoreText(score: number, games: number) {
   return games ? `${Math.round(score)}分` : "样本不足"
 }
 
-function playerProfileTierLabel(player: LivePlayer) {
-  const profile = recentProfile(player)
-  if (!profile.games) return "样本不足"
+function playerProfileTierLabel(profile: PlayerProfile | null) {
+  if (!profile?.games) return "样本不足"
   return profileTierLabel(profile.overallScore)
 }
 
-function profileClass(player: LivePlayer) {
-  const profile = recentProfile(player)
-  return profile.games ? profileTierClass(profile.overallScore) : "profile-empty"
+function profileClass(profile: PlayerProfile | null) {
+  return profile?.games ? profileTierClass(profile.overallScore) : "profile-empty"
 }
 
-function carryProfileClass(player: LivePlayer) {
-  const carry = recentProfile(player).abilities.carry
+function carryProfileClass(profile: PlayerProfile | null) {
+  const carry = profile?.abilities.carry
+  if (!carry) return "profile-empty"
   return carry.games ? profileTierClass(carry.averageScore) : "profile-empty"
 }
 
@@ -309,160 +351,163 @@ function premadeTitle(marker: LivePremadeMarker) {
       <div class="team-averages">
         <section
           class="team-average"
-          v-for="(team, index) in liveGame.teams"
-          :key="`average-${team.name}`"
+          v-for="(teamView, index) in liveTeamViews"
+          :key="`average-${teamView.team.name}`"
         >
           <header>
-            <strong>{{ teamAverageName(team, index, liveGame.teams) }}</strong>
-            <span>{{ teamSummary(team).players }} 人样本</span>
+            <strong>{{ teamAverageName(teamView.team, index, liveGame.teams) }}</strong>
+            <span>{{ teamView.summary.players }} 人样本</span>
           </header>
           <div class="average-metrics">
             <span>
               <i>平均胜率</i>
-              <b>{{ statPercent(teamSummary(team).winRate) }}</b>
+              <b>{{ statPercent(teamView.summary.winRate) }}</b>
             </span>
             <span>
               <i>平均伤害</i>
-              <b>{{ statPercent(teamSummary(team).damageShare) }}</b>
+              <b>{{ statPercent(teamView.summary.damageShare) }}</b>
             </span>
             <span>
               <i>平均 KDA</i>
-              <b>{{ statFixed(teamSummary(team).averageKda) }}</b>
+              <b>{{ statFixed(teamView.summary.averageKda) }}</b>
             </span>
             <span>
               <i>平均伤转</i>
-              <b>{{ statFixed(teamSummary(team).damageConversion) }}</b>
+              <b>{{ statFixed(teamView.summary.damageConversion) }}</b>
             </span>
             <span>
               <i>平均承伤</i>
-              <b>{{ statPercent(teamSummary(team).mitigationShare) }}</b>
+              <b>{{ statPercent(teamView.summary.mitigationShare) }}</b>
             </span>
             <span>
               <i>平均评分</i>
-              <b>{{ statFixed(teamSummary(team).averageScore, 0) }}分</b>
+              <b>{{ statFixed(teamView.summary.averageScore, 0) }}分</b>
             </span>
           </div>
         </section>
       </div>
 
       <div class="teams">
-        <section class="team" v-for="team in liveGame.teams" :key="team.name">
+        <section class="team" v-for="teamView in liveTeamViews" :key="teamView.team.name">
           <div class="team-title">
-            <strong>{{ team.name }}</strong>
-            <span>{{ team.players.length }} 人</span>
+            <strong>{{ teamView.team.name }}</strong>
+            <span>{{ teamView.players.length }} 人</span>
           </div>
 
           <div class="player-grid">
             <article
               class="player-card"
-              v-for="player in team.players"
-              :key="`${team.name}-${player.puuid}`"
+              v-for="playerView in teamView.players"
+              :key="`${teamView.team.name}-${playerView.player.puuid}`"
             >
               <div
                 v-if="liveGame.queryStage === 'in-game'"
-                :class="['locked-hero-line', selectedChampionClass(player)]"
-                :title="`${championName(champions, player.championId)} · ${selectedChampionScoreText(player)} · ${selectedChampionLabel(player)}`"
+                :class="['locked-hero-line', selectedChampionClass(playerView.championProfile)]"
+                :title="`${championName(champions, playerView.player.championId)} · ${selectedChampionScoreText(playerView.championProfile)} · ${selectedChampionLabel(playerView.championProfile)}`"
               >
                 <ChampionAvatar
-                  v-if="player.championId"
-                  :champion-id="player.championId"
+                  v-if="playerView.player.championId"
+                  :champion-id="playerView.player.championId"
                   :champions="champions"
                   :size="34"
                 />
-                <strong>{{ selectedChampionScoreText(player) }}</strong>
-                <span>{{ selectedChampionLabel(player) }}</span>
+                <strong>{{ selectedChampionScoreText(playerView.championProfile) }}</strong>
+                <span>{{ selectedChampionLabel(playerView.championProfile) }}</span>
               </div>
 
               <div class="identity">
                 <ChampionAvatar
-                  v-if="player.championId && liveGame.queryStage !== 'in-game'"
-                  :champion-id="player.championId"
+                  v-if="playerView.player.championId && liveGame.queryStage !== 'in-game'"
+                  :champion-id="playerView.player.championId"
                   :champions="champions"
                   :size="42"
                 />
                 <div class="identity-text">
                   <div class="name-line">
-                    <button class="player-name-button" type="button" @click="emit('openPlayer', player)">
-                      {{ riotId(player.summoner) }}
+                    <button class="player-name-button" type="button" @click="emit('openPlayer', playerView.player)">
+                      {{ riotId(playerView.player.summoner) }}
                     </button>
                     <span
-                      v-if="player.premade"
-                      :class="['premade-tag', premadeClass(player.premade)]"
-                      :title="premadeTitle(player.premade)"
+                      v-if="playerView.player.premade"
+                      :class="['premade-tag', premadeClass(playerView.player.premade)]"
+                      :title="premadeTitle(playerView.player.premade)"
                     >
-                      {{ player.premade.label }}
+                      {{ playerView.player.premade.label }}
                     </span>
-                    <b v-if="player.stats" class="kda-badge">
+                    <b v-if="playerView.player.stats" class="kda-badge">
                       <span>KDA</span>
-                      <em :class="kdaTone(recentSummary(player).averageKda)">
-                        {{ statFixed(recentSummary(player).averageKda) }}
+                      <em :class="kdaTone(playerView.summary.averageKda)">
+                        {{ statFixed(playerView.summary.averageKda) }}
                       </em>
                     </b>
                   </div>
-                  <div class="summary-line" v-if="player.stats">
+                  <div class="summary-line" v-if="playerView.player.stats">
                     <span>
                       <i>胜率</i>
-                      <b :class="winRateTone(recentSummary(player).winRate)">
-                        {{ statPercent(recentSummary(player).winRate) }}
+                      <b :class="winRateTone(playerView.summary.winRate)">
+                        {{ statPercent(playerView.summary.winRate) }}
                       </b>
                     </span>
                     <span>
                       <i>伤转</i>
-                      <b :class="damageConversionTone(recentSummary(player).damageConversion)">
-                        {{ statFixed(recentSummary(player).damageConversion) }}
+                      <b :class="damageConversionTone(playerView.summary.damageConversion)">
+                        {{ statFixed(playerView.summary.damageConversion) }}
                       </b>
                     </span>
                     <span>
                       <i>承伤</i>
-                      <b>{{ statPercent(recentSummary(player).mitigationShare) }}</b>
+                      <b>{{ statPercent(playerView.summary.mitigationShare) }}</b>
                     </span>
                   </div>
-                  <span v-else>{{ championName(champions, player.championId) }} · {{ positionName(player) }}</span>
+                  <span v-else>
+                    {{ championName(champions, playerView.player.championId) }} ·
+                    {{ positionName(playerView.player) }}
+                  </span>
                 </div>
               </div>
 
               <div
-                v-if="player.stats"
+                v-if="playerView.player.stats"
                 class="profile-panel-line"
               >
-                <div :class="['profile-main-row', profileClass(player)]">
-                  <strong>{{ playerProfileTierLabel(player) }}</strong>
-                  <b>{{ profileScoreText(player) }}</b>
+                <div :class="['profile-main-row', profileClass(playerView.profile)]">
+                  <strong>{{ playerProfileTierLabel(playerView.profile) }}</strong>
+                  <b>{{ profileScoreText(playerView.profile) }}</b>
                 </div>
-                <div :class="['profile-stat-row', 'profile-overall-row', profileClass(player)]">
-                  <span>主玩 <b>{{ recentProfile(player).mainRoleLabel }}</b></span>
-                  <span>carry率 <b>{{ statPercent(recentProfile(player).highlightRate) }}</b></span>
-                  <span>战犯率 <b>{{ statPercent(recentProfile(player).disasterRate) }}</b></span>
+                <div :class="['profile-stat-row', 'profile-overall-row', profileClass(playerView.profile)]">
+                  <span>主玩 <b>{{ playerView.profile?.mainRoleLabel }}</b></span>
+                  <span>carry率 <b>{{ statPercent(playerView.profile?.highlightRate) }}</b></span>
+                  <span>战犯率 <b>{{ statPercent(playerView.profile?.disasterRate) }}</b></span>
                 </div>
-                <div :class="['profile-stat-row', 'profile-carry-row', carryProfileClass(player)]">
+                <div :class="['profile-stat-row', 'profile-carry-row', carryProfileClass(playerView.profile)]">
                   <span>
                     输出能力
                     <b>
                       {{
                         abilityScoreText(
-                          recentProfile(player).abilities.carry.averageScore,
-                          recentProfile(player).abilities.carry.games,
+                          playerView.profile?.abilities.carry.averageScore || 0,
+                          playerView.profile?.abilities.carry.games || 0,
                         )
                       }}
                     </b>
                   </span>
                   <span>
                     carry率
-                    <b>{{ statPercent(recentProfile(player).abilities.carry.highlightRate) }}</b>
+                    <b>{{ statPercent(playerView.profile?.abilities.carry.highlightRate) }}</b>
                   </span>
                   <span>
                     战犯率
-                    <b>{{ statPercent(recentProfile(player).abilities.carry.disasterRate) }}</b>
+                    <b>{{ statPercent(playerView.profile?.abilities.carry.disasterRate) }}</b>
                   </span>
                 </div>
               </div>
 
-              <div class="player-error" v-if="!player.stats">
-                <strong>{{ player.isPlaceholder ? "占位玩家" : "读取失败" }}</strong>
-                <span>{{ player.error || "暂无战绩数据" }}</span>
+              <div class="player-error" v-if="!playerView.player.stats">
+                <strong>{{ playerView.player.isPlaceholder ? "占位玩家" : "读取失败" }}</strong>
+                <span>{{ playerView.player.error || "暂无战绩数据" }}</span>
               </div>
 
-              <div class="recent-strip" v-if="recentGames(player).length">
+              <div class="recent-strip" v-if="playerView.games.length">
                 <div class="recent-header" aria-hidden="true">
                   <span></span>
                   <span>K/D/A</span>
@@ -472,7 +517,7 @@ function premadeTitle(marker: LivePremadeMarker) {
                 </div>
                 <button
                   class="recent-game"
-                  v-for="game in recentGames(player)"
+                  v-for="game in playerView.games"
                   :key="game.gameId"
                   :class="{ win: game.win, loss: !game.win }"
                   :title="`${championName(champions, game.championId)} · ${gameKda(game)}`"
@@ -484,7 +529,7 @@ function premadeTitle(marker: LivePremadeMarker) {
                   <em>{{ statPercent(mitigationShare(game)) }}</em>
                 </button>
               </div>
-              <div class="recent-empty" v-else-if="player.stats">暂无符合当前模式的近 50 局</div>
+              <div class="recent-empty" v-else-if="playerView.player.stats">暂无符合当前模式的近 50 局</div>
             </article>
           </div>
         </section>

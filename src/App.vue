@@ -276,6 +276,7 @@ const progressOverlay = ref({
 
 let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
+let liveGameRenderSignature = ""
 let gameflowWatchTimer: number | null = null
 let autoLiveSessionActive = false
 let autoAcceptInFlight = false
@@ -1636,6 +1637,34 @@ function changeSearchStatsDepth(depth: number) {
   void loadSearchStats()
 }
 
+function buildLiveGameRenderSignature(game: LiveGameResponse) {
+  return JSON.stringify({
+    phase: game.phase,
+    queryStage: game.queryStage,
+    gameId: game.gameId,
+    queueId: game.queueId,
+    queueType: game.queueType,
+    gameMode: game.gameMode,
+    teams: game.teams.map((team) => ({
+      name: team.name,
+      players: team.players.map((player) => ({
+        puuid: player.puuid,
+        championId: player.championId,
+        championPickIntent: player.championPickIntent,
+        position: player.position,
+        selectedRole: player.selectedRole,
+        isPlaceholder: player.isPlaceholder,
+        premadeGroup: player.premade?.groupId || "",
+        gameName: player.summoner?.gameName || player.summoner?.displayName || "",
+        tagLine: player.summoner?.tagLine || "",
+        error: player.error || "",
+        depthLoaded: player.stats?.depthLoaded || 0,
+        recentGameIds: player.stats?.recentGames.map((recent) => recent.gameId) || [],
+      })),
+    })),
+  })
+}
+
 async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean } = {}) {
   const silent = Boolean(options.silent)
   const switchPage = options.switchPage ?? !silent
@@ -1652,7 +1681,12 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
 
   try {
     await ensureClientReady()
-    liveGame.value = await loadLiveGame(LIVE_STATS_DEPTH)
+    const nextLiveGame = await loadLiveGame(LIVE_STATS_DEPTH)
+    const nextSignature = buildLiveGameRenderSignature(nextLiveGame)
+    if (!liveGame.value || nextSignature !== liveGameRenderSignature) {
+      liveGame.value = nextLiveGame
+      liveGameRenderSignature = nextSignature
+    }
   } catch (error) {
     const message = errorMessage(error)
     if (liveGame.value) {
@@ -1662,6 +1696,7 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
       liveError.value = message
       if (!silent) notifyError("实时战绩读取失败", error)
       liveGame.value = null
+      liveGameRenderSignature = ""
     }
   } finally {
     liveLoading.value = false
