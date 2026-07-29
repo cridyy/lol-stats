@@ -129,6 +129,12 @@ export interface RatingCompositionEntry {
   itemIds: number[]
 }
 
+export interface RecentGameParticipantSummary {
+  puuid: string
+  summonerName: string
+  championId: number
+}
+
 export interface RecentGame {
   gameId: number
   championId: number
@@ -161,6 +167,11 @@ export interface RecentGame {
   teamPuuids: string[]
   teamComposition?: RatingCompositionEntry[]
   gameComposition?: RatingCompositionEntry[]
+  premadeTeammatePuuids?: string[]
+  allyPlayers?: RecentGameParticipantSummary[]
+  enemyPlayers?: RecentGameParticipantSummary[]
+  premadeSource?: string
+  premadeTogetherTimes?: number
   kda: number
   cs: number
   goldEarned: number
@@ -224,6 +235,42 @@ export interface PlayerStatsResponse {
   summary: PlayerSummary
   championStats: ChampionStat[]
   recentGames: RecentGame[]
+}
+
+export interface PlayerEloEstimateParticipant {
+  puuid: string
+  summonerName: string
+  gameName: string
+  tagLine: string
+  championId: number
+  elo: number
+}
+
+export interface PlayerEloEstimateGameSample {
+  gameId: number
+  gameCreation: number
+  maxElo: number
+  soloPlayers: PlayerEloEstimateParticipant[]
+}
+
+export interface PlayerEloEstimateResponse {
+  sampleTarget: number
+  sampleGames: number
+  trimmedGames: number
+  averageElo: number
+  medianElo: number
+  finalElo: number
+  rawGameMaxElos: number[]
+  trimmedGameMaxElos: number[]
+  gameSamples: PlayerEloEstimateGameSample[]
+}
+
+export interface PlayerEloEstimateTaskStatus {
+  jobId: string
+  status: string
+  cached: boolean
+  result: PlayerEloEstimateResponse | null
+  error: string | null
 }
 
 export interface LivePlayer {

@@ -754,6 +754,10 @@ function copyRecentGame(game: RecentGame): RecentGame {
     itemIds: [...(game.itemIds || [])],
     perkIds: [...(game.perkIds || [])],
     augmentIds: [...(game.augmentIds || [])],
+    teamPuuids: [...(game.teamPuuids || [])],
+    teamComposition: [...(game.teamComposition || [])],
+    gameComposition: [...(game.gameComposition || [])],
+    premadeTeammatePuuids: [...(game.premadeTeammatePuuids || [])],
   }
 }
 

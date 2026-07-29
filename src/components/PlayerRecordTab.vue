@@ -33,6 +33,7 @@ const rankedStats = ref<RankedStatsResponse | null>(null)
 const recentDepth = ref(RECENT_PAGE_SIZE)
 const recentHasMore = ref(true)
 const statsDepth = ref(DEFAULT_STATS_DEPTH)
+const statsFetchDepth = ref(DEFAULT_STATS_DEPTH)
 const recentLoading = ref(false)
 const statsLoading = ref(false)
 const rankedLoading = ref(false)
@@ -89,7 +90,13 @@ async function loadRecentMore() {
 }
 
 async function loadStats(forceRefresh = false) {
-  if (fullStats.value && !forceRefresh) return
+  if (
+    fullStats.value &&
+    !forceRefresh &&
+    fullStats.value.depthRequested >= statsFetchDepth.value
+  ) {
+    return
+  }
   if (statsLoading.value) return
   statsLoading.value = true
   error.value = ""
@@ -97,7 +104,7 @@ async function loadStats(forceRefresh = false) {
   try {
     fullStats.value = await searchPlayer(
       props.query,
-      statsDepth.value,
+      statsFetchDepth.value,
       props.sgpServerId,
       forceRefresh,
       false,
@@ -128,7 +135,18 @@ function changeStatsDepth(depth: number) {
   if (nextDepth === statsDepth.value && fullStats.value) return
 
   statsDepth.value = nextDepth
-  fullStats.value = null
+  statsFetchDepth.value = Math.max(statsFetchDepth.value, nextDepth)
+  if (fullStats.value && fullStats.value.depthRequested < statsFetchDepth.value) {
+    fullStats.value = null
+  }
+  void loadStats()
+}
+
+function ensureStatsDepth(depth: number) {
+  const nextDepth = Math.min(1000, Math.max(50, Math.round(Number(depth) || DEFAULT_STATS_DEPTH)))
+  if (nextDepth <= statsFetchDepth.value) return
+
+  statsFetchDepth.value = nextDepth
   void loadStats()
 }
 
@@ -163,6 +181,7 @@ watch(
     @refresh-stats="loadStats(true)"
     @load-recent-more="loadRecentMore"
     @change-stats-depth="changeStatsDepth"
+    @ensure-stats-depth="ensureStatsDepth"
     @open-match="emit('openMatch', $event)"
   />
 </template>

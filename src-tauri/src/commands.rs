@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
-use tauri::{AppHandle, Emitter};
+use std::time::{Duration, Instant};
+use tauri::{async_runtime, AppHandle, Emitter};
 
 use crate::services::client_discovery::discover_primary_client;
 use crate::services::error::{AppError, AppResult};
@@ -11,12 +12,13 @@ use crate::services::lcu::{LcuClient, RiotClient};
 use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ChatMe, ClientAuth, ConnectionStatus, FriendToolEntry,
     GameAssetBundle, GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer,
-    LivePremadeMarker, LiveTeam, MatchDetailResponse, PlayerStatsResponse, PlayerSummary,
-    RankedQueueEntry, RankedStatsResponse, RecentGame, SafeClientInfo, SummonerInfo,
-    SummonerSearchCandidate,
+    LivePremadeMarker, LiveTeam, MatchDetailResponse, PlayerEloEstimateResponse,
+    PlayerEloEstimateTaskStatus, PlayerStatsResponse, PlayerSummary, RankedQueueEntry,
+    RankedStatsResponse, RecentGame, SafeClientInfo, SummonerInfo, SummonerSearchCandidate,
 };
 use crate::services::stats::{
-    load_match_detail as load_match_detail_service, load_player_stats,
+    clear_player_elo_cache as clear_player_elo_cache_service, estimate_player_elo,
+    load_cached_player_elo, load_match_detail as load_match_detail_service, load_player_stats,
     load_player_stats_with_progress, normalize_depth,
 };
 use crate::services::tools::{
@@ -48,6 +50,10 @@ const ALL_SEARCH_SGP_SERVER_IDS: [&str; 8] = [
 
 static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static PLAYER_ELO_JOBS: LazyLock<Mutex<HashMap<String, PlayerEloTaskEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const PLAYER_ELO_JOB_RETENTION: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +61,12 @@ struct StatsLoadProgress {
     request_id: String,
     loaded: usize,
     total: usize,
+}
+
+#[derive(Clone)]
+struct PlayerEloTaskEntry {
+    status: PlayerEloEstimateTaskStatus,
+    updated_at: Instant,
 }
 
 #[derive(Clone, Serialize)]
@@ -88,6 +100,71 @@ struct Clients {
 
 fn app_error(error: AppError) -> String {
     error.to_string()
+}
+
+fn build_player_elo_summoner(
+    puuid: String,
+    game_name: String,
+    tag_line: String,
+    display_name: Option<String>,
+) -> AppResult<SummonerInfo> {
+    let normalized_puuid = puuid.trim().to_string();
+    let normalized_game_name = game_name.trim().to_string();
+    let normalized_tag_line = tag_line.trim().to_string();
+
+    if normalized_puuid.is_empty() {
+        return Err(AppError::InvalidInput(
+            "缺少玩家 PUUID，无法计算角色 ELO".to_string(),
+        ));
+    }
+
+    Ok(SummonerInfo {
+        puuid: normalized_puuid,
+        game_name: normalized_game_name.clone(),
+        tag_line: normalized_tag_line.clone(),
+        display_name: display_name
+            .unwrap_or_else(|| {
+                if !normalized_game_name.is_empty() && !normalized_tag_line.is_empty() {
+                    format!("{normalized_game_name}#{normalized_tag_line}")
+                } else {
+                    normalized_game_name.clone()
+                }
+            })
+            .trim()
+            .to_string(),
+        ..Default::default()
+    })
+}
+
+fn player_elo_job_id(summoner: &SummonerInfo, sgp_server_id: Option<&str>) -> String {
+    let server = sgp_server_id.unwrap_or("unknown").trim();
+    format!("{}:{}", server, summoner.puuid.trim())
+}
+
+fn prune_player_elo_jobs() {
+    if let Ok(mut jobs) = PLAYER_ELO_JOBS.lock() {
+        let now = Instant::now();
+        jobs.retain(|_, entry| now.duration_since(entry.updated_at) <= PLAYER_ELO_JOB_RETENTION);
+    }
+}
+
+fn snapshot_player_elo_job(job_id: &str) -> Option<PlayerEloEstimateTaskStatus> {
+    PLAYER_ELO_JOBS
+        .lock()
+        .ok()
+        .and_then(|jobs| jobs.get(job_id).map(|entry| entry.status.clone()))
+}
+
+fn store_player_elo_job(status: PlayerEloEstimateTaskStatus) {
+    if let Ok(mut jobs) = PLAYER_ELO_JOBS.lock() {
+        jobs.insert(
+            status.job_id.clone(),
+            PlayerEloTaskEntry {
+                status,
+                updated_at: Instant::now(),
+            },
+        );
+    }
 }
 
 #[tauri::command]
@@ -840,6 +917,143 @@ pub async fn load_match_detail(
     )
     .await
     .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn load_player_elo_estimate(
+    puuid: String,
+    game_name: String,
+    tag_line: String,
+    display_name: Option<String>,
+    sgp_server_id: Option<String>,
+) -> Result<PlayerEloEstimateResponse, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let summoner =
+        build_player_elo_summoner(puuid, game_name, tag_line, display_name).map_err(app_error)?;
+
+    estimate_player_elo(
+        &clients.lcu,
+        &clients.auth,
+        sgp_server_id.as_deref(),
+        summoner,
+    )
+    .await
+    .map_err(app_error)
+}
+
+#[tauri::command]
+pub async fn start_player_elo_estimate_task(
+    puuid: String,
+    game_name: String,
+    tag_line: String,
+    display_name: Option<String>,
+    sgp_server_id: Option<String>,
+    force_refresh: Option<bool>,
+) -> Result<PlayerEloEstimateTaskStatus, String> {
+    prune_player_elo_jobs();
+    let clients = create_clients().map_err(app_error)?;
+    let summoner =
+        build_player_elo_summoner(puuid, game_name, tag_line, display_name).map_err(app_error)?;
+    let job_id = player_elo_job_id(&summoner, sgp_server_id.as_deref());
+    let should_force_refresh = force_refresh.unwrap_or(false);
+
+    if should_force_refresh {
+        clear_player_elo_cache_service(&clients.auth, sgp_server_id.as_deref(), &summoner)
+            .map_err(app_error)?;
+    } else if let Some(cached) =
+        load_cached_player_elo(&clients.auth, sgp_server_id.as_deref(), &summoner)
+    {
+        let status = PlayerEloEstimateTaskStatus {
+            job_id,
+            status: "completed".to_string(),
+            cached: true,
+            result: Some(cached),
+            error: None,
+        };
+        store_player_elo_job(status.clone());
+        return Ok(status);
+    }
+
+    if let Some(existing) = snapshot_player_elo_job(&job_id) {
+        if matches!(existing.status.as_str(), "pending" | "running") {
+            return Ok(existing);
+        }
+    }
+
+    let running_status = PlayerEloEstimateTaskStatus {
+        job_id: job_id.clone(),
+        status: "running".to_string(),
+        cached: false,
+        result: None,
+        error: None,
+    };
+    store_player_elo_job(running_status.clone());
+
+    let spawn_job_id = job_id.clone();
+    let spawn_sgp_server_id = sgp_server_id.clone();
+    let spawn_summoner = summoner.clone();
+    async_runtime::spawn(async move {
+        let status = match create_clients() {
+            Ok(clients) => match estimate_player_elo(
+                &clients.lcu,
+                &clients.auth,
+                spawn_sgp_server_id.as_deref(),
+                spawn_summoner,
+            )
+            .await
+            {
+                Ok(result) => PlayerEloEstimateTaskStatus {
+                    job_id: spawn_job_id.clone(),
+                    status: "completed".to_string(),
+                    cached: false,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(error) => PlayerEloEstimateTaskStatus {
+                    job_id: spawn_job_id.clone(),
+                    status: "failed".to_string(),
+                    cached: false,
+                    result: None,
+                    error: Some(app_error(error)),
+                },
+            },
+            Err(error) => PlayerEloEstimateTaskStatus {
+                job_id: spawn_job_id.clone(),
+                status: "failed".to_string(),
+                cached: false,
+                result: None,
+                error: Some(app_error(error)),
+            },
+        };
+
+        store_player_elo_job(status);
+    });
+
+    Ok(running_status)
+}
+
+#[tauri::command]
+pub fn get_player_elo_estimate_task(job_id: String) -> Result<PlayerEloEstimateTaskStatus, String> {
+    prune_player_elo_jobs();
+    snapshot_player_elo_job(job_id.trim()).ok_or_else(|| {
+        app_error(AppError::InvalidInput("角色 ELO 任务不存在或已过期".to_string()))
+    })
+}
+
+#[tauri::command]
+pub async fn clear_player_elo_cache(
+    puuid: String,
+    game_name: String,
+    tag_line: String,
+    display_name: Option<String>,
+    sgp_server_id: Option<String>,
+) -> Result<bool, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let summoner =
+        build_player_elo_summoner(puuid, game_name, tag_line, display_name).map_err(app_error)?;
+
+    clear_player_elo_cache_service(&clients.auth, sgp_server_id.as_deref(), &summoner)
+        .map_err(app_error)
 }
 
 #[tauri::command]
@@ -1723,5 +1937,170 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
         puuid: seed.puuid.clone(),
         summoner_id: seed.summoner_id,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::stats::load_player_stats;
+
+    #[tokio::test]
+    #[ignore = "手动触发：依赖本机已启动的国服客户端和有效登录态"]
+    async fn manual_load_current_player_elo_estimate() {
+        let clients = create_clients().expect("应能连接到客户端");
+        let summoner = clients
+            .lcu
+            .current_summoner()
+            .await
+            .expect("应能读取当前召唤师");
+
+        let result = load_player_elo_estimate(
+            summoner.puuid.clone(),
+            summoner.game_name.clone(),
+            summoner.tag_line.clone(),
+            Some(summoner.display_name.clone()),
+            None,
+        )
+        .await
+        .expect("角色 ELO 应该能正常返回");
+
+        println!(
+            "manual_load_current_player_elo_estimate => finalElo={:.1}, sampleGames={}, rawGameMaxElos={:?}",
+            result.final_elo,
+            result.sample_games,
+            result.raw_game_max_elos
+        );
+
+        assert!(
+            result.sample_games > 0,
+            "至少应该拿到一局可用样本，实际结果：{result:?}"
+        );
+        assert!(
+            result.final_elo > 0.0,
+            "finalElo 应该大于 0，实际结果：{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "手动触发：打印当前角色 ELO 样本诊断信息"]
+    async fn manual_debug_current_player_elo_inputs() {
+        let clients = create_clients().expect("应能连接到客户端");
+        let summoner = clients
+            .lcu
+            .current_summoner()
+            .await
+            .expect("应能读取当前召唤师");
+
+        println!(
+            "current summoner => display_name='{}' game_name='{}' tag_line='{}' puuid='{}'",
+            summoner.display_name,
+            summoner.game_name,
+            summoner.tag_line,
+            summoner.puuid
+        );
+
+        let stats = load_player_stats(&clients.lcu, Some(&clients.auth), None, summoner.clone(), 30)
+            .await
+            .expect("应能读取当前战绩");
+        let solo_games = stats
+            .recent_games
+            .iter()
+            .filter(|game| game.premade_teammate_puuids.is_empty())
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        println!("solo sample count in first 30 games => {}", solo_games.len());
+
+        for game in solo_games {
+            println!(
+                "solo game => game_id={} champion_id={} queue_id={} mode={} creation={}",
+                game.game_id, game.champion_id, game.queue_id, game.game_mode, game.game_creation
+            );
+
+            let detail = load_match_detail_service(
+                &clients.lcu,
+                Some(&clients.auth),
+                None,
+                game.game_id,
+            )
+            .await
+            .expect("应能读取样本局详情");
+
+            for team in detail.teams {
+                for player in team.players {
+                    println!(
+                        "  detail player => team={} subteam={} puuid='{}' summoner='{}' game='{}' tag='{}' champ={}",
+                        player.team_id,
+                        player.player_subteam_id,
+                        player.puuid,
+                        player.summoner_name,
+                        player.game_name,
+                        player.tag_line,
+                        player.record.champion_id
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "手动触发：诊断指定召唤师的 ELO 耗时与结果"]
+    async fn manual_estimate_specific_player_elo() {
+        let started_at = std::time::Instant::now();
+        let riot_id = "寻我不得时#33524";
+
+        let candidates = search_summoner_candidates(riot_id.to_string(), None)
+            .await
+            .expect("应能搜索到指定召唤师");
+        println!(
+            "manual_estimate_specific_player_elo search => {} candidates",
+            candidates.len()
+        );
+        for candidate in &candidates {
+            println!(
+                "candidate => riot='{}#{}' puuid='{}' server='{}' privacy='{}'",
+                candidate.game_name,
+                candidate.tag_line,
+                candidate.puuid,
+                candidate.sgp_server_id,
+                candidate.privacy
+            );
+        }
+
+        let target = candidates
+            .into_iter()
+            .find(|candidate| candidate.game_name == "寻我不得时" && candidate.tag_line == "33524")
+            .expect("至少应有一个精确匹配候选");
+
+        let _ = clear_player_elo_cache(
+            target.puuid.clone(),
+            target.game_name.clone(),
+            target.tag_line.clone(),
+            Some(format!("{}#{}", target.game_name, target.tag_line)),
+            Some(target.sgp_server_id.clone()),
+        )
+        .await
+        .expect("应能清理指定召唤师的角色 ELO 缓存");
+
+        let result = load_player_elo_estimate(
+            target.puuid.clone(),
+            target.game_name.clone(),
+            target.tag_line.clone(),
+            Some(format!("{}#{}", target.game_name, target.tag_line)),
+            Some(target.sgp_server_id.clone()),
+        )
+        .await
+        .expect("指定召唤师的角色 ELO 应能正常返回");
+
+        println!(
+            "manual_estimate_specific_player_elo => elapsed={:.2}s finalElo={:.1} sampleGames={} rawGameMaxElos={:?} server='{}'",
+            started_at.elapsed().as_secs_f64(),
+            result.final_elo,
+            result.sample_games,
+            result.raw_game_max_elos,
+            target.sgp_server_id
+        );
     }
 }

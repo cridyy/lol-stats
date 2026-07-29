@@ -236,11 +236,40 @@ npm install
 npm run tauri dev
 ```
 
+推荐日常开发闭环：
+
+```pwsh
+npm run dev:full
+```
+
+这个命令会同时做两件事：
+
+- 启动 `tauri dev`，保持桌面端热更新。
+- 启动自动校验监听；保存文件后会自动重跑前端类型检查、Rust 编译检查和 Rust 单元测试。
+
+如果你已经单独开着 `tauri dev`，也可以只跑自动校验监听：
+
+```pwsh
+npm run verify:watch
+```
+
 检查前端类型并构建：
 
 ```pwsh
 npm run build
 ```
+
+运行一次全量校验：
+
+```pwsh
+npm run verify
+```
+
+这条命令会顺序执行：
+
+- 前端类型检查与构建
+- Rust 编译检查
+- Rust 单元测试
 
 检查 Rust 后端：
 

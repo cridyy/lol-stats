@@ -656,8 +656,8 @@ async function copyImage() {
 }
 
 .team-header.lose {
-  color: #a23d3d;
-  background: #ffe9e9;
+  color: #972f2f;
+  background: #ffdede;
 }
 
 .team-result {
@@ -741,9 +741,9 @@ async function copyImage() {
 }
 
 .detail-row.lose {
-  border-color: #f1cdcd;
-  border-left-color: #ca4b4b;
-  background: #fff1f1;
+  border-color: #e7b4b4;
+  border-left-color: #c62828;
+  background: #ffe2e2;
 }
 
 .champion-cell {
