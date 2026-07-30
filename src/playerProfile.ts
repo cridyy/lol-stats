@@ -60,10 +60,28 @@ export interface ChampionProfile {
   averageHealingShare: number
 }
 
+/**
+ * 大样本数据统计会将长期表现和近期状态混合；实时战绩显式关闭此项，
+ * 保持原本的短样本均匀平均，避免 20-50 场样本被再次放大波动。
+ */
+export interface ProfileAggregationOptions {
+  timeWeighted?: boolean
+  now?: number
+}
+
 interface RatedGame {
   game: RecentGame
   rating: OutputRating
   family: AbilityKey
+}
+
+interface ProfileAggregation {
+  /** 混合后的最终权重，用于综合分和画像标签。 */
+  weights: Map<RatedGame, number>
+  /** 纯近期衰减权重，用于单英雄评分中的近期项。 */
+  recencyWeights: Map<RatedGame, number>
+  /** 实际启用的近期混合比例，休眠玩家会降为 0。 */
+  recencyMix: number
 }
 
 const EMPTY_ABILITY: Record<AbilityKey, string> = {
@@ -78,40 +96,49 @@ const DEFAULT_PROFILE_RATING_CONTEXT: RatingContext = {}
 export function buildPlayerProfile(
   games: RecentGame[] = [],
   context: RatingContext = DEFAULT_PROFILE_RATING_CONTEXT,
+  options: ProfileAggregationOptions = {},
 ): PlayerProfile {
   // 画像只聚合调用方已经加载好的对局，不在前端额外触发战绩请求。
   const ratedGames = rateGames(games, context)
+  const aggregation = createProfileAggregation(ratedGames, options)
   const abilities = {
-    carry: buildAbilityProfile("carry", ratedGames),
-    frontline: buildAbilityProfile("frontline", ratedGames),
-    support: buildAbilityProfile("support", ratedGames),
+    carry: buildAbilityProfile("carry", ratedGames, options),
+    frontline: buildAbilityProfile("frontline", ratedGames, options),
+    support: buildAbilityProfile("support", ratedGames, options),
   }
   const roleDistribution = buildRoleDistribution(ratedGames)
-  const overallScore = average(ratedGames.map((entry) => entry.rating.score))
+  const overallScore = weightedEntryAverage(
+    ratedGames,
+    (entry) => entry.rating.score,
+    aggregation,
+  )
 
   return {
     games: ratedGames.length,
     overallScore,
     medianScore: median(ratedGames.map((entry) => entry.rating.score)),
-    highlightRate: rate(
-      ratedGames.filter((entry) => entry.rating.score >= 80).length,
-      ratedGames.length,
+    highlightRate: weightedEntryRate(ratedGames, (entry) => entry.rating.score >= 80, aggregation),
+    disasterRate: weightedEntryRate(
+      ratedGames,
+      (entry) => isDisasterRateScore(entry.rating.score),
+      aggregation,
     ),
-    disasterRate: rate(
-      ratedGames.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
-      ratedGames.length,
+    volatility: weightedEntryStandardDeviation(
+      ratedGames,
+      (entry) => entry.rating.score,
+      aggregation,
     ),
-    volatility: standardDeviation(ratedGames.map((entry) => entry.rating.score)),
     mainRoleLabel: resolveMainRoleLabel(roleDistribution),
     roleDistribution,
     abilities,
-    tags: buildPlayerTags(ratedGames, roleDistribution, overallScore),
+    tags: buildPlayerTags(ratedGames, roleDistribution, overallScore, aggregation),
   }
 }
 
 export function buildChampionProfiles(
   games: RecentGame[] = [],
   context: RatingContext = DEFAULT_PROFILE_RATING_CONTEXT,
+  options: ProfileAggregationOptions = {},
 ): ChampionProfile[] {
   const byChampion = new Map<number, RatedGame[]>()
   for (const entry of rateGames(games, context)) {
@@ -123,16 +150,17 @@ export function buildChampionProfiles(
   return Array.from(byChampion.entries())
     .map(([championId, entries]) => {
       const roleDistribution = buildRoleDistribution(entries)
-      const summary = summarizeRatedGames(entries)
-      const averageScore = weightedProfileScore(entries)
+      const aggregation = createProfileAggregation(entries, options)
+      const summary = summarizeRatedGames(entries, aggregation)
+      const averageScore = championProfileScore(entries, aggregation)
 
       return {
         championId,
         games: entries.length,
         averageScore,
         mainRoleLabel: resolveMainRoleLabel(roleDistribution),
-        label: aggregateProfileLabel(entries),
-        labelBand: dominantScoreBandKey(entries),
+        label: aggregateProfileLabel(entries, aggregation),
+        labelBand: dominantScoreBandKey(entries, aggregation),
         highlightRate: summary.highlightRate,
         disasterRate: summary.disasterRate,
         averageDamageShare: summary.damageShare,
@@ -187,25 +215,28 @@ function abilityFamily(role: PlayerRole): AbilityKey {
   }
 }
 
-function buildAbilityProfile(key: AbilityKey, entries: RatedGame[]): AbilityProfile {
+function buildAbilityProfile(
+  key: AbilityKey,
+  entries: RatedGame[],
+  options: ProfileAggregationOptions,
+): AbilityProfile {
   const selected = entries.filter((entry) => entry.family === key)
+  const aggregation = createProfileAggregation(selected, options)
+  const summary = summarizeRatedGames(selected, aggregation)
 
   return {
     key,
     label: EMPTY_ABILITY[key],
     games: selected.length,
-    averageScore: average(selected.map((entry) => entry.rating.score)),
-    medianScore: median(selected.map((entry) => entry.rating.score)),
-    highlightRate: rate(selected.filter((entry) => entry.rating.score >= 80).length, selected.length),
-    disasterRate: rate(
-      selected.filter((entry) => isDisasterRateScore(entry.rating.score)).length,
-      selected.length,
-    ),
-    volatility: standardDeviation(selected.map((entry) => entry.rating.score)),
-    averageDamageShare: average(selected.map((entry) => entry.rating.metrics.damageShare)),
-    averageDamageConversion: average(selected.map((entry) => entry.rating.metrics.damageConversion)),
-    averageMitigationShare: average(selected.map((entry) => entry.rating.metrics.mitigationShare)),
-    averageHealingShare: average(selected.map((entry) => entry.rating.metrics.healingShare)),
+    averageScore: summary.averageScore,
+    medianScore: summary.medianScore,
+    highlightRate: summary.highlightRate,
+    disasterRate: summary.disasterRate,
+    volatility: summary.volatility,
+    averageDamageShare: summary.damageShare,
+    averageDamageConversion: summary.damageConversion,
+    averageMitigationShare: summary.mitigationShare,
+    averageHealingShare: summary.healingShare,
   }
 }
 
@@ -239,15 +270,16 @@ function buildPlayerTags(
   entries: RatedGame[],
   roleDistribution: RoleDistributionItem[],
   overallScore: number,
+  aggregation: ProfileAggregation,
 ) {
   if (!entries.length) return ["样本不足"]
 
-  const summary = summarizeRatedGames(entries)
+  const summary = summarizeRatedGames(entries, aggregation)
   const positiveEligible = overallScore >= 65
-  const tags: string[] = [aggregateProfileLabel(entries)]
+  const tags: string[] = [aggregateProfileLabel(entries, aggregation)]
 
   if (positiveEligible) {
-    tags.push(...positiveProfileTags(entries, summary, roleDistribution, overallScore))
+    tags.push(...positiveProfileTags(entries, summary, roleDistribution, overallScore, aggregation))
   }
   if (overallScore >= 40 && overallScore < 65) tags.push(...controlProfileTags(summary))
   tags.push(...negativeProfileTags(summary, overallScore))
@@ -264,13 +296,14 @@ function positiveProfileTags(
   summary: ReturnType<typeof summarizeRatedGames>,
   roleDistribution: RoleDistributionItem[],
   overallScore: number,
+  aggregation: ProfileAggregation,
 ) {
   const tags: string[] = []
-  const role = dominantPlayerRole(entries)
+  const role = dominantPlayerRole(entries, aggregation)
   const mainRoleLabel = resolveMainRoleLabel(roleDistribution)
-  const carryGamesRate = abilityRate(entries, "carry")
-  const frontlineGamesRate = abilityRate(entries, "frontline")
-  const supportGamesRate = abilityRate(entries, "support")
+  const carryGamesRate = abilityRate(entries, "carry", aggregation)
+  const frontlineGamesRate = abilityRate(entries, "frontline", aggregation)
+  const supportGamesRate = abilityRate(entries, "support", aggregation)
 
   const primaryTag = positivePrimaryProfileTag(summary, role, overallScore)
   if (primaryTag) tags.push(primaryTag)
@@ -479,113 +512,294 @@ function profileControlTags(
   return tags
 }
 
-function summarizeRatedGames(entries: RatedGame[]) {
-  const scores = entries.map((entry) => entry.rating.score)
-  const metrics = entries.map((entry) => entry.rating.metrics)
+function createProfileAggregation(
+  entries: RatedGame[],
+  options: ProfileAggregationOptions,
+): ProfileAggregation {
+  const weights = new Map<RatedGame, number>()
+  const recencyWeights = new Map<RatedGame, number>()
+  if (!entries.length) return { weights, recencyWeights, recencyMix: 0 }
 
+  const uniformWeight = 1 / entries.length
+  const timeWeighted = options.timeWeighted !== false
+  if (!timeWeighted) {
+    for (const entry of entries) {
+      weights.set(entry, uniformWeight)
+      recencyWeights.set(entry, uniformWeight)
+    }
+    return { weights, recencyWeights, recencyMix: 0 }
+  }
+
+  const sorted = [...entries].sort((left, right) => {
+    const timeDelta = normalizedGameTime(right.game.gameCreation) - normalizedGameTime(left.game.gameCreation)
+    return timeDelta || right.game.gameId - left.game.gameId
+  })
+  const rawWeights = sorted.map((_, index) => 2 ** (-index / 20))
+  const rawWeightTotal = rawWeights.reduce((sum, value) => sum + value, 0)
+
+  sorted.forEach((entry, index) => {
+    recencyWeights.set(entry, rawWeights[index] / rawWeightTotal)
+  })
+
+  const freshness = profileFreshness(sorted[0]?.game.gameCreation, options.now)
+  const countBlend = clamp(0.3 + 0.1 * Math.log2(entries.length / 50), 0.3, 0.55)
+  const recencyMix = countBlend * freshness
+
+  for (const entry of entries) {
+    const recentWeight = recencyWeights.get(entry) || uniformWeight
+    weights.set(entry, (1 - recencyMix) * uniformWeight + recencyMix * recentWeight)
+  }
+
+  return { weights, recencyWeights, recencyMix }
+}
+
+function normalizedGameTime(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return value < 1_000_000_000_000 ? value * 1000 : value
+}
+
+function profileFreshness(latestGameTime: number | undefined, now = Date.now()) {
+  const timestamp = normalizedGameTime(Number(latestGameTime || 0))
+  if (!timestamp) return 1
+
+  const daysSinceLastGame = Math.max(0, (now - timestamp) / 86_400_000)
+  if (daysSinceLastGame <= 7) return 1
+  if (daysSinceLastGame >= 30) return 0
+
+  const progress = (daysSinceLastGame - 7) / 23
+  const smoothProgress = progress * progress * (3 - 2 * progress)
+  return 1 - smoothProgress
+}
+
+function summarizeRatedGames(entries: RatedGame[], aggregation: ProfileAggregation) {
   return {
     games: entries.length,
-    averageScore: average(scores),
-    medianScore: median(scores),
-    highlightRate: rate(scores.filter((score) => score >= 80).length, entries.length),
-    goodRate: rate(scores.filter((score) => score >= 70).length, entries.length),
-    poorRate: rate(scores.filter((score) => score < 55).length, entries.length),
-    disasterRate: rate(scores.filter(isDisasterRateScore).length, entries.length),
-    volatility: standardDeviation(scores),
-    kda: average(metrics.map((item) => item.kda)),
-    damageShare: average(metrics.map((item) => item.damageShare)),
-    damageConversion: average(metrics.map((item) => item.damageConversion)),
-    effectiveDamageConversion: average(metrics.map((item) => item.effectiveDamageConversion)),
-    goldShare: average(metrics.map((item) => item.goldShare)),
-    killShare: average(metrics.map((item) => item.killShare)),
-    killParticipation: average(metrics.map((item) => item.killParticipation)),
-    killStealGap: average(metrics.map((item) => item.killShare - item.damageShare)),
-    deathShare: average(metrics.map((item) => item.deathShare)),
-    mitigationShare: average(metrics.map((item) => item.mitigationShare)),
-    mitigationPerDeath: average(metrics.map((item) => item.mitigationPerDeath)),
-    healingShare: average(metrics.map((item) => item.healingShare)),
-    immobilizationsPerMinute: average(metrics.map((item) => item.immobilizationsPerMinute)),
-    immobilizationShare: average(metrics.map((item) => item.immobilizationShare)),
-    immobilizeKillConversion: average(metrics.map((item) => item.immobilizeKillConversion)),
-    controlQuality: average(metrics.map((item) => item.controlQuality)),
+    averageScore: weightedEntryAverage(entries, (entry) => entry.rating.score, aggregation),
+    medianScore: median(entries.map((entry) => entry.rating.score)),
+    highlightRate: weightedEntryRate(entries, (entry) => entry.rating.score >= 80, aggregation),
+    goodRate: weightedEntryRate(entries, (entry) => entry.rating.score >= 70, aggregation),
+    poorRate: weightedEntryRate(entries, (entry) => entry.rating.score < 55, aggregation),
+    disasterRate: weightedEntryRate(
+      entries,
+      (entry) => isDisasterRateScore(entry.rating.score),
+      aggregation,
+    ),
+    volatility: weightedEntryStandardDeviation(entries, (entry) => entry.rating.score, aggregation),
+    kda: weightedEntryAverage(entries, (entry) => entry.rating.metrics.kda, aggregation),
+    damageShare: weightedEntryAverage(entries, (entry) => entry.rating.metrics.damageShare, aggregation),
+    damageConversion: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.damageConversion,
+      aggregation,
+    ),
+    effectiveDamageConversion: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.effectiveDamageConversion,
+      aggregation,
+    ),
+    goldShare: weightedEntryAverage(entries, (entry) => entry.rating.metrics.goldShare, aggregation),
+    killShare: weightedEntryAverage(entries, (entry) => entry.rating.metrics.killShare, aggregation),
+    killParticipation: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.killParticipation,
+      aggregation,
+    ),
+    killStealGap: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.killShare - entry.rating.metrics.damageShare,
+      aggregation,
+    ),
+    deathShare: weightedEntryAverage(entries, (entry) => entry.rating.metrics.deathShare, aggregation),
+    mitigationShare: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.mitigationShare,
+      aggregation,
+    ),
+    mitigationPerDeath: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.mitigationPerDeath,
+      aggregation,
+    ),
+    healingShare: weightedEntryAverage(entries, (entry) => entry.rating.metrics.healingShare, aggregation),
+    immobilizationsPerMinute: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.immobilizationsPerMinute,
+      aggregation,
+    ),
+    immobilizationShare: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.immobilizationShare,
+      aggregation,
+    ),
+    immobilizeKillConversion: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.immobilizeKillConversion,
+      aggregation,
+    ),
+    controlQuality: weightedEntryAverage(
+      entries,
+      (entry) => entry.rating.metrics.controlQuality,
+      aggregation,
+    ),
   }
 }
 
-function abilityRate(entries: RatedGame[], family: AbilityKey) {
-  return rate(entries.filter((entry) => entry.family === family).length, entries.length)
+function weightedEntryAverage(
+  entries: RatedGame[],
+  selector: (entry: RatedGame) => number,
+  aggregation: ProfileAggregation,
+  source: "mixed" | "recency" = "mixed",
+) {
+  let total = 0
+  let totalWeight = 0
+  const weights = source === "recency" ? aggregation.recencyWeights : aggregation.weights
+
+  for (const entry of entries) {
+    const value = selector(entry)
+    if (!Number.isFinite(value)) continue
+    const weight = weights.get(entry) || 0
+    total += value * weight
+    totalWeight += weight
+  }
+
+  return totalWeight > 0 ? round2(total / totalWeight) : 0
 }
 
-function dominantPlayerRole(entries: RatedGame[]): PlayerRole {
+function weightedEntryRate(
+  entries: RatedGame[],
+  predicate: (entry: RatedGame) => boolean,
+  aggregation: ProfileAggregation,
+) {
+  let total = 0
+  let matched = 0
+
+  for (const entry of entries) {
+    const weight = aggregation.weights.get(entry) || 0
+    total += weight
+    if (predicate(entry)) matched += weight
+  }
+
+  return total > 0 ? round2(matched / total) : 0
+}
+
+function weightedEntryStandardDeviation(
+  entries: RatedGame[],
+  selector: (entry: RatedGame) => number,
+  aggregation: ProfileAggregation,
+) {
+  const mean = weightedEntryAverage(entries, selector, aggregation)
+  let variance = 0
+  let totalWeight = 0
+
+  for (const entry of entries) {
+    const value = selector(entry)
+    if (!Number.isFinite(value)) continue
+    const weight = aggregation.weights.get(entry) || 0
+    variance += weight * (value - mean) ** 2
+    totalWeight += weight
+  }
+
+  return totalWeight > 0 ? round2(Math.sqrt(variance / totalWeight)) : 0
+}
+
+function abilityRate(entries: RatedGame[], family: AbilityKey, aggregation: ProfileAggregation) {
+  return weightedEntryRate(entries, (entry) => entry.family === family, aggregation)
+}
+
+function dominantPlayerRole(entries: RatedGame[], aggregation: ProfileAggregation): PlayerRole {
   const counts = new Map<PlayerRole, number>()
   for (const entry of entries) {
-    counts.set(entry.rating.role.role, (counts.get(entry.rating.role.role) || 0) + 1)
+    const weight = aggregation.weights.get(entry) || 0
+    counts.set(entry.rating.role.role, (counts.get(entry.rating.role.role) || 0) + weight)
   }
 
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || "unknown"
 }
 
-function aggregateProfileLabel(entries: RatedGame[]) {
+function aggregateProfileLabel(entries: RatedGame[], aggregation: ProfileAggregation) {
   if (!entries.length) return "样本不足"
 
-  const band = dominantScoreBand(entries)
+  const band = dominantScoreBand(entries, aggregation)
   if (!band.length) return "样本不足"
 
-  return dominantLabelInBand(band)
+  return dominantLabelInBand(band, aggregation)
 }
 
-function weightedProfileScore(entries: RatedGame[]) {
+function championProfileScore(entries: RatedGame[], aggregation: ProfileAggregation) {
   if (!entries.length) return 0
 
   const scores = entries.map((entry) => entry.rating.score)
-  const band = dominantScoreBand(entries)
-  const bandAverage = band.length ? average(band.map((entry) => entry.rating.score)) : average(scores)
+  const band = dominantScoreBand(entries, aggregation)
+  const averageScore = average(scores)
+  const bandAverage = band.length ? average(band.map((entry) => entry.rating.score)) : averageScore
+  const recentWeight = entries.length >= 10 && aggregation.recencyMix > 0 ? 0.2 : 0
+  const recentScore = weightedEntryAverage(
+    entries,
+    (entry) => entry.rating.score,
+    aggregation,
+    "recency",
+  )
 
-  return round2(average(scores) * 0.6 + median(scores) * 0.25 + bandAverage * 0.15)
+  return round2(
+    averageScore * (0.6 - recentWeight) +
+      median(scores) * 0.25 +
+      bandAverage * 0.15 +
+      recentScore * recentWeight,
+  )
 }
 
-function dominantScoreBand(entries: RatedGame[]) {
-  return dominantScoreBandGroup(entries)?.entries || []
+function dominantScoreBand(entries: RatedGame[], aggregation: ProfileAggregation) {
+  return dominantScoreBandGroup(entries, aggregation)?.entries || []
 }
 
-function dominantScoreBandKey(entries: RatedGame[]): ChampionLabelBand {
-  return dominantScoreBandGroup(entries)?.key || "empty"
+function dominantScoreBandKey(entries: RatedGame[], aggregation: ProfileAggregation): ChampionLabelBand {
+  return dominantScoreBandGroup(entries, aggregation)?.key || "empty"
 }
 
-function dominantScoreBandGroup(entries: RatedGame[]) {
-  const bands: Array<{ key: Exclude<ChampionLabelBand, "empty">; entries: RatedGame[] }> = [
-    { key: "excellent", entries: [] as RatedGame[] },
-    { key: "normal", entries: [] as RatedGame[] },
-    { key: "low", entries: [] as RatedGame[] },
-    { key: "disaster", entries: [] as RatedGame[] },
+function dominantScoreBandGroup(entries: RatedGame[], aggregation: ProfileAggregation) {
+  const bands: Array<{
+    key: Exclude<ChampionLabelBand, "empty">
+    entries: RatedGame[]
+    weight: number
+  }> = [
+    { key: "excellent", entries: [], weight: 0 },
+    { key: "normal", entries: [], weight: 0 },
+    { key: "low", entries: [], weight: 0 },
+    { key: "disaster", entries: [], weight: 0 },
   ]
 
   for (const entry of entries) {
     const score = entry.rating.score
-    if (score >= 80) bands[0].entries.push(entry)
-    else if (score >= 60) bands[1].entries.push(entry)
-    else if (score >= 40) bands[2].entries.push(entry)
-    else bands[3].entries.push(entry)
+    const target = score >= 80 ? bands[0] : score >= 60 ? bands[1] : score >= 40 ? bands[2] : bands[3]
+    target.entries.push(entry)
+    target.weight += aggregation.weights.get(entry) || 0
   }
 
-  const disasterRate = rate(bands[3].entries.length, entries.length)
+  const totalWeight = bands.reduce((sum, band) => sum + band.weight, 0)
+  const disasterRate = totalWeight > 0 ? bands[3].weight / totalWeight : 0
   const eligibleBands = bands.filter((band) => {
     if (!band.entries.length) return false
     return band.key !== "disaster" || disasterRate >= DISASTER_BAND_DOMINANT_RATE
   })
 
-  return [...eligibleBands].sort((a, b) => b.entries.length - a.entries.length)[0]
+  return [...eligibleBands].sort((a, b) => b.weight - a.weight || b.entries.length - a.entries.length)[0]
 }
 
-function dominantLabelInBand(entries: RatedGame[]) {
+function dominantLabelInBand(entries: RatedGame[], aggregation: ProfileAggregation) {
   const counts = new Map<string, number>()
   for (const entry of entries) {
-    counts.set(entry.rating.label, (counts.get(entry.rating.label) || 0) + 1)
+    const weight = aggregation.weights.get(entry) || 0
+    counts.set(entry.rating.label, (counts.get(entry.rating.label) || 0) + weight)
   }
 
   return (
     Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ||
     "样本不足"
   )
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function isDisasterRateScore(score: number) {
@@ -604,15 +818,6 @@ function median(values: number[]) {
   const middle = Math.floor(safeValues.length / 2)
   if (safeValues.length % 2) return round2(safeValues[middle])
   return round2((safeValues[middle - 1] + safeValues[middle]) / 2)
-}
-
-function standardDeviation(values: number[]) {
-  const safeValues = values.filter((value) => Number.isFinite(value))
-  if (safeValues.length <= 1) return 0
-  const mean = average(safeValues)
-  const variance =
-    safeValues.reduce((sum, value) => sum + (value - mean) ** 2, 0) / safeValues.length
-  return round2(Math.sqrt(variance))
 }
 
 function rate(part: number, total: number) {

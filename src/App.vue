@@ -23,6 +23,7 @@ import {
   cancelStatsLoad,
   checkAppUpdate,
   connectionStatus,
+  getChatStatus,
   loadCurrentRankedStats,
   loadGameflowPhase,
   loadRankedStats,
@@ -35,7 +36,13 @@ import {
   searchPlayer,
   searchPlayerWithProgress,
   searchSummonerCandidates,
+  setChatAvailability,
 } from "./api"
+import {
+  chatStatusLockAvailability,
+  chatStatusLockEnabled,
+  isLockableChatAvailability,
+} from "./chatStatusLock"
 import LiveGamePanel from "./components/LiveGamePanel.vue"
 import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
 import PlayerRecordTab from "./components/PlayerRecordTab.vue"
@@ -146,9 +153,19 @@ const MAX_STATS_DEPTH = 1000
 const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
+const CHAT_STATUS_LOCK_WATCH_MS = 5000
+const CHAT_STATUS_LOCK_DEBOUNCE_MS = 1200
 const AUTO_LIVE_PHASES = new Set(["GameStart", "InProgress", "Reconnect"])
 const LIVE_DATA_PHASES = new Set([
   "ChampSelect",
+  "GameStart",
+  "InProgress",
+  "Reconnect",
+  "WaitingForStats",
+  "PreEndOfGame",
+  "EndOfGame",
+])
+const CHAT_STATUS_LOCK_PAUSED_PHASES = new Set([
   "GameStart",
   "InProgress",
   "Reconnect",
@@ -261,6 +278,7 @@ const liveGame = ref<LiveGameResponse | null>(null)
 const liveLoading = ref(false)
 const liveRefreshing = ref(false)
 const liveError = ref("")
+const gameflowPhase = ref<string | null>(null)
 const drillTabs = ref<DrillTab[]>([])
 const activeDrillTabId = ref("")
 const toasts = ref<AppToast[]>([])
@@ -278,6 +296,9 @@ let unlistenProgress: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
 let liveGameRenderSignature = ""
 let gameflowWatchTimer: number | null = null
+let chatStatusLockTimer: number | null = null
+let chatStatusLockDebounceTimer: number | null = null
+let chatStatusLockInFlight = false
 let autoLiveSessionActive = false
 let autoAcceptInFlight = false
 let autoAcceptHandled = false
@@ -1724,8 +1745,85 @@ function shouldAutoOpenLive(phase?: string | null) {
   return phase ? AUTO_LIVE_PHASES.has(phase) : false
 }
 
+function isChatStatusLockPaused(phase = gameflowPhase.value, availability = "") {
+  return (
+    !phase ||
+    CHAT_STATUS_LOCK_PAUSED_PHASES.has(phase) ||
+    availability.trim().toLocaleLowerCase("en-US") === "spectating"
+  )
+}
+
+function scheduleChatStatusLockSync(delay = CHAT_STATUS_LOCK_DEBOUNCE_MS) {
+  if (!chatStatusLockEnabled.value || !isLockableChatAvailability(chatStatusLockAvailability.value)) {
+    return
+  }
+  if (chatStatusLockDebounceTimer !== null) {
+    window.clearTimeout(chatStatusLockDebounceTimer)
+  }
+  chatStatusLockDebounceTimer = window.setTimeout(() => {
+    chatStatusLockDebounceTimer = null
+    void syncChatStatusLock()
+  }, delay)
+}
+
+async function syncChatStatusLock() {
+  if (
+    chatStatusLockInFlight ||
+    !chatStatusLockEnabled.value ||
+    !isLockableChatAvailability(chatStatusLockAvailability.value) ||
+    isChatStatusLockPaused()
+  ) {
+    return
+  }
+
+  const preferredAvailability = chatStatusLockAvailability.value
+  chatStatusLockInFlight = true
+  try {
+    const current = await getChatStatus()
+    const currentAvailability = current.availability.trim().toLocaleLowerCase("en-US")
+
+    // 请求期间若进入游戏、关闭锁定或改了预设，放弃本次写入。
+    if (
+      !chatStatusLockEnabled.value ||
+      chatStatusLockAvailability.value !== preferredAvailability ||
+      isChatStatusLockPaused(gameflowPhase.value, currentAvailability)
+    ) {
+      return
+    }
+    if (currentAvailability === preferredAvailability) return
+
+    await setChatAvailability(preferredAvailability)
+  } catch {
+    // 自动同步失败时静默等待下一轮，避免网络波动产生连续通知。
+  } finally {
+    chatStatusLockInFlight = false
+  }
+}
+
+function startChatStatusLockWatcher() {
+  if (chatStatusLockTimer !== null) return
+  chatStatusLockTimer = window.setInterval(() => {
+    void syncChatStatusLock()
+  }, CHAT_STATUS_LOCK_WATCH_MS)
+  scheduleChatStatusLockSync(0)
+}
+
+function stopChatStatusLockWatcher() {
+  if (chatStatusLockTimer !== null) {
+    window.clearInterval(chatStatusLockTimer)
+    chatStatusLockTimer = null
+  }
+  if (chatStatusLockDebounceTimer !== null) {
+    window.clearTimeout(chatStatusLockDebounceTimer)
+    chatStatusLockDebounceTimer = null
+  }
+}
+
 async function checkGameflowForAutoLive() {
   const phase = await loadGameflowPhase().catch(() => null)
+  const phaseChanged = gameflowPhase.value !== phase
+  gameflowPhase.value = phase
+  if (phaseChanged) scheduleChatStatusLockSync()
   void checkAutoAccept(phase)
   const shouldOpen = shouldAutoOpenLive(phase)
 
@@ -1781,6 +1879,15 @@ function stopGameflowWatcher() {
   gameflowWatchTimer = null
 }
 
+watch([chatStatusLockEnabled, chatStatusLockAvailability], () => {
+  if (!chatStatusLockEnabled.value || !isLockableChatAvailability(chatStatusLockAvailability.value)) {
+    stopChatStatusLockWatcher()
+    return
+  }
+  startChatStatusLockWatcher()
+  scheduleChatStatusLockSync(0)
+})
+
 watch(activePage, (page, previousPage) => {
   if (previousPage) savePageScroll(previousPage)
   void restorePageScroll(page)
@@ -1796,6 +1903,7 @@ onMounted(async () => {
   void initWindowSizeSettings()
   await initAppVersionAndReleaseNotes()
   startGameflowWatcher()
+  if (chatStatusLockEnabled.value) startChatStatusLockWatcher()
   void checkForAppUpdate()
   drillCachePruneTimer = window.setInterval(pruneHiddenDrillCache, 60_000)
   unlistenProgress = await listen<StatsLoadProgress>("stats-load-progress", (event) => {
@@ -1809,6 +1917,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unlistenProgress?.()
   stopGameflowWatcher()
+  stopChatStatusLockWatcher()
   stopLiveAutoRefresh()
   if (drillCachePruneTimer !== null) {
     window.clearInterval(drillCachePruneTimer)

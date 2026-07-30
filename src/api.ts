@@ -107,12 +107,15 @@ export function loadSelfStatsWithProgress(
   })
 }
 
+export type PlayerStatsCacheMode = "transient"
+
 export function searchPlayer(
   query: string,
   depth: number,
   sgpServerId?: string,
   forceRefresh = false,
   persistCache = true,
+  cacheMode?: PlayerStatsCacheMode,
 ) {
   return invoke<PlayerStatsResponse>("search_player", {
     query,
@@ -120,6 +123,7 @@ export function searchPlayer(
     sgpServerId,
     forceRefresh,
     persistCache,
+    cacheMode,
   })
 }
 
@@ -130,6 +134,7 @@ export function searchPlayerWithProgress(
   sgpServerId?: string,
   forceRefresh = false,
   persistCache = true,
+  cacheMode?: PlayerStatsCacheMode,
 ) {
   return invoke<PlayerStatsResponse>("search_player_with_progress", {
     query,
@@ -138,6 +143,7 @@ export function searchPlayerWithProgress(
     sgpServerId,
     forceRefresh,
     persistCache,
+    cacheMode,
   })
 }
 

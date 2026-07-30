@@ -10,3 +10,11 @@ export function readBooleanSetting(key: string, fallback = false) {
 export function writeBooleanSetting(key: string, value: boolean) {
   localStorage.setItem(key, value ? "1" : "0")
 }
+
+export function readStringSetting(key: string, fallback = "") {
+  return localStorage.getItem(key) ?? fallback
+}
+
+export function writeStringSetting(key: string, value: string) {
+  localStorage.setItem(key, value)
+}

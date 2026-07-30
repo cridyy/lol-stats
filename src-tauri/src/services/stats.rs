@@ -25,6 +25,11 @@ const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+/// 详细战绩中“点击玩家”的短期缓存。它与主动查询的长期缓存隔离，避免随手查看的
+/// 玩家长期占用数据库；命中后仍会从第一页做增量探测。
+const QUICK_PLAYER_CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const QUICK_PLAYER_CACHE_LIMIT: usize = 50;
+const QUICK_PLAYER_CACHE_GAME_LIMIT: usize = 100;
 const CACHE_SCHEMA_VERSION: i64 = 12;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 
@@ -219,6 +224,76 @@ where
     Ok(response)
 }
 
+/// 详细战绩的快捷查人使用独立的短期缓存。
+///
+/// 每次命中缓存仍会从第一页探测新增对局，并在遇到缓存战绩或补足请求深度后停止；
+/// 因此它不会退化成整批重复拉取，也不会写入主动查询使用的长期缓存表。
+pub async fn load_transient_player_stats_with_progress<F>(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    summoner: SummonerInfo,
+    depth: usize,
+    mut progress: F,
+) -> AppResult<PlayerStatsResponse>
+where
+    F: FnMut(usize, usize) -> bool + Send,
+{
+    let depth = depth.clamp(1, MAX_DEPTH);
+    if !progress(0, depth) {
+        return Err(super::error::AppError::Cancelled);
+    }
+
+    let cache_key = stats_cache_key(auth, sgp_server_id, &summoner, depth);
+    let cached_games = read_quick_cached_games(&cache_key, depth).unwrap_or_default();
+    if !cached_games.is_empty() && !progress(cached_games.len().min(depth), depth) {
+        return Err(super::error::AppError::Cancelled);
+    }
+
+    let loaded = if let Some(auth) = auth {
+        load_quick_games_incremental_from_sgp(
+            lcu,
+            auth,
+            sgp_server_id,
+            &cache_key,
+            depth,
+            cached_games.clone(),
+            &mut progress,
+        )
+        .await
+    } else {
+        load_quick_games_incremental_from_lcu(
+            lcu,
+            &cache_key,
+            depth,
+            cached_games.clone(),
+            &mut progress,
+        )
+        .await
+    };
+
+    let (games, refreshed) = match loaded {
+        Ok(games) if !games.is_empty() => (games, true),
+        Ok(_) | Err(_) if !cached_games.is_empty() => (cached_games, false),
+        Ok(_) => {
+            return Err(super::error::AppError::SgpUnavailable(
+                "未能读取到有效的快捷缓存战绩".to_string(),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+
+    if refreshed {
+        store_quick_cached_games(&cache_key, &games);
+    }
+    let response_games = games.into_iter().take(depth).collect::<Vec<_>>();
+    if !progress(response_games.len().min(depth), depth) {
+        return Err(super::error::AppError::Cancelled);
+    }
+
+    Ok(analyze_games(summoner, depth, response_games))
+}
+
 fn stats_cache_key(
     auth: Option<&ClientAuth>,
     sgp_server_id: Option<&str>,
@@ -399,6 +474,28 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_player_match_recent
             ON player_match_index (sgp_server_id, puuid, game_creation DESC);
 
+        CREATE TABLE IF NOT EXISTS quick_player_cache (
+            sgp_server_id TEXT NOT NULL,
+            puuid TEXT NOT NULL,
+            last_access_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (sgp_server_id, puuid)
+        );
+
+        CREATE TABLE IF NOT EXISTS quick_match_cache (
+            sgp_server_id TEXT NOT NULL,
+            puuid TEXT NOT NULL,
+            game_id INTEGER NOT NULL,
+            game_creation INTEGER NOT NULL,
+            stored_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            game_json TEXT NOT NULL,
+            PRIMARY KEY (sgp_server_id, puuid, game_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_quick_player_match_recent
+            ON quick_match_cache (sgp_server_id, puuid, game_creation DESC);
+
         CREATE TABLE IF NOT EXISTS cache_meta (
             key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
@@ -420,6 +517,8 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
             DELETE FROM stats_cache;
             DELETE FROM match_cache;
             DELETE FROM player_match_index;
+            DELETE FROM quick_player_cache;
+            DELETE FROM quick_match_cache;
             "#,
         )?;
         conn.execute(
@@ -461,6 +560,339 @@ fn unix_time_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn quick_cache_expiry_ms(now_ms: i64) -> i64 {
+    now_ms.saturating_add(QUICK_PLAYER_CACHE_TTL.as_millis() as i64)
+}
+
+fn read_quick_cached_games(key: &StatsCacheKey, depth: usize) -> Option<Vec<Game>> {
+    let conn = open_cache_db()?;
+    let now_ms = unix_time_ms();
+    cleanup_quick_cache(&conn, now_ms);
+
+    let limit = depth.min(QUICK_PLAYER_CACHE_GAME_LIMIT) as i64;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT game_json
+            FROM quick_match_cache
+            WHERE sgp_server_id = ?1
+              AND puuid = ?2
+              AND expires_at_ms > ?3
+            ORDER BY game_creation DESC, game_id DESC
+            LIMIT ?4
+            "#,
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(
+            params![&key.sgp_server_id, &key.puuid, now_ms, limit],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()?;
+    let games = rows
+        .filter_map(|row| row.ok())
+        .filter_map(|json| serde_json::from_str::<Game>(&json).ok())
+        .collect::<Vec<_>>();
+
+    if !games.is_empty() {
+        mark_quick_player_access(&conn, key, now_ms);
+    }
+
+    Some(games)
+}
+
+fn store_quick_cached_games(key: &StatsCacheKey, games: &[Game]) {
+    let Some(conn) = open_cache_db() else {
+        return;
+    };
+
+    let now_ms = unix_time_ms();
+    cleanup_quick_cache(&conn, now_ms);
+    let expires_at_ms = quick_cache_expiry_ms(now_ms);
+    let mut newest_games = games
+        .iter()
+        .filter(|game| game.game_id != 0)
+        .collect::<Vec<_>>();
+    newest_games.sort_by(|left, right| {
+        right
+            .game_creation
+            .cmp(&left.game_creation)
+            .then_with(|| right.game_id.cmp(&left.game_id))
+    });
+    newest_games.truncate(QUICK_PLAYER_CACHE_GAME_LIMIT);
+
+    let _ = conn.execute(
+        r#"
+        DELETE FROM quick_match_cache
+        WHERE sgp_server_id = ?1 AND puuid = ?2
+        "#,
+        params![&key.sgp_server_id, &key.puuid],
+    );
+
+    for game in newest_games {
+        let Ok(game_json) = serde_json::to_string(game) else {
+            continue;
+        };
+        let _ = conn.execute(
+            r#"
+            INSERT INTO quick_match_cache (
+                sgp_server_id,
+                puuid,
+                game_id,
+                game_creation,
+                stored_at_ms,
+                expires_at_ms,
+                game_json
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                &key.sgp_server_id,
+                &key.puuid,
+                game.game_id as i64,
+                game.game_creation,
+                now_ms,
+                expires_at_ms,
+                game_json,
+            ],
+        );
+    }
+
+    refresh_quick_player_cache(&conn, key, now_ms);
+    cleanup_quick_cache(&conn, now_ms);
+}
+
+/// 只记录 LRU 访问，不延长缓存寿命。网络临时失败时，旧数据仍会在原定的
+/// 12 小时后过期，避免反复打开页面把陈旧数据永久保留。
+fn mark_quick_player_access(conn: &Connection, key: &StatsCacheKey, now_ms: i64) {
+    let _ = conn.execute(
+        r#"
+        UPDATE quick_player_cache
+        SET last_access_ms = ?3
+        WHERE sgp_server_id = ?1 AND puuid = ?2
+        "#,
+        params![&key.sgp_server_id, &key.puuid, now_ms],
+    );
+}
+
+/// 成功拉取并写入新战绩后，刷新该玩家缓存的 12 小时生命周期。
+fn refresh_quick_player_cache(conn: &Connection, key: &StatsCacheKey, now_ms: i64) {
+    let expires_at_ms = quick_cache_expiry_ms(now_ms);
+    let _ = conn.execute(
+        r#"
+        INSERT INTO quick_player_cache (
+            sgp_server_id,
+            puuid,
+            last_access_ms,
+            expires_at_ms
+        )
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(sgp_server_id, puuid) DO UPDATE SET
+            last_access_ms = excluded.last_access_ms,
+            expires_at_ms = excluded.expires_at_ms
+        "#,
+        params![&key.sgp_server_id, &key.puuid, now_ms, expires_at_ms],
+    );
+    let _ = conn.execute(
+        r#"
+        UPDATE quick_match_cache
+        SET expires_at_ms = ?3
+        WHERE sgp_server_id = ?1 AND puuid = ?2
+        "#,
+        params![&key.sgp_server_id, &key.puuid, expires_at_ms],
+    );
+}
+
+fn cleanup_quick_cache(conn: &Connection, now_ms: i64) {
+    let _ = conn.execute(
+        "DELETE FROM quick_match_cache WHERE expires_at_ms <= ?1",
+        params![now_ms],
+    );
+    let _ = conn.execute(
+        "DELETE FROM quick_player_cache WHERE expires_at_ms <= ?1",
+        params![now_ms],
+    );
+
+    let overflow = {
+        let Ok(mut stmt) = conn.prepare(
+            r#"
+            SELECT sgp_server_id, puuid
+            FROM quick_player_cache
+            ORDER BY last_access_ms DESC
+            LIMIT -1 OFFSET ?1
+            "#,
+        ) else {
+            return;
+        };
+        let Ok(rows) = stmt.query_map(params![QUICK_PLAYER_CACHE_LIMIT as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            return;
+        };
+        rows.filter_map(|row| row.ok()).collect::<Vec<_>>()
+    };
+
+    for (sgp_server_id, puuid) in overflow {
+        let _ = conn.execute(
+            r#"
+            DELETE FROM quick_match_cache
+            WHERE sgp_server_id = ?1 AND puuid = ?2
+            "#,
+            params![&sgp_server_id, &puuid],
+        );
+        let _ = conn.execute(
+            r#"
+            DELETE FROM quick_player_cache
+            WHERE sgp_server_id = ?1 AND puuid = ?2
+            "#,
+            params![&sgp_server_id, &puuid],
+        );
+    }
+}
+
+async fn load_quick_games_incremental_from_lcu<F>(
+    lcu: &LcuClient,
+    key: &StatsCacheKey,
+    depth: usize,
+    mut games: Vec<Game>,
+    progress: &mut F,
+) -> AppResult<Vec<Game>>
+where
+    F: FnMut(usize, usize) -> bool + Send,
+{
+    sort_games_newest_first(&mut games);
+    let cached_ids = quick_cached_game_ids(&games);
+    let mut seen_game_ids = cached_ids.clone();
+    let mut start = 0usize;
+    let mut fetched_this_refresh = 0usize;
+    let mut saw_cached_game = cached_ids.is_empty();
+    let page_size = depth.min(MAX_PAGE_SIZE).max(1);
+
+    loop {
+        let end = start + page_size - 1;
+        let page = lcu.match_history(&key.puuid, start, end).await?;
+        let page_games = page.games.games;
+        if page_games.is_empty() {
+            break;
+        }
+
+        let received = page_games.len();
+        if page_games
+            .iter()
+            .any(|game| game.game_id != 0 && cached_ids.contains(&game.game_id))
+        {
+            saw_cached_game = true;
+        }
+        games.extend(unique_games(page_games, &mut seen_game_ids));
+        sort_games_newest_first(&mut games);
+        fetched_this_refresh += received;
+
+        if !progress(games.len().min(depth), depth) {
+            return Err(super::error::AppError::Cancelled);
+        }
+        if quick_refresh_complete(
+            games.len(),
+            depth,
+            received,
+            page_size,
+            saw_cached_game,
+            fetched_this_refresh,
+        ) {
+            break;
+        }
+
+        start += page_size;
+    }
+
+    Ok(games)
+}
+
+async fn load_quick_games_incremental_from_sgp<F>(
+    lcu: &LcuClient,
+    auth: &ClientAuth,
+    sgp_server_id: Option<&str>,
+    key: &StatsCacheKey,
+    depth: usize,
+    mut games: Vec<Game>,
+    progress: &mut F,
+) -> AppResult<Vec<Game>>
+where
+    F: FnMut(usize, usize) -> bool + Send,
+{
+    let sgp = SgpClient::new(lcu, auth, sgp_server_id).await?;
+    sort_games_newest_first(&mut games);
+    let cached_ids = quick_cached_game_ids(&games);
+    let mut seen_game_ids = cached_ids.clone();
+    let mut start = 0usize;
+    let mut fetched_this_refresh = 0usize;
+    let mut saw_cached_game = cached_ids.is_empty();
+    let page_size = depth.min(SGP_PAGE_SIZE).max(1);
+
+    loop {
+        let page_games = sgp.match_history(&key.puuid, start, page_size).await?;
+        if page_games.is_empty() {
+            break;
+        }
+
+        let received = page_games.len();
+        if page_games
+            .iter()
+            .any(|game| game.game_id != 0 && cached_ids.contains(&game.game_id))
+        {
+            saw_cached_game = true;
+        }
+        games.extend(unique_games(page_games, &mut seen_game_ids));
+        sort_games_newest_first(&mut games);
+        fetched_this_refresh += received;
+
+        if !progress(games.len().min(depth), depth) {
+            return Err(super::error::AppError::Cancelled);
+        }
+        if quick_refresh_complete(
+            games.len(),
+            depth,
+            received,
+            page_size,
+            saw_cached_game,
+            fetched_this_refresh,
+        ) {
+            break;
+        }
+
+        start += page_size;
+    }
+
+    Ok(games)
+}
+
+fn quick_cached_game_ids(games: &[Game]) -> HashSet<u64> {
+    games
+        .iter()
+        .filter(|game| game.game_id != 0)
+        .map(|game| game.game_id)
+        .collect()
+}
+
+fn quick_refresh_complete(
+    available: usize,
+    depth: usize,
+    received: usize,
+    page_size: usize,
+    saw_cached_game: bool,
+    fetched_this_refresh: usize,
+) -> bool {
+    received < page_size || fetched_this_refresh >= depth || (available >= depth && saw_cached_game)
+}
+
+fn sort_games_newest_first(games: &mut [Game]) {
+    games.sort_by(|left, right| {
+        right
+            .game_creation
+            .cmp(&left.game_creation)
+            .then_with(|| right.game_id.cmp(&left.game_id))
+    });
 }
 
 async fn load_games_direct<F>(
@@ -1130,6 +1562,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         team_damage_self_mitigated: team_totals.damage_self_mitigated,
         team_total_damage_taken: team_totals.total_damage_taken,
         total_heal: participant.stats.total_heal,
+        total_damage_shielded_on_teammates: participant.stats.total_damage_shielded_on_teammates,
         team_total_heal: team_totals.total_heal,
         team_gold_earned: team_totals.gold_earned,
         game_gold_earned: game_totals.gold_earned,

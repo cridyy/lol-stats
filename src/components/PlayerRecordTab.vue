@@ -37,6 +37,7 @@ const recentLoading = ref(false)
 const statsLoading = ref(false)
 const rankedLoading = ref(false)
 const error = ref("")
+let rankedRequestKey = ""
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -54,8 +55,11 @@ async function loadRecent(forceRefresh = false, previousLoaded?: number) {
       props.sgpServerId,
       forceRefresh,
       false,
+      "transient",
     )
     recentStats.value = stats
+    // 使用战绩响应确认过的 PUUID 再读段位，避免刚进入详情页时两类 SGP 请求并发而丢失段位结果。
+    void loadRanked(stats.summoner.puuid, forceRefresh)
 
     if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
       recentHasMore.value = false
@@ -95,13 +99,16 @@ async function loadStats(forceRefresh = false) {
   error.value = ""
 
   try {
-    fullStats.value = await searchPlayer(
+    const stats = await searchPlayer(
       props.query,
       statsDepth.value,
       props.sgpServerId,
       forceRefresh,
       false,
+      "transient",
     )
+    fullStats.value = stats
+    void loadRanked(stats.summoner.puuid, forceRefresh)
   } catch (loadError) {
     error.value = errorMessage(loadError)
   } finally {
@@ -109,17 +116,24 @@ async function loadStats(forceRefresh = false) {
   }
 }
 
-async function loadRanked(forceRefresh = false) {
+async function loadRanked(puuid: string, forceRefresh = false) {
+  const normalizedPuuid = puuid.trim()
+  if (!normalizedPuuid) return
   if (rankedStats.value && !forceRefresh) return
   if (rankedLoading.value) return
+  const requestKey = `${props.sgpServerId || ""}:${normalizedPuuid}`
+
+  if (forceRefresh) rankedStats.value = null
+  rankedRequestKey = requestKey
   rankedLoading.value = true
 
   try {
-    rankedStats.value = await loadRankedStats(props.query, props.sgpServerId)
+    const ranked = await loadRankedStats(normalizedPuuid, props.sgpServerId)
+    if (rankedRequestKey === requestKey) rankedStats.value = ranked
   } catch {
-    rankedStats.value = null
+    if (rankedRequestKey === requestKey) rankedStats.value = null
   } finally {
-    rankedLoading.value = false
+    if (rankedRequestKey === requestKey) rankedLoading.value = false
   }
 }
 
@@ -136,7 +150,7 @@ watch(
   () => [props.query, props.sgpServerId],
   () => {
     rankedStats.value = null
-    void loadRanked(true)
+    rankedRequestKey = ""
   },
   { immediate: true },
 )

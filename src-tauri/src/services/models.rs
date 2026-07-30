@@ -59,6 +59,9 @@ pub struct ConnectionStatus {
 pub struct RankedStatsResponse {
     #[serde(default)]
     pub queue_map: RankedQueueMap,
+    /// 当国服客户端无法读取目标区服的段位时，保留明确原因，避免前端误判为未定级。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -306,6 +309,8 @@ pub struct ParticipantStats {
     #[serde(default)]
     pub total_heal: u32,
     #[serde(default)]
+    pub total_damage_shielded_on_teammates: u32,
+    #[serde(default)]
     pub enemy_champion_immobilizations: u32,
     #[serde(default)]
     pub immobilize_and_kill_with_ally: u32,
@@ -525,6 +530,8 @@ pub struct RecentGame {
     pub team_total_damage_taken: u32,
     #[serde(default)]
     pub total_heal: u32,
+    #[serde(default)]
+    pub total_damage_shielded_on_teammates: u32,
     #[serde(default)]
     pub team_total_heal: u32,
     #[serde(default)]

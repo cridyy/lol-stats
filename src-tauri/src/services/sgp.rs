@@ -451,6 +451,8 @@ struct SgpParticipant {
     #[serde(default)]
     total_heal: u32,
     #[serde(default)]
+    total_damage_shielded_on_teammates: u32,
+    #[serde(default)]
     vision_score: u32,
     #[serde(default)]
     champ_level: u32,
@@ -606,6 +608,8 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                     damage_self_mitigated: participant.damage_self_mitigated,
                     total_damage_taken: participant.total_damage_taken,
                     total_heal: participant.total_heal,
+                    total_damage_shielded_on_teammates: participant
+                        .total_damage_shielded_on_teammates,
                     enemy_champion_immobilizations,
                     immobilize_and_kill_with_ally,
                     vision_score: participant.vision_score,
@@ -701,7 +705,10 @@ fn sgp_ranked_stats_to_ranked_response(ranked: SgpRankedStats) -> RankedStatsRes
         }
     }
 
-    RankedStatsResponse { queue_map }
+    RankedStatsResponse {
+        queue_map,
+        unavailable_reason: None,
+    }
 }
 
 fn sgp_ranked_queue_has_data(queue: &SgpRankedQueue) -> bool {

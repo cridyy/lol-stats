@@ -9,6 +9,13 @@ import {
   setChatStatusMessage,
   setGameSettingsLocked,
 } from "../api"
+import {
+  chatStatusLockAvailability,
+  chatStatusLockEnabled,
+  isLockableChatAvailability,
+  setChatStatusLockAvailability,
+  setChatStatusLockEnabled,
+} from "../chatStatusLock"
 import { notifyKey } from "../notifications"
 import {
   AUTO_ACCEPT_ENABLED_KEY,
@@ -41,6 +48,10 @@ const availabilityOptions = [
 ]
 
 const chatSignatureCount = computed(() => Array.from(chatSignature.value).length)
+const chatStatusLockSummary = computed(() => {
+  if (!chatStatusLockEnabled.value) return "客户端自动管理"
+  return `预设 ${availabilityLabel(chatStatusLockAvailability.value)}，游戏中自动暂停`
+})
 
 watch(
   () => props.active,
@@ -76,7 +87,13 @@ async function loadClientToolState() {
   }
 
   if (chatResult.status === "fulfilled") {
-    chatAvailability.value = chatResult.value.availability || "chat"
+    const currentAvailability = chatResult.value.availability || "chat"
+    chatAvailability.value = chatStatusLockEnabled.value
+      ? chatStatusLockAvailability.value
+      : currentAvailability
+    if (!chatStatusLockEnabled.value && isLockableChatAvailability(currentAvailability)) {
+      setChatStatusLockAvailability(currentAvailability)
+    }
     chatSignature.value = chatResult.value.statusMessage || ""
   } else {
     errors.push(`聊天状态：${errorMessage(chatResult.reason)}`)
@@ -128,6 +145,9 @@ async function exitEndOfGame() {
 
 async function saveAvailability() {
   if (availabilitySaving.value) return
+  if (isLockableChatAvailability(chatAvailability.value)) {
+    setChatStatusLockAvailability(chatAvailability.value)
+  }
   availabilitySaving.value = true
   try {
     await setChatAvailability(chatAvailability.value)
@@ -142,7 +162,40 @@ async function saveAvailability() {
 function chooseAvailability(value: string) {
   if (availabilitySaving.value || chatLoading.value) return
   chatAvailability.value = value
+  if (chatStatusLockEnabled.value && !isLockableChatAvailability(value)) {
+    setChatStatusLockEnabled(false)
+    notify({
+      kind: "success",
+      title: "聊天状态锁定已关闭",
+      message: "游戏中和观战中由客户端自动维护，不能作为锁定预设。",
+    })
+  }
   void saveAvailability()
+}
+
+function toggleChatStatusLock() {
+  const next = !chatStatusLockEnabled.value
+  if (next && !isLockableChatAvailability(chatAvailability.value)) {
+    notify({
+      kind: "error",
+      title: "无法锁定当前状态",
+      message: "请先选择聊天、在线分组、离开、离线或在线。游戏中和观战中由客户端自动维护。",
+      duration: 7000,
+    })
+    return
+  }
+
+  if (next) setChatStatusLockAvailability(chatAvailability.value)
+  setChatStatusLockEnabled(next)
+  notify({
+    kind: "success",
+    title: next ? "聊天状态锁定已开启" : "聊天状态锁定已关闭",
+    message: next ? "大厅和房间会保持预设状态，游戏中与观战中自动暂停。" : "客户端将继续自动管理聊天状态。",
+  })
+}
+
+function availabilityLabel(value: string) {
+  return availabilityOptions.find((option) => option.value === value)?.label || value
 }
 
 async function saveSignature() {
@@ -229,6 +282,23 @@ async function saveSignature() {
           {{ option.label }}
         </button>
       </div>
+    </div>
+
+    <div class="tool-row">
+      <div class="tool-title">
+        <strong>锁定聊天状态</strong>
+        <span>{{ chatStatusLockSummary }}</span>
+      </div>
+      <button
+        class="switch-control"
+        :class="{ active: chatStatusLockEnabled }"
+        role="switch"
+        :aria-checked="chatStatusLockEnabled"
+        :disabled="chatLoading || availabilitySaving"
+        @click="toggleChatStatusLock"
+      >
+        <span></span>
+      </button>
     </div>
 
     <div class="chat-row signature-row">

@@ -57,6 +57,7 @@ export interface AppUpdateInfo {
 
 export interface RankedStatsResponse {
   queueMap: RankedQueueMap
+  unavailableReason?: string
 }
 
 export interface RankedQueueMap {
@@ -172,6 +173,7 @@ export interface RecentGame {
   teamDamageSelfMitigated: number
   teamTotalDamageTaken: number
   totalHeal: number
+  totalDamageShieldedOnTeammates: number
   teamTotalHeal: number
   teamGoldEarned: number
   gameGoldEarned?: number

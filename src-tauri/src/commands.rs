@@ -17,7 +17,7 @@ use crate::services::models::{
 };
 use crate::services::stats::{
     load_match_detail as load_match_detail_service, load_player_stats,
-    load_player_stats_with_progress, normalize_depth,
+    load_player_stats_with_progress, load_transient_player_stats_with_progress, normalize_depth,
 };
 use crate::services::tools::{
     game_settings_locked, set_game_settings_locked as set_settings_locked,
@@ -590,6 +590,18 @@ pub async fn load_ranked_stats(
         .as_deref()
         .unwrap_or(default_sgp_server_id.as_str())
         .eq_ignore_ascii_case(&default_sgp_server_id);
+
+    // 国服 leagues-ledge 会校验会话令牌中的 shard。该令牌只属于当前登录区服，
+    // 跨区请求会返回 `Invalid shard`，而不是目标玩家真实的未定级数据。
+    if !can_fallback_to_lcu {
+        return Ok(RankedStatsResponse {
+            unavailable_reason: Some(
+                "跨区段位暂不可读取：国服客户端仅允许读取当前登录区服的段位".to_string(),
+            ),
+            ..RankedStatsResponse::default()
+        });
+    }
+
     let sgp = crate::services::sgp::SgpClient::new(
         &clients.lcu,
         &clients.auth,
@@ -742,24 +754,38 @@ pub async fn search_player(
     sgp_server_id: Option<String>,
     force_refresh: Option<bool>,
     persist_cache: Option<bool>,
+    cache_mode: Option<String>,
 ) -> Result<PlayerStatsResponse, String> {
     let clients = create_clients().map_err(app_error)?;
     let summoner = resolve_summoner(&clients, query.trim())
         .await
         .map_err(app_error)?;
 
-    load_player_stats_with_progress(
-        &clients.lcu,
-        Some(&clients.auth),
-        sgp_server_id.as_deref(),
-        summoner,
-        normalize_depth(depth),
-        force_refresh.unwrap_or(false),
-        persist_cache.unwrap_or(true),
-        |_, _| true,
-    )
-    .await
-    .map_err(app_error)
+    if uses_transient_player_cache(cache_mode.as_deref()) {
+        load_transient_player_stats_with_progress(
+            &clients.lcu,
+            Some(&clients.auth),
+            sgp_server_id.as_deref(),
+            summoner,
+            normalize_depth(depth),
+            |_, _| true,
+        )
+        .await
+        .map_err(app_error)
+    } else {
+        load_player_stats_with_progress(
+            &clients.lcu,
+            Some(&clients.auth),
+            sgp_server_id.as_deref(),
+            summoner,
+            normalize_depth(depth),
+            force_refresh.unwrap_or(false),
+            persist_cache.unwrap_or(true),
+            |_, _| true,
+        )
+        .await
+        .map_err(app_error)
+    }
 }
 
 #[tauri::command]
@@ -771,6 +797,7 @@ pub async fn search_player_with_progress(
     sgp_server_id: Option<String>,
     force_refresh: Option<bool>,
     persist_cache: Option<bool>,
+    cache_mode: Option<String>,
 ) -> Result<PlayerStatsResponse, String> {
     clear_cancelled_request(&request_id);
     let clients = create_clients().map_err(app_error)?;
@@ -781,24 +808,50 @@ pub async fn search_player_with_progress(
     let progress_app = app.clone();
     let progress_request_id = request_id.clone();
 
-    let result = load_player_stats_with_progress(
-        &clients.lcu,
-        Some(&clients.auth),
-        sgp_server_id.as_deref(),
-        summoner,
-        depth,
-        force_refresh.unwrap_or(false),
-        persist_cache.unwrap_or(true),
-        move |loaded, total| {
-            emit_stats_progress(&progress_app, &progress_request_id, loaded, total);
-            !is_cancelled_request(&progress_request_id)
-        },
-    )
-    .await
-    .map_err(app_error);
+    let result = if uses_transient_player_cache(cache_mode.as_deref()) {
+        load_transient_player_stats_with_progress(
+            &clients.lcu,
+            Some(&clients.auth),
+            sgp_server_id.as_deref(),
+            summoner,
+            depth,
+            move |loaded, total| {
+                emit_stats_progress(&progress_app, &progress_request_id, loaded, total);
+                !is_cancelled_request(&progress_request_id)
+            },
+        )
+        .await
+        .map_err(app_error)
+    } else {
+        load_player_stats_with_progress(
+            &clients.lcu,
+            Some(&clients.auth),
+            sgp_server_id.as_deref(),
+            summoner,
+            depth,
+            force_refresh.unwrap_or(false),
+            persist_cache.unwrap_or(true),
+            move |loaded, total| {
+                emit_stats_progress(&progress_app, &progress_request_id, loaded, total);
+                !is_cancelled_request(&progress_request_id)
+            },
+        )
+        .await
+        .map_err(app_error)
+    };
 
     clear_cancelled_request(&request_id);
     result
+}
+
+fn uses_transient_player_cache(cache_mode: Option<&str>) -> bool {
+    matches!(
+        cache_mode
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("transient")
+    )
 }
 
 #[tauri::command]

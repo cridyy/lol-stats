@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from "vue"
-import { ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
+import { BarChart3, ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
 import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { notifyKey } from "../notifications"
@@ -30,6 +30,8 @@ type PlayerAbilityState = {
   profile: PlayerProfile | null
 }
 
+type ChartMetric = "damage" | "mitigation" | "gold" | "healing" | "conversion" | "shield"
+
 const props = defineProps<{
   game: RecentGame
   matchDetail: MatchDetailResponse | null
@@ -46,6 +48,8 @@ const emit = defineEmits<{
 
 const captureRef = ref<HTMLElement | null>(null)
 const copying = ref(false)
+const showChart = ref(false)
+const chartMetric = ref<ChartMetric>("damage")
 const showPlayerAbility = ref(false)
 const abilityLoading = ref(false)
 const playerAbilityStates = ref<Record<string, PlayerAbilityState>>({})
@@ -59,10 +63,27 @@ const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
 }))
+const chartMetrics: Array<{ key: ChartMetric; label: string }> = [
+  { key: "damage", label: "伤害" },
+  { key: "mitigation", label: "承伤" },
+  { key: "gold", label: "经济" },
+  { key: "healing", label: "治疗" },
+  { key: "conversion", label: "伤转" },
+  { key: "shield", label: "护盾" },
+]
+const activeChartMetric = computed(
+  () => chartMetrics.find((metric) => metric.key === chartMetric.value) || chartMetrics[0],
+)
+const chartMaxValue = computed(() => {
+  const players = props.matchDetail?.teams.flatMap((team) => team.players) || []
+  return Math.max(1, ...players.map((player) => chartValue(player)))
+})
 
 watch(
   () => props.matchDetail?.gameId,
   () => {
+    showChart.value = false
+    chartMetric.value = "damage"
     showPlayerAbility.value = false
     abilityLoading.value = false
     playerAbilityStates.value = {}
@@ -114,9 +135,40 @@ function kNumber(value: number) {
 }
 
 function damageConversion(game: RecentGame) {
+  return fixed(damageConversionValue(game))
+}
+
+function damageConversionValue(game: RecentGame) {
   const goldShare = ratio(game.goldEarned, game.teamGoldEarned)
-  if (goldShare === 0) return "0.00"
-  return fixed(ratio(game.damageToChampions, game.teamDamageToChampions) / goldShare)
+  return goldShare > 0 ? ratio(game.damageToChampions, game.teamDamageToChampions) / goldShare : 0
+}
+
+function chartValue(player: MatchDetailPlayer) {
+  switch (chartMetric.value) {
+    case "damage":
+      return player.damageToChampions
+    case "mitigation":
+      return mitigationValue(player)
+    case "gold":
+      return player.goldEarned
+    case "healing":
+      return player.totalHeal
+    case "conversion":
+      return damageConversionValue(player)
+    case "shield":
+      return Number(player.totalDamageShieldedOnTeammates || 0)
+  }
+}
+
+function chartValueText(player: MatchDetailPlayer) {
+  const value = chartValue(player)
+  return chartMetric.value === "conversion" ? fixed(value) : kNumber(value)
+}
+
+function chartBarWidth(player: MatchDetailPlayer) {
+  const value = chartValue(player)
+  if (value <= 0) return "0%"
+  return `${Math.max((value / chartMaxValue.value) * 100, 2.5)}%`
 }
 
 function playerLabel(player: MatchDetailPlayer) {
@@ -220,8 +272,14 @@ async function togglePlayerAbility() {
     return
   }
 
+  showChart.value = false
   showPlayerAbility.value = true
   await loadPlayerAbilities()
+}
+
+function toggleChart() {
+  showChart.value = !showChart.value
+  if (showChart.value) showPlayerAbility.value = false
 }
 
 function playerAbilityKey(player: MatchDetailPlayer) {
@@ -349,7 +407,11 @@ async function copyImage() {
     await copyElementAsPng(target, {
       backgroundColor: "#f6faf9",
       pixelRatio: 2,
-      filter: (node) => !(node instanceof HTMLElement && node.classList.contains("overview-actions")),
+      filter: (node) =>
+        !(node instanceof HTMLElement && (
+          node.classList.contains("overview-actions") ||
+          node.classList.contains("chart-metric-tabs")
+        )),
     })
 
     notify({ kind: "success", title: "分享图片已复制", message: "可以直接粘贴到聊天窗口" })
@@ -376,6 +438,11 @@ async function copyImage() {
         <span>开始时间 {{ formatDate(game.gameCreation) }}</span>
       </div>
       <div class="overview-actions">
+        <button class="chart-toggle" :disabled="loading || !matchDetail" @click="toggleChart">
+          <BarChart3 v-if="!showChart" :size="14" />
+          <EyeOff v-else :size="14" />
+          {{ showChart ? "关闭图表" : "查看图表" }}
+        </button>
         <button class="ability-toggle" :disabled="loading || !matchDetail" @click="togglePlayerAbility">
           <LoaderCircle v-if="showPlayerAbility && abilityLoading" class="spin" :size="14" />
           <Eye v-else-if="!showPlayerAbility" :size="14" />
@@ -395,7 +462,67 @@ async function copyImage() {
     </div>
     <div class="overview-state error" v-else-if="error">{{ error }}</div>
 
-    <div class="overview-body" v-else-if="matchDetail">
+    <div class="overview-body" :class="{ 'chart-mode': showChart }" v-else-if="matchDetail">
+      <template v-if="showChart">
+        <div class="chart-team-list" :aria-label="`${activeChartMetric.label}对比图`">
+          <section v-for="team in matchDetail.teams" :key="team.teamId" class="team-block">
+            <div class="team-header chart-team-header" :class="{ win: team.win, lose: !team.win }">
+              <div class="team-result">
+                <strong>{{ team.name }}</strong>
+                <span>{{ team.win ? "胜利" : "失败" }}</span>
+              </div>
+              <div class="team-summary">
+                <span>队伍总经济 <b>{{ kNumber(teamSummary(team).goldEarned) }}</b></span>
+                <span>队伍总伤害 <b>{{ kNumber(teamSummary(team).damageToChampions) }}</b></span>
+                <span>队伍总推塔数 <b>{{ teamSummary(team).towerKills }}</b></span>
+              </div>
+              <strong class="team-kda-summary">
+                {{ teamSummary(team).kills }}/{{ teamSummary(team).deaths }}/{{ teamSummary(team).assists }}
+              </strong>
+            </div>
+
+            <div class="detail-list chart-list">
+              <article
+                v-for="player in team.players"
+                :key="`${player.teamId}:${player.participantId}`"
+                class="chart-row"
+                :class="{ win: player.win, lose: !player.win }"
+                :title="playerLabel(player)"
+                tabindex="0"
+                @click="emit('openPlayer', player)"
+                @keydown.enter="emit('openPlayer', player)"
+                @keydown.space.prevent="emit('openPlayer', player)"
+              >
+                <div class="chart-player">
+                  <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="34" />
+                  <span>{{ playerLabel(player) }}</span>
+                </div>
+                <div class="chart-track">
+                  <div class="chart-bar-rail">
+                    <div class="chart-bar" :style="{ width: chartBarWidth(player) }">
+                      <b>{{ chartValueText(player) }}</b>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+
+        <nav class="chart-metric-tabs" aria-label="图表指标">
+          <button
+            v-for="metric in chartMetrics"
+            :key="metric.key"
+            :class="{ active: chartMetric === metric.key }"
+            :aria-pressed="chartMetric === metric.key"
+            @click="chartMetric = metric.key"
+          >
+            {{ metric.label }}
+          </button>
+        </nav>
+      </template>
+
+      <template v-else>
       <section v-for="team in matchDetail.teams" :key="team.teamId" class="team-block">
         <div class="team-header" :class="{ win: team.win, lose: !team.win }">
           <div class="team-result">
@@ -534,6 +661,7 @@ async function copyImage() {
           </article>
         </div>
       </section>
+      </template>
     </div>
   </section>
 </template>
@@ -606,6 +734,11 @@ async function copyImage() {
   background: #edf5f3;
 }
 
+.overview-actions .chart-toggle {
+  color: #255a88;
+  background: #eaf3fb;
+}
+
 .overview-state {
   display: inline-flex;
   min-height: 360px;
@@ -625,6 +758,152 @@ async function copyImage() {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.overview-body.chart-mode {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: start;
+  gap: 10px;
+}
+
+.chart-team-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.team-header.chart-team-header {
+  min-width: 0;
+  grid-template-columns: 160px minmax(0, 1fr) 86px;
+}
+
+.chart-team-header .team-summary {
+  grid-column: auto;
+}
+
+.chart-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chart-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 156px minmax(0, 1fr);
+  min-height: 46px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-left: 4px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  padding: 5px 6px;
+  text-align: left;
+}
+
+.chart-row.win {
+  border-left-color: #2f78d6;
+  background: #f3f8ff;
+}
+
+.chart-row.lose {
+  border-left-color: #ca4b4b;
+  background: #fff6f6;
+}
+
+.chart-row:hover {
+  filter: saturate(1.08) brightness(0.99);
+}
+
+.chart-player {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.chart-player > span {
+  overflow: hidden;
+  color: #324950;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-track {
+  min-width: 0;
+}
+
+.chart-bar-rail {
+  position: relative;
+  display: block;
+  height: 26px;
+  margin-right: 60px;
+  border-radius: 4px;
+}
+
+.chart-bar {
+  position: relative;
+  display: block;
+  min-width: 0;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.chart-row.win .chart-bar {
+  background: #4b98e9;
+}
+
+.chart-row.lose .chart-bar {
+  background: #df6a6a;
+}
+
+.chart-bar b {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 6px);
+  color: #20333a;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.chart-metric-tabs {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  align-self: stretch;
+}
+
+.chart-metric-tabs button {
+  min-height: 31px;
+  border: 1px solid #d5e1df;
+  border-radius: 6px;
+  color: #476166;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 4px;
+}
+
+.chart-metric-tabs button:hover {
+  border-color: #8fc4ba;
+  background: #f0f8f6;
+}
+
+.chart-metric-tabs button.active {
+  border-color: #1f5f56;
+  color: #ffffff;
+  background: #1f5f56;
 }
 
 .team-block {

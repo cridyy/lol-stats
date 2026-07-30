@@ -135,7 +135,7 @@ const statsDateLabel = computed(() => {
 
 const rankCards = computed(() => {
   const ranked = props.rankedStats
-  if (!ranked) return []
+  if (!ranked || ranked.unavailableReason) return []
 
   const flex = ranked.queueMap.RANKED_FLEX_SR
   const solo = ranked.queueMap.RANKED_SOLO_5x5
@@ -461,10 +461,17 @@ function round2(value: number) {
       </div>
     </header>
 
-    <section class="rank-strip" v-if="activeTab === 'recent' && (rankedLoading || rankCards.length)">
+    <section
+      class="rank-strip"
+      v-if="activeTab === 'recent' && (rankedLoading || rankedStats?.unavailableReason || rankCards.length)"
+    >
       <div class="rank-card loading" v-if="rankedLoading && !rankCards.length">
         <span>段位</span>
         <strong>读取中</strong>
+      </div>
+      <div class="rank-card unavailable" v-else-if="rankedStats?.unavailableReason">
+        <span>段位</span>
+        <strong>{{ rankedStats.unavailableReason }}</strong>
       </div>
       <article
         v-for="card in rankCards"
@@ -895,6 +902,18 @@ function round2(value: number) {
 
 .rank-card.loading strong {
   color: #657179;
+}
+
+.rank-card.unavailable {
+  --rank-accent: #c9923a;
+  grid-column: 1 / -1;
+}
+
+.rank-card.unavailable strong {
+  overflow: visible;
+  color: #7a5521;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .rank-card.tier-iron {

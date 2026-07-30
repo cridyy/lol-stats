@@ -208,13 +208,16 @@ function summarizeRecentGames(games: RecentGame[]): RecentSummary {
 
 function buildLivePlayerView(player: LivePlayer, queryStage: string): LivePlayerView {
   const games = filterRecentGames(player)
-  const profile = player.stats ? buildPlayerProfile(games, ratingContext.value) : null
+  // 实时战绩只看短样本，不使用数据统计页的大样本时间衰减。
+  const profile = player.stats
+    ? buildPlayerProfile(games, ratingContext.value, { timeWeighted: false })
+    : null
   const championGames =
     queryStage === "in-game" && player.championId
       ? games.filter((game) => game.championId === player.championId)
       : []
   const championProfile = championGames.length
-    ? buildChampionProfiles(championGames, ratingContext.value)[0] || null
+    ? buildChampionProfiles(championGames, ratingContext.value, { timeWeighted: false })[0] || null
     : null
 
   return {
