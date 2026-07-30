@@ -2,9 +2,10 @@ use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{async_runtime, AppHandle, Emitter};
+use tokio::sync::Semaphore;
 
 use crate::services::client_discovery::discover_primary_client;
 use crate::services::error::{AppError, AppResult};
@@ -52,8 +53,11 @@ static CANCELLED_STATS_LOADS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 static PLAYER_ELO_JOBS: LazyLock<Mutex<HashMap<String, PlayerEloTaskEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static PLAYER_ELO_JOB_SEMAPHORE: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(PLAYER_ELO_MAX_CONCURRENT_JOBS)));
 
 const PLAYER_ELO_JOB_RETENTION: Duration = Duration::from_secs(10 * 60);
+const PLAYER_ELO_MAX_CONCURRENT_JOBS: usize = 2;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1033,19 +1037,38 @@ pub async fn start_player_elo_estimate_task(
         }
     }
 
-    let running_status = PlayerEloEstimateTaskStatus {
+    let pending_status = PlayerEloEstimateTaskStatus {
         job_id: job_id.clone(),
-        status: "running".to_string(),
+        status: "pending".to_string(),
         cached: false,
         result: None,
         error: None,
     };
-    store_player_elo_job(running_status.clone());
+    store_player_elo_job(pending_status.clone());
 
     let spawn_job_id = job_id.clone();
     let spawn_sgp_server_id = sgp_server_id.clone();
     let spawn_summoner = summoner.clone();
     async_runtime::spawn(async move {
+        let Ok(_permit) = PLAYER_ELO_JOB_SEMAPHORE.clone().acquire_owned().await else {
+            store_player_elo_job(PlayerEloEstimateTaskStatus {
+                job_id: spawn_job_id,
+                status: "failed".to_string(),
+                cached: false,
+                result: None,
+                error: Some("角色 ELO 任务队列已关闭".to_string()),
+            });
+            return;
+        };
+
+        store_player_elo_job(PlayerEloEstimateTaskStatus {
+            job_id: spawn_job_id.clone(),
+            status: "running".to_string(),
+            cached: false,
+            result: None,
+            error: None,
+        });
+
         let status = match create_clients() {
             Ok(clients) => match estimate_player_elo(
                 &clients.lcu,
@@ -1082,14 +1105,16 @@ pub async fn start_player_elo_estimate_task(
         store_player_elo_job(status);
     });
 
-    Ok(running_status)
+    Ok(pending_status)
 }
 
 #[tauri::command]
 pub fn get_player_elo_estimate_task(job_id: String) -> Result<PlayerEloEstimateTaskStatus, String> {
     prune_player_elo_jobs();
     snapshot_player_elo_job(job_id.trim()).ok_or_else(|| {
-        app_error(AppError::InvalidInput("角色 ELO 任务不存在或已过期".to_string()))
+        app_error(AppError::InvalidInput(
+            "角色 ELO 任务不存在或已过期".to_string(),
+        ))
     })
 }
 
@@ -2047,15 +2072,18 @@ mod tests {
 
         println!(
             "current summoner => display_name='{}' game_name='{}' tag_line='{}' puuid='{}'",
-            summoner.display_name,
-            summoner.game_name,
-            summoner.tag_line,
-            summoner.puuid
+            summoner.display_name, summoner.game_name, summoner.tag_line, summoner.puuid
         );
 
-        let stats = load_player_stats(&clients.lcu, Some(&clients.auth), None, summoner.clone(), 30)
-            .await
-            .expect("应能读取当前战绩");
+        let stats = load_player_stats(
+            &clients.lcu,
+            Some(&clients.auth),
+            None,
+            summoner.clone(),
+            30,
+        )
+        .await
+        .expect("应能读取当前战绩");
         let solo_games = stats
             .recent_games
             .iter()
@@ -2064,7 +2092,10 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
 
-        println!("solo sample count in first 30 games => {}", solo_games.len());
+        println!(
+            "solo sample count in first 30 games => {}",
+            solo_games.len()
+        );
 
         for game in solo_games {
             println!(
@@ -2072,14 +2103,10 @@ mod tests {
                 game.game_id, game.champion_id, game.queue_id, game.game_mode, game.game_creation
             );
 
-            let detail = load_match_detail_service(
-                &clients.lcu,
-                Some(&clients.auth),
-                None,
-                game.game_id,
-            )
-            .await
-            .expect("应能读取样本局详情");
+            let detail =
+                load_match_detail_service(&clients.lcu, Some(&clients.auth), None, game.game_id)
+                    .await
+                    .expect("应能读取样本局详情");
 
             for team in detail.teams {
                 for player in team.players {

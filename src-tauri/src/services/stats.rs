@@ -14,8 +14,8 @@ use super::lcu::LcuClient;
 use super::models::{
     ChampionStat, ClientAuth, Game, IdentityPlayer, MatchDetailPlayer, MatchDetailResponse,
     MatchDetailTeam, Participant, PlayerEloEstimateResponse, PlayerEloGameSample,
-    PlayerEloParticipant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry,
-    RecentGame, RecentGameParticipantSummary, SummonerInfo,
+    PlayerEloParticipant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry, RecentGame,
+    RecentGameParticipantSummary, SummonerInfo,
 };
 use super::sgp::{resolve_sgp_server_id, SgpClient};
 
@@ -52,6 +52,7 @@ const EXTERNAL_ELO_DB_FAILURE_CACHE_TTL: Duration = Duration::from_secs(20);
 const EXTERNAL_ELO_OWNER_RETRY_COUNT: usize = 3;
 const EXTERNAL_ELO_PARTICIPANT_RETRY_COUNT: usize = 1;
 const EXTERNAL_ELO_RETRY_DELAY: Duration = Duration::from_millis(1100);
+const CHINA_TIME_OFFSET_SECONDS: u64 = 8 * 60 * 60;
 const EXTERNAL_ELO_REFERER: &str = "https://a.lzyumi.top/";
 const EXTERNAL_ELO_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -446,8 +447,8 @@ async fn estimate_player_elo_uncached(
             .then_with(|| left.0.cmp(&right.0))
     });
 
-    let mut participant_results = stream::iter(participant_entries.into_iter().map(
-        |(key, participant)| {
+    let mut participant_results =
+        stream::iter(participant_entries.into_iter().map(|(key, participant)| {
             let area = area.clone();
             let options = participant_external_elo_fetch_options();
 
@@ -467,9 +468,8 @@ async fn estimate_player_elo_uncached(
 
                 Some((key, participant.game_ids, elo))
             }
-        },
-    ))
-    .buffer_unordered(PLAYER_ELO_PARTICIPANT_CONCURRENCY);
+        }))
+        .buffer_unordered(PLAYER_ELO_PARTICIPANT_CONCURRENCY);
 
     let participant_deadline = Instant::now() + PLAYER_ELO_PARTICIPANT_FETCH_BUDGET;
     loop {
@@ -526,7 +526,8 @@ async fn estimate_player_elo_uncached(
             let owner_exists = solo_players.iter().any(|player| {
                 is_real_puuid(&owner_stats.summoner.puuid)
                     && is_real_puuid(&player.puuid)
-                    && normalize_puuid(&player.puuid) == normalize_puuid(&owner_stats.summoner.puuid)
+                    && normalize_puuid(&player.puuid)
+                        == normalize_puuid(&owner_stats.summoner.puuid)
             }) || solo_players.iter().any(|player| {
                 normalized_riot_id(player.game_name.as_str(), player.tag_line.as_str())
                     == normalized_riot_id(
@@ -948,7 +949,12 @@ fn write_db_cached_player_elo(key: &PlayerEloCacheKey, response: &PlayerEloEstim
             stored_at_ms = excluded.stored_at_ms,
             response_json = excluded.response_json
         "#,
-        params![&key.sgp_server_id, &key.puuid, unix_time_ms(), response_json],
+        params![
+            &key.sgp_server_id,
+            &key.puuid,
+            unix_time_ms(),
+            response_json
+        ],
     );
 }
 
@@ -2306,10 +2312,7 @@ fn infer_recent_game_premades(owner_puuid: &str, recent_games: &mut [RecentGame]
             continue;
         };
 
-        game.premade_teammate_puuids = group
-            .into_iter()
-            .filter(|puuid| puuid != &owner)
-            .collect();
+        game.premade_teammate_puuids = group.into_iter().filter(|puuid| puuid != &owner).collect();
         game.premade_source = "历史同队".to_string();
         game.premade_together_times = together_times;
     }
@@ -2417,14 +2420,8 @@ async fn load_stats_until_solo_sample(
     let mut depth = PLAYER_ELO_BATCH_DEPTH;
 
     loop {
-        let stats = load_player_stats(
-            lcu,
-            Some(auth),
-            sgp_server_id,
-            summoner.clone(),
-            depth,
-        )
-        .await?;
+        let stats =
+            load_player_stats(lcu, Some(auth), sgp_server_id, summoner.clone(), depth).await?;
 
         let solo_games = stats
             .recent_games
@@ -2555,10 +2552,7 @@ fn lzyumi_area_candidates_for_sgp_server(sgp_server_id: &str) -> Vec<EloArea> {
 
     LZYUMI_SUPPORTED_AREAS
         .iter()
-        .map(|(id, name)| EloArea {
-            id: *id,
-            name,
-        })
+        .map(|(id, name)| EloArea { id: *id, name })
         .collect()
 }
 
@@ -2748,8 +2742,7 @@ async fn fetch_external_aram_elo_with_options(
             .send()
             .await?
             .text()
-            .await?
-            ;
+            .await?;
         let mut elo_response =
             parse_external_json::<LzyumiEloResponse>(&elo_text, "外部 ELO rank 响应")?;
         let mut elo_text_value = elo_response
@@ -2760,10 +2753,8 @@ async fn fetch_external_aram_elo_with_options(
         if elo_text_value.is_empty() && options.allow_powershell_fallback {
             let fallback_text =
                 fetch_external_rank_text_via_powershell(battle_info.open_id.as_str(), area.id, 5)?;
-            elo_response = parse_external_json::<LzyumiEloResponse>(
-                &fallback_text,
-                "外部 ELO rank 回退响应",
-            )?;
+            elo_response =
+                parse_external_json::<LzyumiEloResponse>(&fallback_text, "外部 ELO rank 回退响应")?;
             elo_text_value = elo_response
                 .data
                 .as_ref()
@@ -2888,7 +2879,10 @@ where
         .map_err(|error| AppError::InvalidInput(format!("{context} 解析失败：{error}")))
 }
 
-fn fetch_external_info_text_via_powershell(area: &EloArea, normalized_id: &str) -> AppResult<String> {
+fn fetch_external_info_text_via_powershell(
+    area: &EloArea,
+    normalized_id: &str,
+) -> AppResult<String> {
     let nickname = normalized_id.replace('\'', "''");
     let area_name = area.name.replace('\'', "''");
     let script = format!(
@@ -2950,11 +2944,17 @@ fn lzyumi_sign_components() -> (String, String) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let total_seconds = now % 86_400;
+    lzyumi_sign_components_at(now)
+}
+
+fn lzyumi_sign_components_at(unix_seconds: u64) -> (String, String) {
+    // 网站前端使用中国本地时间生成签名，不能直接使用 UTC 时钟。
+    let china_seconds = unix_seconds.saturating_add(CHINA_TIME_OFFSET_SECONDS);
+    let total_seconds = china_seconds % 86_400;
     let hours = (total_seconds / 3_600) as u32;
     let minutes = ((total_seconds % 3_600) / 60) as u32;
     let seconds = (total_seconds % 60) as u32;
-    let days_since_epoch = (now / 86_400) as i64;
+    let days_since_epoch = (china_seconds / 86_400) as i64;
     let (_, month, day) = civil_from_days(days_since_epoch);
 
     let month_raw = month.to_string();
@@ -3464,6 +3464,7 @@ mod tests {
             team_damage_self_mitigated: 0,
             team_total_damage_taken: 0,
             total_heal: 0,
+            total_damage_shielded_on_teammates: 0,
             team_total_heal: 0,
             team_gold_earned: 0,
             game_gold_earned: 0,
@@ -3520,6 +3521,13 @@ mod tests {
     fn lzyumi_area_candidates_reject_non_formal_servers() {
         let areas = lzyumi_area_candidates_for_sgp_server("TENCENT_PBE");
         assert!(areas.is_empty());
+    }
+
+    #[test]
+    fn lzyumi_sign_uses_china_standard_time() {
+        let (sign, sign_str) = lzyumi_sign_components_at(0);
+        assert_eq!(sign_str, "1180033333");
+        assert_eq!(sign, format!("{:x}", md5::compute("dld01o01u08d00o00dld")));
     }
 
     #[test]
@@ -3580,8 +3588,8 @@ mod tests {
         let summoner = lcu.current_summoner().await.expect("应能读取当前召唤师");
         let sgp_server_id = resolve_sgp_server_id(&auth, None);
         let area = lzyumi_area_for_sgp_server(&sgp_server_id).expect("当前大区应支持外部 ELO");
-        let http =
-            build_external_elo_http_client(PLAYER_ELO_OWNER_HTTP_TIMEOUT).expect("应能创建 HTTP client");
+        let http = build_external_elo_http_client(PLAYER_ELO_OWNER_HTTP_TIMEOUT)
+            .expect("应能创建 HTTP client");
         let (sign, sign_str) = lzyumi_sign_components();
         let area_id = area.id.to_string();
         let normalized_id = normalized_riot_id_with_fallback(
@@ -3613,7 +3621,8 @@ mod tests {
 
         println!("info payload => {}", info_text);
 
-        let info = serde_json::from_str::<LzyumiInfoResponse>(&info_text).expect("info JSON 应可解析");
+        let info =
+            serde_json::from_str::<LzyumiInfoResponse>(&info_text).expect("info JSON 应可解析");
         let Some(battle_info) = info.battle_info else {
             return;
         };
@@ -3646,11 +3655,8 @@ mod tests {
             id: 14,
             name: "黑色玫瑰",
         };
-        let info_text = fetch_external_info_text_via_powershell(
-            &area,
-            "离于爱者无忧无怖#53258",
-        )
-        .expect("PowerShell info 请求应成功");
+        let info_text = fetch_external_info_text_via_powershell(&area, "离于爱者无忧无怖#53258")
+            .expect("PowerShell info 请求应成功");
 
         println!("powershell info payload => {}", info_text);
     }

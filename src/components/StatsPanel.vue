@@ -405,13 +405,10 @@ function roleBarLabel(label: string) {
 watch(
   () => props.stats,
   () => {
-    stopPlayerEloPolling()
     selectedChampionId.value = null
     championSearch.value = ""
     funStatsResult.value = null
     funStatsVisible.value = false
-    playerEloEstimate.value = null
-    playerEloError.value = ""
   },
 )
 
