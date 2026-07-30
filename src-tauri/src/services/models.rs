@@ -382,6 +382,74 @@ pub struct PlayerStatsResponse {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlayerEloEstimateResponse {
+    #[serde(default)]
+    pub sample_target: usize,
+    #[serde(default)]
+    pub sample_games: usize,
+    #[serde(default)]
+    pub trimmed_games: usize,
+    #[serde(default)]
+    pub average_elo: f64,
+    #[serde(default)]
+    pub median_elo: f64,
+    #[serde(default)]
+    pub final_elo: f64,
+    #[serde(default)]
+    pub raw_game_max_elos: Vec<f64>,
+    #[serde(default)]
+    pub trimmed_game_max_elos: Vec<f64>,
+    #[serde(default)]
+    pub game_samples: Vec<PlayerEloGameSample>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerEloEstimateTaskStatus {
+    #[serde(default)]
+    pub job_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub result: Option<PlayerEloEstimateResponse>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerEloGameSample {
+    #[serde(default)]
+    pub game_id: u64,
+    #[serde(default)]
+    pub game_creation: i64,
+    #[serde(default)]
+    pub max_elo: f64,
+    #[serde(default)]
+    pub solo_players: Vec<PlayerEloParticipant>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerEloParticipant {
+    #[serde(default)]
+    pub puuid: String,
+    #[serde(default)]
+    pub summoner_name: String,
+    #[serde(default)]
+    pub game_name: String,
+    #[serde(default)]
+    pub tag_line: String,
+    #[serde(default)]
+    pub champion_id: u32,
+    #[serde(default)]
+    pub elo: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChampionSummaryItem {
     #[serde(default)]
     pub id: i32,
@@ -511,6 +579,21 @@ pub struct RecentGame {
     /// 评分用的全场阵容证据，用于从本队阵容推导对方阵容。
     #[serde(default)]
     pub game_composition: Vec<RatingCompositionEntry>,
+    /// 基于近期历史同队关系推断出的开黑队友（不含当前玩家）。
+    #[serde(default)]
+    pub premade_teammate_puuids: Vec<String>,
+    /// 当前局同侧玩家快照（不含当前玩家）。
+    #[serde(default)]
+    pub ally_players: Vec<RecentGameParticipantSummary>,
+    /// 当前局对侧玩家快照。
+    #[serde(default)]
+    pub enemy_players: Vec<RecentGameParticipantSummary>,
+    /// 历史同队推断来源，当前为空或“历史同队”。
+    #[serde(default)]
+    pub premade_source: String,
+    /// 这组人至少共同出现过多少局。
+    #[serde(default)]
+    pub premade_together_times: usize,
     pub kda: f64,
     pub cs: u32,
     #[serde(default)]
@@ -548,6 +631,17 @@ pub struct RecentGame {
     pub team_immobilize_and_kill_with_ally: u32,
     pub game_creation: i64,
     pub game_duration: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentGameParticipantSummary {
+    #[serde(default)]
+    pub puuid: String,
+    #[serde(default)]
+    pub summoner_name: String,
+    #[serde(default)]
+    pub champion_id: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

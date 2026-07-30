@@ -6,7 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:full": "node ./scripts/dev-full.mjs",
+    "check:frontend": "vue-tsc --noEmit",
+    "check:backend": "cargo check --manifest-path .\\src-tauri\\Cargo.toml",
+    "test:backend": "cargo test --manifest-path .\\src-tauri\\Cargo.toml",
     "build": "vue-tsc --noEmit && vite build",
+    "verify": "node ./scripts/verify.mjs",
+    "verify:watch": "node ./scripts/verify.mjs --watch",
     "preview": "vite preview",
     "tauri": "tauri",
     "release:publish": "pwsh -NoLogo -NoProfile -File ./scripts/publish-release.ps1"

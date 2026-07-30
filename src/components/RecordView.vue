@@ -48,6 +48,7 @@ const emit = defineEmits<{
   refreshStats: []
   loadRecentMore: []
   changeStatsDepth: [depth: number]
+  ensureStatsDepth: [depth: number]
   openMatch: [payload: OpenMatchPayload]
 }>()
 
@@ -58,6 +59,7 @@ const statsDepthPickerOpen = ref(false)
 const statsDateStart = ref("")
 const statsDateEnd = ref("")
 const statsDatePickerOpen = ref(false)
+const soloOnly = ref(false)
 let statsDepthCloseTimer = 0
 let statsDateCloseTimer = 0
 
@@ -117,11 +119,16 @@ const activeQueueOption = computed(() =>
 
 const filteredStats = computed(() => {
   if (!props.fullStats || !activeQueueOption.value) return null
-  const queueOption = activeQueueOption.value
   return buildFilteredStats(
     props.fullStats,
-    (game) => queueOption.matches(game) && dateFilterMatches(game),
+    statsGameMatches,
+    props.statsDepth,
   )
+})
+
+const currentFilteredCount = computed(() => {
+  if (!props.fullStats || !activeQueueOption.value) return 0
+  return props.fullStats.recentGames.filter(statsGameMatches).length
 })
 
 const statsDateLabel = computed(() => {
@@ -131,6 +138,20 @@ const statsDateLabel = computed(() => {
   }
   if (statsDateStart.value) return `${formatDateInputLabel(statsDateStart.value)} 起`
   return `至 ${formatDateInputLabel(statsDateEnd.value)}`
+})
+
+const activeStatsFilters = computed(() => {
+  const filters: string[] = []
+  if (soloOnly.value) filters.push("单人开局")
+  if (statsDateStart.value || statsDateEnd.value) filters.push(`日期 ${statsDateLabel.value}`)
+  return filters
+})
+
+const emptyFilterMessage = computed(() => {
+  if (!activeStatsFilters.value.length) {
+    return "当前样本里没有匹配到这个模式的对局"
+  }
+  return `当前样本里没有匹配到这些条件的对局：${activeStatsFilters.value.join(" / ")}`
 })
 
 const rankCards = computed(() => {
@@ -163,6 +184,24 @@ watch(
   },
 )
 
+watch(
+  [
+    () => selectedQueue.value,
+    () => soloOnly.value,
+    () => statsDateStart.value,
+    () => statsDateEnd.value,
+    () => props.fullStats?.depthRequested ?? 0,
+    () => props.fullStats?.depthLoaded ?? 0,
+    () => props.statsDepth,
+    () => props.loading,
+    currentFilteredCount,
+  ],
+  () => {
+    ensureStatsCoverage()
+  },
+  { immediate: true },
+)
+
 function selectQueue(key: QueueFilterKey) {
   selectedQueue.value = key
   activeTab.value = "stats"
@@ -177,6 +216,34 @@ function openStatsTab() {
 
 function requestStatsIfNeeded() {
   if (!props.fullStats) emit("loadStats")
+}
+
+function statsGameMatches(game: RecentGame) {
+  return (
+    !!activeQueueOption.value &&
+    activeQueueOption.value.matches(game) &&
+    dateFilterMatches(game) &&
+    soloQueueFilterMatches(game, soloOnly.value)
+  )
+}
+
+function ensureStatsCoverage() {
+  if (!selectedQueue.value || !props.fullStats || props.loading) return
+
+  const matchedCount = currentFilteredCount.value
+  if (matchedCount >= props.statsDepth) return
+
+  const loadedDepth = props.fullStats.depthLoaded || props.fullStats.recentGames.length
+  const requestedDepth = props.fullStats.depthRequested || loadedDepth
+
+  if (loadedDepth < requestedDepth || requestedDepth >= 1000) {
+    return
+  }
+
+  const nextDepth = estimateStatsCoverageDepth(matchedCount, requestedDepth, props.statsDepth)
+  if (nextDepth > requestedDepth) {
+    emit("ensureStatsDepth", nextDepth)
+  }
 }
 
 function commitStatsDepth() {
@@ -250,6 +317,26 @@ function dateFilterMatches(game: RecentGame) {
   if (start !== null && timestamp < start) return false
   if (end !== null && timestamp > end) return false
   return true
+}
+
+function soloQueueFilterMatches(
+  game: RecentGame,
+  enabled = false,
+) {
+  if (!enabled) return true
+
+  return (game.premadeTeammatePuuids?.length || 0) === 0
+}
+
+function estimateStatsCoverageDepth(matchedCount: number, currentDepth: number, targetDepth: number) {
+  if (currentDepth >= 1000) return 1000
+  if (matchedCount <= 0) {
+    return Math.min(1000, Math.max(targetDepth, currentDepth * 2, currentDepth + 200))
+  }
+
+  const estimatedDepth = Math.ceil((currentDepth * targetDepth) / matchedCount)
+  const paddedDepth = Math.ceil((estimatedDepth * 1.15) / 50) * 50
+  return Math.min(1000, Math.max(targetDepth, currentDepth + 50, paddedDepth))
 }
 
 function dateStartTimestamp(value: string) {
@@ -338,8 +425,14 @@ function rankTierClass(tier: string) {
 function buildFilteredStats(
   source: PlayerStatsResponse,
   matches: (game: RecentGame) => boolean,
+  limit = Number.POSITIVE_INFINITY,
 ): PlayerStatsResponse {
-  const games = source.recentGames.filter(matches)
+  const games: RecentGame[] = []
+  for (const game of source.recentGames) {
+    if (!matches(game)) continue
+    games.push(game)
+    if (games.length >= limit) break
+  }
   const championStats = buildChampionStats(games)
   const wins = games.filter((game) => game.win).length
   const kills = games.reduce((sum, game) => sum + game.kills, 0)
@@ -526,6 +619,10 @@ function round2(value: number) {
             {{ option.label }}
           </button>
           <div class="queue-tools">
+            <label class="stats-toggle">
+              <input v-model="soloOnly" type="checkbox" />
+              <span>单人开局</span>
+            </label>
             <div
               class="stats-date-control"
               @focusin="openStatsDatePicker"
@@ -582,6 +679,17 @@ function round2(value: number) {
           </div>
         </div>
 
+        <div class="stats-filter-summary" v-if="activeStatsFilters.length">
+          <span class="stats-filter-label">当前筛选</span>
+          <span
+            v-for="filter in activeStatsFilters"
+            :key="filter"
+            class="stats-filter-tag"
+          >
+            {{ filter }}
+          </span>
+        </div>
+
         <StatsPanel
           :stats="filteredStats"
           :champions="champions"
@@ -595,7 +703,7 @@ function round2(value: number) {
 
         <div class="empty-filter" v-if="filteredStats && filteredStats.depthLoaded === 0">
           <strong>{{ activeQueueOption?.label }}暂无数据</strong>
-          <span>当前样本里没有匹配到这个模式的对局</span>
+          <span>{{ emptyFilterMessage }}</span>
         </div>
       </template>
     </section>
@@ -631,6 +739,59 @@ function round2(value: number) {
   justify-content: flex-end;
   gap: 8px;
   margin-left: auto;
+}
+
+.stats-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #d6e5e1;
+  border-radius: 8px;
+  color: #315f58;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+  padding: 7px 10px;
+  user-select: none;
+}
+
+.stats-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #1f5f56;
+}
+
+.stats-toggle span {
+  white-space: nowrap;
+}
+
+.stats-filter-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: -6px;
+}
+
+.stats-filter-label {
+  color: #63747a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.stats-filter-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  color: #1f5f56;
+  background: #edf5f3;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 6px 9px;
+  white-space: nowrap;
 }
 
 .record-tabs button,

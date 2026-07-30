@@ -8,6 +8,8 @@ import type {
   GameAssetBundle,
   LiveGameResponse,
   MatchDetailResponse,
+  PlayerEloEstimateResponse,
+  PlayerEloEstimateTaskStatus,
   PlayerStatsResponse,
   RankedStatsResponse,
   SummonerSearchCandidate,
@@ -157,6 +159,62 @@ export function copyPngToClipboard(bytes: number[]) {
 
 export function loadMatchDetail(gameId: number, sgpServerId?: string) {
   return invoke<MatchDetailResponse>("load_match_detail", { gameId, sgpServerId })
+}
+
+export function loadPlayerEloEstimate(
+  puuid: string,
+  gameName: string,
+  tagLine: string,
+  displayName: string,
+  sgpServerId?: string,
+) {
+  return invoke<PlayerEloEstimateResponse>("load_player_elo_estimate", {
+    puuid,
+    gameName,
+    tagLine,
+    displayName,
+    sgpServerId,
+  })
+}
+
+export function startPlayerEloEstimateTask(
+  puuid: string,
+  gameName: string,
+  tagLine: string,
+  displayName: string,
+  sgpServerId?: string,
+  forceRefresh = false,
+) {
+  return invoke<PlayerEloEstimateTaskStatus>("start_player_elo_estimate_task", {
+    puuid,
+    gameName,
+    tagLine,
+    displayName,
+    sgpServerId,
+    forceRefresh,
+  })
+}
+
+export function getPlayerEloEstimateTask(jobId: string) {
+  return invoke<PlayerEloEstimateTaskStatus>("get_player_elo_estimate_task", {
+    jobId,
+  })
+}
+
+export function clearPlayerEloCache(
+  puuid: string,
+  gameName: string,
+  tagLine: string,
+  displayName: string,
+  sgpServerId?: string,
+) {
+  return invoke<boolean>("clear_player_elo_cache", {
+    puuid,
+    gameName,
+    tagLine,
+    displayName,
+    sgpServerId,
+  })
 }
 
 export function loadLiveGame(depth: number) {

@@ -675,9 +675,9 @@ async function openMatchDetail(game: RecentGame) {
 }
 
 .record-row.lose {
-  border-color: #f1cdcd;
-  border-left-color: #ca4b4b;
-  background: #fff1f1;
+  border-color: #e7b4b4;
+  border-left-color: #c62828;
+  background: #ffe2e2;
 }
 
 .time-cell,
@@ -1138,8 +1138,8 @@ async function openMatchDetail(game: RecentGame) {
 }
 
 .match-detail-team-header.lose {
-  color: #a23d3d;
-  background: #ffe9e9;
+  color: #972f2f;
+  background: #ffdede;
 }
 
 .match-detail-team-result {

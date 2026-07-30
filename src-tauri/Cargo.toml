@@ -27,12 +27,13 @@ base64 = "0.22"
 arboard = "3.4"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+md5 = "0.7"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sysinfo = "0.33"
 thiserror = "2"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 urlencoding = "2"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
