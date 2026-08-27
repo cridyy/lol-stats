@@ -341,6 +341,16 @@ impl LcuClient {
         })
     }
 
+    /// 读取当前客户端版本的海克斯名称和 ID 映射。
+    ///
+    /// AramKit 的统计接口使用的是当前版本的海克斯 ID，而仓库内的历史
+    /// 词表会随着客户端版本变化而落后。局内识别需要以 LCU 的这份清单
+    /// 作为名称到 ID 的最新映射。
+    pub async fn augment_assets(&self) -> Vec<GameAssetEntry> {
+        self.load_game_asset_entries("/lol-game-data/assets/v1/cherry-augments.json")
+            .await
+    }
+
     async fn load_game_asset_entries(&self, path: &str) -> Vec<GameAssetEntry> {
         let Ok(entries) = self.get_json::<Vec<serde_json::Value>>(path).await else {
             return Vec::new();

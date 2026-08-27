@@ -1,0 +1,1449 @@
+mod aramkit;
+#[cfg(target_os = "windows")]
+mod capture;
+#[cfg(target_os = "windows")]
+mod d3d11;
+#[cfg(target_os = "windows")]
+mod detector;
+#[cfg(target_os = "windows")]
+mod ncnn;
+#[cfg(target_os = "windows")]
+mod ocr;
+#[cfg(target_os = "windows")]
+mod overlay;
+#[cfg(target_os = "windows")]
+mod wgc;
+
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::fs::{create_dir_all, OpenOptions};
+#[cfg(target_os = "windows")]
+use std::io::Write;
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::LazyLock;
+use std::thread;
+use std::time::{Duration, Instant};
+#[cfg(target_os = "windows")]
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::Deserialize;
+
+use crate::services::client_discovery::discover_primary_client;
+use crate::services::lcu::LcuClient;
+use crate::services::models::{GameAssetEntry, GameflowSession, SummonerInfo};
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::HiDpi::{
+    SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
+
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const GAMEFLOW_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const OCR_INTERVAL: Duration = Duration::from_millis(100);
+const HIDDEN_FRAME_LIMIT: u32 = 4;
+const ACTIVE_PHASES: [&str; 3] = ["GameStart", "InProgress", "Reconnect"];
+#[cfg(target_os = "windows")]
+const IDENTITY_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+#[cfg(target_os = "windows")]
+const OCR_INVALID_RESULT_LIMIT: u8 = 2;
+const OCR_REPLACEMENT_CONFIRMATIONS: u8 = 2;
+const CAPTURE_MODE_AUTO: u8 = 0;
+const CAPTURE_MODE_WGC: u8 = 2;
+const CAPTURE_MODE_DESKTOP_DC: u8 = 3;
+
+#[cfg(target_os = "windows")]
+fn runtime_log(message: impl AsRef<str>) {
+    let mut directory = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    directory.push("lol-stats");
+    if create_dir_all(&directory).is_err() {
+        return;
+    }
+
+    let path = directory.join("hex-winrate.log");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let line = format!("[{timestamp}] {}", message.as_ref());
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{line}");
+    }
+    eprintln!("[hex-winrate] {line}");
+}
+
+static CONTROLLER: LazyLock<Controller> = LazyLock::new(Controller::new);
+static AUGMENT_NAMES: LazyLock<AugmentNameIndex> = LazyLock::new(AugmentNameIndex::load);
+
+struct Controller {
+    enabled: AtomicBool,
+    worker_started: AtomicBool,
+    capture_mode: AtomicU8,
+}
+
+impl Controller {
+    fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            worker_started: AtomicBool::new(false),
+            capture_mode: AtomicU8::new(CAPTURE_MODE_DESKTOP_DC),
+        }
+    }
+
+    fn ensure_worker(&self) {
+        if self
+            .worker_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        thread::spawn(|| {
+            #[cfg(target_os = "windows")]
+            run_windows_worker();
+
+            #[cfg(not(target_os = "windows"))]
+            while CONTROLLER.enabled.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+}
+
+/// 切换局内海克斯收益率识别。
+///
+/// 识别服务只在开关开启后启动；关闭时立即清空叠层，后台线程不再截图或发请求。
+pub(crate) fn set_enabled(enabled: bool) {
+    CONTROLLER.enabled.store(enabled, Ordering::SeqCst);
+    if enabled {
+        CONTROLLER.ensure_worker();
+    } else {
+        #[cfg(target_os = "windows")]
+        overlay::hide();
+    }
+}
+
+/// 设置局内海克斯识别的截图来源。
+///
+/// 配置由前端本地持久化；这里仅保存当前进程状态，便于运行中立即切换。
+pub(crate) fn set_capture_mode(mode: &str) -> Result<(), String> {
+    let value = match mode.trim().to_ascii_lowercase().as_str() {
+        "auto" => CAPTURE_MODE_AUTO,
+        // 兼容旧版本已经写入 localStorage 的配置；窗口 DC 已移除，降级为桌面 DC。
+        "window-dc" => CAPTURE_MODE_DESKTOP_DC,
+        "wgc" => CAPTURE_MODE_WGC,
+        "desktop-dc" => CAPTURE_MODE_DESKTOP_DC,
+        _ => return Err("不支持的海克斯截图模式，可选：auto、wgc、desktop-dc".to_string()),
+    };
+    CONTROLLER.capture_mode.store(value, Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn current_capture_mode() -> capture::CaptureMode {
+    match CONTROLLER.capture_mode.load(Ordering::SeqCst) {
+        CAPTURE_MODE_WGC => capture::CaptureMode::Wgc,
+        CAPTURE_MODE_DESKTOP_DC => capture::CaptureMode::DesktopDc,
+        _ => capture::CaptureMode::Auto,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_worker() {
+    runtime_log("识别线程启动");
+    // 截图坐标和叠层坐标必须都使用物理像素，避免高 DPI / 多显示器时错位。
+    unsafe {
+        let _ = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            runtime_log(format!("创建识别运行时失败：{error}"));
+            return;
+        }
+    };
+
+    runtime.block_on(async { recognition_loop().await });
+}
+
+#[cfg(target_os = "windows")]
+async fn recognition_loop() {
+    let mut lcu: Option<LcuClient> = None;
+    let mut current_player = CurrentPlayerIdentity::default();
+    let mut last_gameflow_poll = Instant::now() - GAMEFLOW_POLL_INTERVAL;
+    let mut session_info: Option<ActiveSession> = None;
+    let mut capture = capture::GameWindowCapture::new();
+    let mut recognizer: Option<ocr::PpOcrRec> = None;
+    // 本地词表中的 ID 可能是旧版本 ID；启动识别后用当前 LCU 清单补齐名称映射。
+    let mut augment_names = AUGMENT_NAMES.clone();
+    let mut augment_assets_loaded = false;
+    let mut next_augment_assets_retry = Instant::now();
+    let mut last_ocr = Instant::now() - OCR_INTERVAL;
+    let mut cards: [TrackedCard; 3] = std::array::from_fn(|_| TrackedCard::default());
+    let mut last_frame_signature: Option<FrameSignature> = None;
+    let mut missed_frames = 0u32;
+    let mut capture_available: Option<bool> = None;
+    let mut cards_detected: Option<bool> = None;
+    let mut overlay_visible: Option<bool> = None;
+    let mut last_client_error = None::<String>;
+    let mut last_capture_mode = current_capture_mode();
+
+    loop {
+        if !CONTROLLER.enabled.load(Ordering::SeqCst) {
+            overlay::hide();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+
+        if last_gameflow_poll.elapsed() >= GAMEFLOW_POLL_INTERVAL {
+            last_gameflow_poll = Instant::now();
+            match refresh_active_session(&mut lcu, &mut current_player).await {
+                Ok(next_session) => {
+                    last_client_error = None;
+                    let changed = match (&session_info, &next_session) {
+                        (Some(previous), Some(next)) => previous.key() != next.key(),
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if changed {
+                        if let Some(next) = next_session.as_ref() {
+                            runtime_log(format!(
+                                "进入识别 session：game_id={} champion_id={}",
+                                next.game_id, next.champion_id
+                            ));
+                        } else {
+                            runtime_log("当前没有符合条件的海克斯大乱斗 session");
+                        }
+                        recognizer = None;
+                        cards = std::array::from_fn(|_| TrackedCard::default());
+                        last_frame_signature = None;
+                        last_ocr = Instant::now() - OCR_INTERVAL;
+                        missed_frames = 0;
+                        capture_available = None;
+                        cards_detected = None;
+                        overlay_visible = Some(false);
+                        overlay::hide();
+                        session_info = next_session;
+                    }
+                }
+                Err(error) => {
+                    // 客户端重启或短暂切换阶段时，保留线程并在下一轮重新发现连接。
+                    let error_text = error.to_string();
+                    if last_client_error.as_deref() != Some(error_text.as_str()) {
+                        runtime_log(format!("游戏阶段读取失败：{error_text}"));
+                        last_client_error = Some(error_text);
+                    }
+                    lcu = None;
+                    augment_names = AUGMENT_NAMES.clone();
+                    augment_assets_loaded = false;
+                    next_augment_assets_retry = Instant::now();
+                    current_player.clear();
+                    session_info = None;
+                    recognizer = None;
+                    cards = std::array::from_fn(|_| TrackedCard::default());
+                    last_frame_signature = None;
+                    overlay::hide();
+                }
+            }
+        }
+
+        let Some(active) = session_info.as_mut() else {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        };
+
+        if !augment_assets_loaded && Instant::now() >= next_augment_assets_retry {
+            next_augment_assets_retry = Instant::now() + Duration::from_secs(5);
+            if let Some(client) = lcu.as_ref() {
+                let assets = client.augment_assets().await;
+                if assets.is_empty() {
+                    runtime_log("当前客户端未返回 cherry-augments 清单，继续使用本地词表");
+                } else {
+                    let asset_count = assets.len();
+                    augment_names.extend_assets(&assets);
+                    augment_assets_loaded = true;
+                    runtime_log(format!("已加载当前客户端海克斯映射：{asset_count} 项"));
+                }
+            }
+        }
+
+        if active.stats.is_none() && Instant::now() >= active.next_stats_retry {
+            match aramkit::load_champion_augments(active.champion_id).await {
+                Ok(stats) => {
+                    runtime_log(format!(
+                        "AramKit 数据加载完成：champion_id={} augments={} base_win_rate={:.4}",
+                        active.champion_id,
+                        stats.augment_win_rates.len(),
+                        stats.base_win_rate
+                    ));
+                    active.stats = Some(stats);
+                }
+                Err(error) => {
+                    // 网络波动时使用短退避，避免 100ms 截图循环触发重复请求。
+                    runtime_log(format!("AramKit 数据读取失败：{error}"));
+                    active.next_stats_retry = Instant::now() + Duration::from_secs(5);
+                }
+            }
+        }
+
+        if active.stats.is_none() {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+
+        let capture_mode = current_capture_mode();
+        if capture_mode != last_capture_mode {
+            runtime_log(format!(
+                "截图模式切换：{:?} -> {:?}",
+                last_capture_mode, capture_mode
+            ));
+            last_capture_mode = capture_mode;
+            cards = std::array::from_fn(|_| TrackedCard::default());
+            last_frame_signature = None;
+            capture_available = None;
+            cards_detected = None;
+            last_ocr = Instant::now() - OCR_INTERVAL;
+            overlay::hide();
+        }
+
+        let frame = match capture.capture(capture_mode) {
+            Ok(Some(frame)) => {
+                if capture_available != Some(true) {
+                    runtime_log(format!(
+                        "截图成功：source={:?} origin=({}, {}) size={}x{}",
+                        frame.source, frame.origin_x, frame.origin_y, frame.width, frame.height
+                    ));
+                    capture_available = Some(true);
+                }
+                frame
+            }
+            Ok(None) => {
+                if capture_available != Some(false) {
+                    runtime_log("截图暂不可用：未找到可捕获的游戏窗口或窗口区域");
+                    capture_available = Some(false);
+                }
+                missed_frames = missed_frames.saturating_add(1);
+                if missed_frames >= HIDDEN_FRAME_LIMIT {
+                    overlay::hide();
+                    cards = std::array::from_fn(|_| TrackedCard::default());
+                    last_frame_signature = None;
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
+            Err(error) => {
+                if capture_available != Some(false) {
+                    runtime_log(format!("截图失败：{error}"));
+                    capture_available = Some(false);
+                }
+                missed_frames = missed_frames.saturating_add(1);
+                if missed_frames >= HIDDEN_FRAME_LIMIT {
+                    overlay::hide();
+                    cards = std::array::from_fn(|_| TrackedCard::default());
+                    last_frame_signature = None;
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
+        };
+        missed_frames = 0;
+        let frame_signature = FrameSignature::from(&frame);
+        if last_frame_signature != Some(frame_signature) {
+            if last_frame_signature.is_some() {
+                runtime_log("截图来源或客户区尺寸变化，重置海克斯卡片定位缓存");
+            }
+            cards = std::array::from_fn(|_| TrackedCard::default());
+            last_frame_signature = Some(frame_signature);
+            cards_detected = None;
+            last_ocr = Instant::now() - OCR_INTERVAL;
+            overlay::hide();
+            overlay_visible = Some(false);
+        }
+
+        // 三卡检测只为尚未定位的槽位提供稳定的默认标题区域；已锁定卡片不再依赖
+        // 本帧三卡检测，避免中间卡特效导致左右卡片标签反复消失。
+        if cards.iter().any(|card| card.default_title_rect.is_none()) {
+            if let Some(detection) = detector::detect_cards(frame.bgra, frame.width, frame.height) {
+                for (slot, card) in cards.iter_mut().enumerate() {
+                    card.set_default_area(
+                        detection.title_rects[slot],
+                        detection.label_centers[slot],
+                    );
+                }
+                if cards_detected != Some(true) {
+                    runtime_log("三张海克斯卡片定位成功");
+                    cards_detected = Some(true);
+                }
+            } else if cards_detected != Some(false) {
+                runtime_log("截图成功，但未检测到三张海克斯卡片");
+                cards_detected = Some(false);
+            }
+        }
+
+        if last_ocr.elapsed() >= OCR_INTERVAL
+            && cards.iter().any(|card| card.default_title_rect.is_some())
+        {
+            if recognizer.is_none() {
+                match ocr::PpOcrRec::from_embedded_model() {
+                    Ok(value) => recognizer = Some(value),
+                    Err(error) => {
+                        runtime_log(format!("OCR 初始化失败：{error}"));
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                }
+            }
+
+            let Some(recognizer) = recognizer.as_ref() else {
+                continue;
+            };
+            let stats = active.stats.as_ref().expect("已检查 AramKit 数据存在");
+
+            for (slot, card) in cards.iter_mut().enumerate() {
+                let Some(default_title_rect) = card.default_title_rect else {
+                    continue;
+                };
+                // 紧裁切只服务于这一帧 OCR。缓存始终是三卡检测产出的默认大标题区，
+                // 不能被某次光效或短标题收紧后的临时区域污染。
+                let crop_rect =
+                    tighten_title_rect(frame.bgra, frame.width, frame.height, default_title_rect)
+                        .unwrap_or_else(|| {
+                            clip_rect(default_title_rect, frame.width, frame.height)
+                        });
+                let crop_signature = (
+                    crop_rect.left,
+                    crop_rect.top,
+                    crop_rect.right,
+                    crop_rect.bottom,
+                );
+                if card.last_ocr_crop != Some(crop_signature) {
+                    runtime_log(format!(
+                        "OCR slot={} 裁剪：{}x{} -> {}x{}",
+                        slot + 1,
+                        default_title_rect.width(),
+                        default_title_rect.height(),
+                        crop_rect.width(),
+                        crop_rect.height(),
+                    ));
+                    card.last_ocr_crop = Some(crop_signature);
+                }
+
+                let crop = crop_bgra_to_rgb(frame.bgra, frame.width, frame.height, crop_rect);
+                let text = match recognizer.recognize_rgb(&crop) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        if card.last_ocr_text != "<error>" {
+                            runtime_log(format!("OCR slot={} 失败：{error}", slot + 1));
+                            card.last_ocr_text = "<error>".to_string();
+                        }
+                        if card.record_invalid_result() {
+                            runtime_log(format!(
+                                "OCR slot={} 连续失败，重新等待三卡定位",
+                                slot + 1
+                            ));
+                        }
+                        continue;
+                    }
+                };
+                if card.last_ocr_text != text {
+                    runtime_log(format!("OCR slot={}：{}", slot + 1, text));
+                    card.last_ocr_text = text.clone();
+                }
+
+                let Some(resolution) = resolve_augment(&augment_names, &text, stats) else {
+                    if card.record_invalid_result() {
+                        runtime_log(format!(
+                            "OCR slot={} 未匹配海克斯，连续失败后重新等待三卡定位：{}",
+                            slot + 1,
+                            text
+                        ));
+                    }
+                    continue;
+                };
+
+                if card.accept_resolution(resolution) {
+                    let detail = card
+                        .resolution
+                        .as_ref()
+                        .map(|value| value.text.as_str())
+                        .unwrap_or_default();
+                    runtime_log(format!("OCR slot={} 已确认：{}", slot + 1, detail));
+                }
+            }
+
+            last_ocr = Instant::now();
+            let labels = cards
+                .iter()
+                .filter_map(TrackedCard::overlay_label)
+                .collect::<Vec<_>>();
+            if labels.is_empty() {
+                overlay::hide();
+                if overlay_visible != Some(false) {
+                    runtime_log("叠层隐藏：没有可确认的海克斯标题");
+                    overlay_visible = Some(false);
+                }
+            } else {
+                overlay::show(
+                    frame.origin_x,
+                    frame.origin_y,
+                    frame.width,
+                    frame.height,
+                    labels,
+                );
+                if overlay_visible != Some(true) {
+                    runtime_log("收益率叠层已显示");
+                    overlay_visible = Some(true);
+                }
+            }
+        }
+
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn refresh_active_session(
+    lcu: &mut Option<LcuClient>,
+    current_player: &mut CurrentPlayerIdentity,
+) -> Result<Option<ActiveSession>, String> {
+    if lcu.is_none() {
+        let auth = discover_primary_client().map_err(|error| error.to_string())?;
+        *lcu = Some(LcuClient::new(&auth).map_err(|error| error.to_string())?);
+        current_player.clear();
+    }
+    let Some(client) = lcu.as_ref() else {
+        return Ok(None);
+    };
+
+    let session = match client.gameflow_session().await {
+        Ok(session) => session,
+        Err(error) => {
+            *lcu = None;
+            return Err(error.to_string());
+        }
+    };
+    let Some(session) = session else {
+        return Ok(None);
+    };
+    if !ACTIVE_PHASES.contains(&session.phase.as_str()) || !is_hex_aram(&session) {
+        return Ok(None);
+    }
+
+    if current_player.needs_refresh() {
+        current_player.mark_refresh_attempt();
+        if let Ok(summoner) = client.current_summoner().await {
+            current_player.update(&summoner);
+        }
+    }
+    let champion_id = current_champion_id(&session, current_player).unwrap_or_default();
+    if champion_id == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(ActiveSession {
+        game_id: session.game_data.game_id,
+        champion_id,
+        stats: None,
+        next_stats_retry: Instant::now(),
+    }))
+}
+
+#[cfg(target_os = "windows")]
+fn current_champion_id(
+    session: &GameflowSession,
+    current_player: &CurrentPlayerIdentity,
+) -> Option<u32> {
+    session
+        .game_data
+        .player_champion_selections
+        .iter()
+        .find(|player| {
+            current_player.matches(
+                &player.puuid,
+                player.summoner_id,
+                &player.summoner_internal_name,
+                "",
+            )
+        })
+        .map(|player| player.champion_id)
+        .filter(|champion_id| *champion_id > 0)
+        .or_else(|| {
+            session
+                .game_data
+                .team_one
+                .iter()
+                .chain(session.game_data.team_two.iter())
+                .find(|player| {
+                    current_player.matches(
+                        &player.puuid,
+                        player.summoner_id,
+                        &player.summoner_internal_name,
+                        &player.summoner_name,
+                    )
+                })
+                .map(|player| player.champion_id)
+                .filter(|champion_id| *champion_id > 0)
+        })
+}
+
+/// 局内 session 在不同阶段返回的身份字段并不稳定：有时有 PUUID，有时只有
+/// `summonerId` 或内部名。因此在拿到当前召唤师后保留多种身份作为匹配兜底。
+#[cfg(target_os = "windows")]
+#[derive(Debug, Default)]
+struct CurrentPlayerIdentity {
+    puuid: String,
+    summoner_id: u64,
+    internal_name: String,
+    display_name: String,
+    game_name: String,
+    refreshed_at: Option<Instant>,
+}
+
+#[cfg(target_os = "windows")]
+impl CurrentPlayerIdentity {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn needs_refresh(&self) -> bool {
+        self.refreshed_at
+            .is_none_or(|at| at.elapsed() >= IDENTITY_REFRESH_INTERVAL)
+    }
+
+    fn mark_refresh_attempt(&mut self) {
+        self.refreshed_at = Some(Instant::now());
+    }
+
+    fn update(&mut self, summoner: &SummonerInfo) {
+        self.puuid = summoner.puuid.trim().to_string();
+        self.summoner_id = summoner.summoner_id;
+        self.internal_name = summoner.internal_name.trim().to_string();
+        self.display_name = summoner.display_name.trim().to_string();
+        self.game_name = summoner.game_name.trim().to_string();
+        self.refreshed_at = Some(Instant::now());
+    }
+
+    fn matches(
+        &self,
+        puuid: &str,
+        summoner_id: u64,
+        internal_name: &str,
+        display_name: &str,
+    ) -> bool {
+        same_identity_value(puuid, &self.puuid)
+            || (self.summoner_id > 0 && summoner_id == self.summoner_id)
+            || same_identity_value(internal_name, &self.internal_name)
+            || same_identity_value(internal_name, &self.display_name)
+            || same_identity_value(internal_name, &self.game_name)
+            || same_identity_value(display_name, &self.display_name)
+            || same_identity_value(display_name, &self.game_name)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn same_identity_value(left: &str, right: &str) -> bool {
+    let left = left.trim();
+    let right = right.trim();
+    !left.is_empty() && !right.is_empty() && left.eq_ignore_ascii_case(right)
+}
+
+#[cfg(target_os = "windows")]
+fn is_hex_aram(session: &GameflowSession) -> bool {
+    session.game_data.queue.id == 2400
+        || matches!(
+            session
+                .game_data
+                .queue
+                .game_mode
+                .to_ascii_uppercase()
+                .as_str(),
+            "STRAWBERRY" | "KIWI"
+        )
+}
+
+#[cfg(target_os = "windows")]
+fn clip_rect(rect: detector::Rect, width: i32, height: i32) -> detector::Rect {
+    let left = rect.left.clamp(0, width);
+    let top = rect.top.clamp(0, height);
+    let right = rect.right.clamp(left, width);
+    let bottom = rect.bottom.clamp(top, height);
+    detector::Rect {
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// 将固定标题区收紧到文字前景。
+///
+/// 海克斯标题可能只有两个字，而固定卡片宽度接近 200 像素；PP-OCR 在这种宽输入
+/// 上会把绝大部分时间步判成 blank。这里仅利用标题行的亮色文字求边界，并且跳过
+/// 区域底部，避免把标题下方的金色横线一起送入 OCR。
+#[cfg(target_os = "windows")]
+fn tighten_title_rect(
+    bgra: &[u8],
+    width: i32,
+    height: i32,
+    rect: detector::Rect,
+) -> Option<detector::Rect> {
+    if width <= 0 || height <= 0 || bgra.len() < width as usize * height as usize * 4 {
+        return None;
+    }
+    let rect = clip_rect(rect, width, height);
+    if rect.width() < 12 || rect.height() < 8 {
+        return None;
+    }
+
+    let scan_top = rect.top + (rect.height() as f32 * 0.08).round() as i32;
+    // 标题下方通常有细横线；最多扫描到 80% 高度，以免横线撑大文字边界。
+    let scan_bottom = rect.top + (rect.height() as f32 * 0.80).round() as i32;
+    if scan_bottom - scan_top < 6 {
+        return None;
+    }
+
+    let mut left = rect.right;
+    let mut top = scan_bottom;
+    let mut right = rect.left;
+    let mut bottom = scan_top;
+    let mut foreground_count = 0usize;
+
+    for y in scan_top..scan_bottom {
+        for x in rect.left..rect.right {
+            let index = ((y * width + x) * 4) as usize;
+            let blue = bgra[index] as u16;
+            let green = bgra[index + 1] as u16;
+            let red = bgra[index + 2] as u16;
+            // 白色/浅金色文字的亮度远高于深色标题背景。使用整数亮度计算，避免每帧
+            // 三张卡 OCR 前再引入浮点和额外分配。
+            let luma = (red * 54 + green * 183 + blue * 19) >> 8;
+            if luma < 128 {
+                continue;
+            }
+
+            foreground_count += 1;
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x + 1);
+            bottom = bottom.max(y + 1);
+        }
+    }
+
+    if foreground_count < 8 || right <= left || bottom <= top {
+        return None;
+    }
+
+    let text_width = right - left;
+    let text_height = bottom - top;
+    // 避免卡图或异常光效覆盖整个固定标题区域时截掉正常内容。
+    if text_width < 8
+        || text_height < 6
+        || text_width as f32 > rect.width() as f32 * 0.88
+        || text_height as f32 > rect.height() as f32 * 0.78
+    {
+        return None;
+    }
+
+    let padding_x = (rect.width() / 38).clamp(4, 8);
+    let padding_y = (rect.height() / 14).clamp(2, 4);
+    let tightened = detector::Rect {
+        left: (left - padding_x).max(rect.left),
+        top: (top - padding_y).max(rect.top),
+        right: (right + padding_x).min(rect.right),
+        bottom: (bottom + padding_y).min(scan_bottom),
+    };
+    (tightened.width() >= 12 && tightened.height() >= 8).then_some(tightened)
+}
+
+#[cfg(target_os = "windows")]
+fn crop_bgra_to_rgb(bgra: &[u8], width: i32, height: i32, rect: detector::Rect) -> image::RgbImage {
+    let rect = clip_rect(rect, width, height);
+    let left = rect.left;
+    let top = rect.top;
+    let right = rect.right;
+    let bottom = rect.bottom;
+    let crop_width = (right - left).max(1) as u32;
+    let crop_height = (bottom - top).max(1) as u32;
+    let mut pixels = Vec::with_capacity(crop_width as usize * crop_height as usize * 3);
+
+    for y in top..bottom {
+        for x in left..right {
+            let index = ((y * width + x) * 4) as usize;
+            pixels.extend_from_slice(&[bgra[index + 2], bgra[index + 1], bgra[index]]);
+        }
+    }
+    image::RgbImage::from_raw(crop_width, crop_height, pixels)
+        .unwrap_or_else(|| image::RgbImage::new(crop_width, crop_height))
+}
+
+fn format_delta(delta: f64) -> String {
+    format!("{:+.1}%", delta * 100.0)
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CardResolution {
+    augment_id: u32,
+    text: String,
+    tone: overlay::OverlayLabelTone,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct TrackedCard {
+    // 只缓存三卡检测给出的默认大标题区域。每帧 OCR 的紧裁切不写回这里。
+    default_title_rect: Option<detector::Rect>,
+    label_center: Option<(i32, i32)>,
+    resolution: Option<CardResolution>,
+    pending_resolution: Option<CardResolution>,
+    pending_hits: u8,
+    invalid_streak: u8,
+    last_ocr_text: String,
+    last_ocr_crop: Option<(i32, i32, i32, i32)>,
+}
+
+#[cfg(target_os = "windows")]
+impl TrackedCard {
+    fn set_default_area(&mut self, title_rect: detector::Rect, label_center: (i32, i32)) {
+        if self.default_title_rect.is_none() {
+            self.default_title_rect = Some(title_rect);
+            self.label_center = Some(label_center);
+        }
+    }
+
+    fn record_invalid_result(&mut self) -> bool {
+        self.invalid_streak = self.invalid_streak.saturating_add(1);
+        self.pending_resolution = None;
+        self.pending_hits = 0;
+        if self.invalid_streak < OCR_INVALID_RESULT_LIMIT {
+            return false;
+        }
+
+        *self = Self::default();
+        true
+    }
+
+    fn accept_resolution(&mut self, candidate: CardResolution) -> bool {
+        self.invalid_streak = 0;
+
+        let Some(current) = self.resolution.as_ref() else {
+            self.resolution = Some(candidate);
+            self.pending_resolution = None;
+            self.pending_hits = 0;
+            return true;
+        };
+
+        if current.augment_id == candidate.augment_id {
+            let changed = current != &candidate;
+            if changed {
+                self.resolution = Some(candidate);
+            }
+            self.pending_resolution = None;
+            self.pending_hits = 0;
+            return changed;
+        }
+
+        if self.pending_resolution.as_ref() == Some(&candidate) {
+            self.pending_hits = self.pending_hits.saturating_add(1);
+        } else {
+            self.pending_resolution = Some(candidate);
+            self.pending_hits = 1;
+        }
+
+        if self.pending_hits < OCR_REPLACEMENT_CONFIRMATIONS {
+            return false;
+        }
+
+        self.resolution = self.pending_resolution.take();
+        self.pending_hits = 0;
+        true
+    }
+
+    fn overlay_label(&self) -> Option<overlay::OverlayLabel> {
+        let (center_x, y) = self.label_center?;
+        let resolution = self.resolution.as_ref()?;
+        Some(overlay::OverlayLabel {
+            center_x,
+            y,
+            text: resolution.text.clone(),
+            tone: resolution.tone,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FrameSignature {
+    source: capture::CaptureSource,
+    origin_x: i32,
+    origin_y: i32,
+    width: i32,
+    height: i32,
+}
+
+#[cfg(target_os = "windows")]
+impl From<&capture::CapturedFrame<'_>> for FrameSignature {
+    fn from(value: &capture::CapturedFrame<'_>) -> Self {
+        Self {
+            source: value.source,
+            origin_x: value.origin_x,
+            origin_y: value.origin_y,
+            width: value.width,
+            height: value.height,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_augment(
+    augment_names: &AugmentNameIndex,
+    text: &str,
+    stats: &aramkit::ChampionAugmentStats,
+) -> Option<CardResolution> {
+    if let Some(augment_id) = augment_names.find_id(text, &stats.augment_win_rates) {
+        let win_rate = stats.augment_win_rates.get(&augment_id)?;
+        let delta = *win_rate - stats.base_win_rate;
+        return Some(CardResolution {
+            augment_id,
+            text: format_delta(delta),
+            tone: if delta >= 0.0 {
+                overlay::OverlayLabelTone::Positive
+            } else {
+                overlay::OverlayLabelTone::Negative
+            },
+        });
+    }
+
+    // 名称能在本地词表或当前 LCU 海克斯清单中确认，但 AramKit 没有当前英雄的
+    // 统计项时，不将其视为 OCR 失败，而是明确提示样本不足。
+    augment_names
+        .find_known_id(text)
+        .map(|augment_id| CardResolution {
+            augment_id,
+            text: "选取率过低".to_string(),
+            tone: overlay::OverlayLabelTone::Unavailable,
+        })
+}
+
+#[cfg(target_os = "windows")]
+struct ActiveSession {
+    game_id: u64,
+    champion_id: u32,
+    stats: Option<aramkit::ChampionAugmentStats>,
+    next_stats_retry: Instant,
+}
+
+#[cfg(target_os = "windows")]
+impl ActiveSession {
+    fn key(&self) -> (u64, u32) {
+        (self.game_id, self.champion_id)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AugmentNameEntry {
+    #[serde(default)]
+    id: u32,
+    #[serde(default)]
+    file: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default, rename = "englishName")]
+    english_name: String,
+}
+
+#[derive(Clone)]
+struct AugmentNameIndex {
+    by_name: HashMap<String, Vec<u32>>,
+    // 旧词表中的英文名/图标文件名，用于把当前客户端 ID 关联回中文名。
+    aliases: HashMap<String, Vec<String>>,
+}
+
+impl AugmentNameIndex {
+    fn load() -> Self {
+        let raw = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/assets/hextech/augments.zh-CN.json"
+        ));
+        let entries = serde_json::from_str::<Vec<AugmentNameEntry>>(raw).unwrap_or_default();
+        let mut index = Self {
+            by_name: HashMap::new(),
+            aliases: HashMap::new(),
+        };
+        for entry in entries {
+            if entry.id == 0 || entry.name.trim().is_empty() {
+                continue;
+            }
+            let name = normalize_name(&entry.name);
+            if name.is_empty() {
+                continue;
+            }
+            index.add_name_id(&name, entry.id);
+            index.add_alias(&entry.english_name, &name);
+            index.add_alias(&asset_key(&entry.file), &name);
+        }
+        index
+    }
+
+    fn add_name_id(&mut self, name: &str, id: u32) {
+        let ids = self.by_name.entry(name.to_string()).or_default();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+
+    fn add_current_name_id(&mut self, name: &str, id: u32) {
+        let ids = self.by_name.entry(name.to_string()).or_default();
+        if !ids.contains(&id) {
+            // 当前 LCU 清单后加载，放在最前面可覆盖本地历史词表中的同名旧 ID。
+            ids.insert(0, id);
+        }
+    }
+
+    fn add_alias(&mut self, alias: &str, name: &str) {
+        let alias = normalize_name(alias);
+        if alias.is_empty() {
+            return;
+        }
+        let names = self.aliases.entry(alias).or_default();
+        if !names.iter().any(|value| value == name) {
+            names.push(name.to_string());
+        }
+    }
+
+    fn extend_assets(&mut self, assets: &[GameAssetEntry]) {
+        for asset in assets {
+            if asset.id == 0 || asset.name.trim().is_empty() {
+                continue;
+            }
+
+            let name = normalize_name(&asset.name);
+            if name.is_empty() {
+                continue;
+            }
+
+            self.add_current_name_id(&name, asset.id);
+
+            // 国服 LCU 通常直接返回中文名；如果某个客户端返回英文名，
+            // 再通过本地词表里的 englishName/图标文件名补回中文名称。
+            for alias in [asset.name.as_str(), asset_key(&asset.icon_path).as_str()] {
+                let Some(canonical_names) = self.aliases.get(&normalize_name(alias)).cloned()
+                else {
+                    continue;
+                };
+                for canonical_name in canonical_names {
+                    self.add_current_name_id(&canonical_name, asset.id);
+                }
+            }
+        }
+    }
+
+    fn find_id(&self, text: &str, available: &HashMap<u32, f64>) -> Option<u32> {
+        let normalized = normalize_name(text);
+        if normalized.is_empty() {
+            return None;
+        }
+        if let Some(ids) = self.by_name.get(&normalized) {
+            if let Some(id) = ids.iter().copied().find(|id| available.contains_key(id)) {
+                return Some(id);
+            }
+        }
+
+        // OCR 偶发一个字符误识时，只有高相似度且唯一最佳时才启用兜底，避免错标收益率。
+        if normalized.chars().count() < 2 {
+            return None;
+        }
+        let mut best: Option<(f32, u32)> = None;
+        let mut second_best = 0.0f32;
+        for (name, ids) in &self.by_name {
+            let Some(id) = ids.iter().copied().find(|id| available.contains_key(id)) else {
+                continue;
+            };
+            let score = similarity(&normalized, name);
+            if best.is_none_or(|(best_score, _)| score > best_score) {
+                second_best = best.map(|(best_score, _)| best_score).unwrap_or(0.0);
+                best = Some((score, id));
+            } else if score > second_best {
+                second_best = score;
+            }
+        }
+        best.filter(|(score, _)| *score >= 0.82 && *score - second_best >= 0.08)
+            .map(|(_, id)| id)
+    }
+
+    fn find_known_id(&self, text: &str) -> Option<u32> {
+        let normalized = normalize_name(text);
+        if normalized.is_empty() {
+            return None;
+        }
+        if let Some(ids) = self.by_name.get(&normalized) {
+            return ids.first().copied();
+        }
+
+        // 与有统计数据的匹配保持相同的相似度门槛；这里仅用于判定“名称有效、样本
+        // 缺失”，不能因一次弱 OCR 结果错误显示选取率提示。
+        if normalized.chars().count() < 2 {
+            return None;
+        }
+        let mut best: Option<(f32, u32)> = None;
+        let mut second_best = 0.0f32;
+        for (name, ids) in &self.by_name {
+            let Some(id) = ids.first().copied() else {
+                continue;
+            };
+            let score = similarity(&normalized, name);
+            if best.is_none_or(|(best_score, _)| score > best_score) {
+                second_best = best.map(|(best_score, _)| best_score).unwrap_or(0.0);
+                best = Some((score, id));
+            } else if score > second_best {
+                second_best = score;
+            }
+        }
+        best.filter(|(score, _)| *score >= 0.82 && *score - second_best >= 0.08)
+            .map(|(_, id)| id)
+    }
+}
+
+fn asset_key(value: &str) -> String {
+    let file_name = value
+        .rsplit(|character| character == '/' || character == '\\')
+        .next()
+        .unwrap_or(value);
+    let stem = file_name
+        .strip_suffix(".png")
+        .or_else(|| file_name.strip_suffix(".webp"))
+        .unwrap_or(file_name);
+    stem.strip_suffix("_augment").unwrap_or(stem).to_string()
+}
+
+fn normalize_name(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|character| {
+            let character = match character {
+                '\u{3000}' => ' ',
+                '\u{FF01}'..='\u{FF5E}' => char::from_u32(character as u32 - 0xfee0)?,
+                other => other,
+            };
+            if character.is_whitespace() || matches!(character, '·' | '・' | '-' | '_') {
+                None
+            } else {
+                Some(character.to_ascii_uppercase())
+            }
+        })
+        .collect()
+}
+
+fn similarity(left: &str, right: &str) -> f32 {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, left_char) in left.iter().enumerate() {
+        let mut current = vec![i + 1; right.len() + 1];
+        for (j, right_char) in right.iter().enumerate() {
+            current[j + 1] = if left_char == right_char {
+                previous[j]
+            } else {
+                1 + previous[j].min(previous[j + 1]).min(current[j])
+            };
+        }
+        previous = current;
+    }
+    let distance = previous[right.len()] as f32;
+    1.0 - distance / left.len().max(right.len()) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{format_delta, normalize_name, similarity};
+
+    #[cfg(target_os = "windows")]
+    use super::{
+        current_champion_id, is_hex_aram, refresh_active_session, resolve_augment,
+        tighten_title_rect, ActiveSession, CardResolution, CurrentPlayerIdentity, TrackedCard,
+    };
+    #[cfg(target_os = "windows")]
+    use crate::services::models::{GameflowGameData, GameflowSession, PlayerChampionSelection};
+
+    #[test]
+    fn normalizes_full_width_ascii_and_spaces() {
+        assert_eq!(normalize_name(" 回力ｏＫ镖 "), "回力OK镖");
+    }
+
+    #[test]
+    fn formats_positive_and_negative_delta() {
+        assert_eq!(format_delta(0.058), "+5.8%");
+        assert_eq!(format_delta(-0.024), "-2.4%");
+    }
+
+    #[test]
+    fn similarity_is_one_for_equal_names() {
+        assert!((similarity("回力OK镖", "回力OK镖") - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn current_lcu_augment_id_overrides_historical_local_id() {
+        let mut index = super::AugmentNameIndex::load();
+        index.extend_assets(&[super::GameAssetEntry {
+            id: 1022,
+            name: "灵巧".to_string(),
+            ..Default::default()
+        }]);
+
+        let mut available = HashMap::new();
+        available.insert(1022, 0.57);
+        assert_eq!(index.find_id("灵巧", &available), Some(1022));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn known_augment_without_aramkit_stats_shows_low_pick_rate() {
+        let mut index = super::AugmentNameIndex::load();
+        index.extend_assets(&[super::GameAssetEntry {
+            id: 9001,
+            name: "灵巧".to_string(),
+            ..Default::default()
+        }]);
+        let stats = super::aramkit::ChampionAugmentStats {
+            base_win_rate: 0.5,
+            augment_win_rates: HashMap::new(),
+        };
+
+        let resolution = resolve_augment(&index, "灵巧", &stats).expect("应确认海克斯名称");
+        assert_eq!(resolution.augment_id, 9001);
+        assert_eq!(resolution.text, "选取率过低");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tracked_card_keeps_default_area_and_requires_two_failures_to_unlock() {
+        use super::detector::Rect;
+        use super::overlay::OverlayLabelTone;
+
+        let first_area = Rect {
+            left: 100,
+            top: 200,
+            right: 300,
+            bottom: 260,
+        };
+        let mut card = TrackedCard::default();
+        card.set_default_area(first_area, (200, 430));
+        card.set_default_area(
+            Rect {
+                left: 120,
+                top: 210,
+                right: 280,
+                bottom: 250,
+            },
+            (200, 420),
+        );
+        assert_eq!(card.default_title_rect, Some(first_area));
+        assert_eq!(card.label_center, Some((200, 430)));
+
+        let first = CardResolution {
+            augment_id: 1,
+            text: "+1.0%".to_string(),
+            tone: OverlayLabelTone::Positive,
+        };
+        let replacement = CardResolution {
+            augment_id: 2,
+            text: "-1.0%".to_string(),
+            tone: OverlayLabelTone::Negative,
+        };
+        assert!(card.accept_resolution(first));
+        assert!(!card.accept_resolution(replacement.clone()));
+        assert_eq!(
+            card.resolution.as_ref().map(|value| value.augment_id),
+            Some(1)
+        );
+        assert!(card.accept_resolution(replacement));
+        assert_eq!(
+            card.resolution.as_ref().map(|value| value.augment_id),
+            Some(2)
+        );
+
+        assert!(!card.record_invalid_result());
+        assert!(card.resolution.is_some());
+        assert!(card.record_invalid_result());
+        assert!(card.default_title_rect.is_none());
+        assert!(card.resolution.is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tightens_short_title_without_including_the_bottom_rule() {
+        use super::detector::Rect;
+
+        let width = 200i32;
+        let height = 80i32;
+        let mut bgra = vec![0u8; width as usize * height as usize * 4];
+        let set_bright = |pixels: &mut [u8], x: i32, y: i32| {
+            let index = ((y * width + x) * 4) as usize;
+            pixels[index] = 230;
+            pixels[index + 1] = 230;
+            pixels[index + 2] = 230;
+            pixels[index + 3] = 255;
+        };
+
+        // 两个短标题字，四周是固定标题区留下的空白。
+        for y in 21..34 {
+            for x in 84..114 {
+                set_bright(&mut bgra, x, y);
+            }
+        }
+        // 这个金色横线应被下方扫描边界排除。
+        for x in 20..180 {
+            set_bright(&mut bgra, x, 47);
+        }
+
+        let original = Rect {
+            left: 20,
+            top: 10,
+            right: 180,
+            bottom: 50,
+        };
+        let tight =
+            tighten_title_rect(&bgra, width, height, original).expect("应能定位标题文字前景");
+
+        assert!(tight.left <= 84 && tight.left >= 76);
+        assert!(tight.right >= 114 && tight.right <= 122);
+        assert!(tight.top <= 21 && tight.top >= 16);
+        assert!(tight.bottom >= 34 && tight.bottom < 42);
+        assert!(tight.width() < original.width() / 2);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn title_tightening_falls_back_when_no_text_is_visible() {
+        use super::detector::Rect;
+
+        let bgra = vec![0u8; 200 * 80 * 4];
+        assert!(tighten_title_rect(
+            &bgra,
+            200,
+            80,
+            Rect {
+                left: 20,
+                top: 10,
+                right: 180,
+                bottom: 50,
+            },
+        )
+        .is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_current_champion_with_summoner_id_when_puuid_is_missing() {
+        let session = GameflowSession {
+            game_data: GameflowGameData {
+                player_champion_selections: vec![PlayerChampionSelection {
+                    champion_id: 67,
+                    summoner_id: 42,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let identity = CurrentPlayerIdentity {
+            summoner_id: 42,
+            ..Default::default()
+        };
+
+        assert_eq!(current_champion_id(&session, &identity), Some(67));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_current_champion_with_internal_name_when_puuid_is_missing() {
+        let session = GameflowSession {
+            game_data: GameflowGameData {
+                player_champion_selections: vec![PlayerChampionSelection {
+                    champion_id: 222,
+                    summoner_internal_name: "example_internal_name".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let identity = CurrentPlayerIdentity {
+            internal_name: "EXAMPLE_INTERNAL_NAME".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(current_champion_id(&session, &identity), Some(222));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "手动触发：输出当前局内海克斯识别前置条件"]
+    async fn manual_debug_live_recognition_prerequisites() {
+        let auth = crate::services::client_discovery::discover_primary_client()
+            .expect("应能发现英雄联盟客户端");
+        let mut lcu =
+            Some(crate::services::lcu::LcuClient::new(&auth).expect("应能创建 LCU 客户端"));
+        let client = lcu.as_ref().expect("LCU 客户端应存在");
+        let session = client
+            .gameflow_session()
+            .await
+            .expect("应能读取 gameflow session");
+        let summoner = client.current_summoner().await.expect("应能读取当前召唤师");
+
+        println!(
+            "hex-winrate prerequisite => summoner puuid='{}' summoner_id={} internal='{}' game='{}' display='{}'",
+            summoner.puuid,
+            summoner.summoner_id,
+            summoner.internal_name,
+            summoner.game_name,
+            summoner.display_name
+        );
+        if let Some(session) = &session {
+            println!(
+                "hex-winrate prerequisite => phase='{}' game_id={} queue_id={} queue_type='{}' game_mode='{}' is_hex={} selections={} team_one={} team_two={}",
+                session.phase,
+                session.game_data.game_id,
+                session.game_data.queue.id,
+                session.game_data.queue.type_,
+                session.game_data.queue.game_mode,
+                is_hex_aram(session),
+                session.game_data.player_champion_selections.len(),
+                session.game_data.team_one.len(),
+                session.game_data.team_two.len(),
+            );
+        } else {
+            println!("hex-winrate prerequisite => 当前没有 gameflow session");
+        }
+
+        let mut identity = CurrentPlayerIdentity::default();
+        let active = refresh_active_session(&mut lcu, &mut identity)
+            .await
+            .expect("识别前置检查不应失败");
+        print_active_session(active.as_ref());
+    }
+
+    #[cfg(target_os = "windows")]
+    fn print_active_session(active: Option<&ActiveSession>) {
+        match active {
+            Some(active) => println!(
+                "hex-winrate prerequisite => active game_id={} champion_id={}",
+                active.game_id, active.champion_id
+            ),
+            None => println!("hex-winrate prerequisite => 未满足识别前置条件"),
+        }
+    }
+}

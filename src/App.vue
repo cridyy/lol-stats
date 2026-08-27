@@ -37,6 +37,8 @@ import {
   searchPlayerWithProgress,
   searchSummonerCandidates,
   setChatAvailability,
+  setHexWinrateCaptureMode,
+  setHexWinrateRecognitionEnabled,
 } from "./api"
 import {
   chatStatusLockAvailability,
@@ -50,7 +52,15 @@ import RecordView from "./components/RecordView.vue"
 import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
-import { AUTO_ACCEPT_ENABLED_KEY, readBooleanSetting } from "./toolSettings"
+import {
+  AUTO_ACCEPT_ENABLED_KEY,
+  type LiveHexWinrateCaptureMode,
+  LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY,
+  readBooleanSetting,
+  readLiveHexWinrateCaptureMode,
+  writeBooleanSetting,
+  writeLiveHexWinrateCaptureMode,
+} from "./toolSettings"
 import { championName, riotId } from "./utils"
 import type {
   AppUpdateInfo,
@@ -278,6 +288,12 @@ const liveGame = ref<LiveGameResponse | null>(null)
 const liveLoading = ref(false)
 const liveRefreshing = ref(false)
 const liveError = ref("")
+const liveHexWinrateRecognitionEnabled = ref(
+  readBooleanSetting(LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY),
+)
+const liveHexWinrateCaptureMode = ref<LiveHexWinrateCaptureMode>(
+  readLiveHexWinrateCaptureMode(),
+)
 const gameflowPhase = ref<string | null>(null)
 const drillTabs = ref<DrillTab[]>([])
 const activeDrillTabId = ref("")
@@ -1729,6 +1745,24 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   }
 }
 
+function toggleLiveHexWinrateRecognition() {
+  liveHexWinrateRecognitionEnabled.value = !liveHexWinrateRecognitionEnabled.value
+  writeBooleanSetting(
+    LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY,
+    liveHexWinrateRecognitionEnabled.value,
+  )
+  void setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
+    notifyError("海克斯胜率识别启动失败", error)
+  })
+}
+
+function updateLiveHexWinrateCaptureMode() {
+  writeLiveHexWinrateCaptureMode(liveHexWinrateCaptureMode.value)
+  void setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value).catch((error) => {
+    notifyError("海克斯截图模式切换失败", error)
+  })
+}
+
 function startLiveAutoRefresh() {
   if (liveRefreshTimer !== null) return
   void refreshLiveGame({ silent: Boolean(liveGame.value), switchPage: false })
@@ -1906,6 +1940,12 @@ watch(activePage, (page, previousPage) => {
 onMounted(async () => {
   void initWindowSizeSettings()
   await initAppVersionAndReleaseNotes()
+  void setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value).catch((error) => {
+    notifyError("海克斯截图模式初始化失败", error)
+  })
+  void setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
+    notifyError("海克斯胜率识别初始化失败", error)
+  })
   startGameflowWatcher()
   if (chatStatusLockEnabled.value) startChatStatusLockWatcher()
   void checkForAppUpdate()
@@ -2036,11 +2076,24 @@ onUnmounted(() => {
             <div class="eyebrow">Live Game</div>
             <h2>实时战绩</h2>
           </div>
-          <button class="primary-action" @click="refreshLiveGame()" :disabled="liveLoading || liveRefreshing">
-            <LoaderCircle v-if="liveLoading || liveRefreshing" class="spin" :size="16" />
-            <RefreshCw v-else :size="16" />
-            {{ liveRefreshing ? "同步中" : "刷新" }}
-          </button>
+          <div class="live-header-actions">
+            <button
+              class="live-feature-switch"
+              :class="{ active: liveHexWinrateRecognitionEnabled }"
+              type="button"
+              role="switch"
+              :aria-checked="liveHexWinrateRecognitionEnabled"
+              @click="toggleLiveHexWinrateRecognition"
+            >
+              <span>海克斯胜率识别</span>
+              <i aria-hidden="true"></i>
+            </button>
+            <button class="primary-action" @click="refreshLiveGame()" :disabled="liveLoading || liveRefreshing">
+              <LoaderCircle v-if="liveLoading || liveRefreshing" class="spin" :size="16" />
+              <RefreshCw v-else :size="16" />
+              {{ liveRefreshing ? "同步中" : "刷新" }}
+            </button>
+          </div>
         </header>
 
         <LiveGamePanel
@@ -2280,6 +2333,22 @@ onUnmounted(() => {
               type="checkbox"
               @change="persistShareSettings"
             />
+          </label>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">
+            <span>局内识别</span>
+            <strong>海克斯截图模式</strong>
+          </div>
+
+          <label class="settings-select">
+            <span>截图来源</span>
+            <select v-model="liveHexWinrateCaptureMode" @change="updateLiveHexWinrateCaptureMode">
+              <option value="desktop-dc">桌面 DC（默认，受前台遮挡影响）</option>
+              <option value="wgc">WGC 窗口捕获</option>
+              <option value="auto">自动（WGC 优先）</option>
+            </select>
           </label>
         </section>
       </section>
@@ -2576,6 +2645,72 @@ button:disabled {
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
+}
+
+.live-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-feature-switch {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #b8cdca;
+  border-radius: 8px;
+  color: #355058;
+  background: #f5f9f8;
+  cursor: pointer;
+  padding: 7px 9px 7px 11px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.live-feature-switch:hover {
+  border-color: #6b9a91;
+  background: #eaf4f1;
+}
+
+.live-feature-switch i {
+  display: block;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: #b9c8c5;
+  padding: 2px;
+  transition: background 0.16s ease;
+}
+
+.live-feature-switch i::after {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(26, 55, 55, 0.24);
+  content: "";
+  transition: transform 0.16s ease;
+}
+
+.live-feature-switch.active {
+  border-color: #4a8f80;
+  color: #175e50;
+  background: #e1f1ec;
+}
+
+.live-feature-switch.active i {
+  background: #237565;
+}
+
+.live-feature-switch.active i::after {
+  transform: translateX(16px);
+}
+
+.live-feature-switch:focus-visible {
+  outline: 2px solid #2f78d6;
+  outline-offset: 2px;
 }
 
 .eyebrow {
@@ -3019,6 +3154,21 @@ button:disabled {
   background: #ffffff;
   padding: 8px 9px;
   font-weight: 800;
+}
+
+.settings-modal select {
+  min-width: 190px;
+  border: 1px solid #cddfdc;
+  border-radius: 7px;
+  outline: 0;
+  color: #263238;
+  background: #ffffff;
+  padding: 8px 9px;
+  font-weight: 800;
+}
+
+.settings-modal .settings-select {
+  align-items: center;
 }
 
 .settings-modal input[type="checkbox"] {

@@ -2166,6 +2166,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 name = "lol-stats"
 version = "0.7.1"
 dependencies = [
+ "anyhow",
  "arboard",
  "base64 0.22.1",
  "futures",
@@ -2184,6 +2185,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "urlencoding",
+ "windows 0.61.3",
+ "windows-numerics",
  "windows-sys 0.59.0",
 ]
 

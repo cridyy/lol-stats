@@ -44,6 +44,9 @@ import { championName, fixed, mitigationValue, percent, teamMitigationValue } fr
 
 const DATA_FILTER_HINT_SEEN_KEY = "lol-stats.data-filter-hint-seen"
 const PLAYER_ELO_POLL_INTERVAL_MS = 1200
+const DETAIL_GAME_BATCH_SIZE = 20
+// 暂时隐藏角色 ELO 功能，但保留前后端计算、缓存和恢复入口。
+const ELO_FEATURE_ENABLED = false
 
 type StatsTableTab =
   | "champion"
@@ -53,9 +56,15 @@ type StatsTableTab =
   | "enemySummoner"
   | "allyChampion"
   | "enemyChampion"
+
+interface StatsGameSelection {
+  kind: StatsTableTab
+  id: number | string
+  label: string
+}
+
 type SortDirection = "asc" | "desc"
 type ChampionSortKey =
-  | "wilsonScore"
   | "name"
   | "games"
   | "winRate"
@@ -67,7 +76,6 @@ type ChampionSortKey =
   | "mitigationShare"
   | "healingShare"
 type UsageSortKey =
-  | "wilsonScore"
   | "name"
   | "games"
   | "pickRate"
@@ -92,7 +100,6 @@ interface UsageStatsRow {
   losses: number
   pickRate: number
   winRate: number
-  wilsonScore: number
   label: string
   topChampions: UsageChampionLink[]
   lastSeenAt: number
@@ -110,7 +117,6 @@ interface EncounterStatsRow {
   losses: number
   pickRate: number
   winRate: number
-  wilsonScore: number
   label: string
   topChampions: UsageChampionLink[]
   lastSeenAt: number
@@ -130,7 +136,8 @@ const emit = defineEmits<{
   openMatch: [payload: OpenMatchPayload]
 }>()
 
-const selectedChampionId = ref<number | null>(null)
+const selectedStatsGamesFilter = ref<StatsGameSelection | null>(null)
+const selectedStatsVisibleCount = ref(DETAIL_GAME_BATCH_SIZE)
 const championSearch = ref("")
 const activeStatsTable = ref<StatsTableTab>("champion")
 const augmentRarityFilter = ref<FunAugmentRarity | "all">("all")
@@ -144,24 +151,25 @@ const statsOwnerLabel = computed(() => {
   return props.stats?.summoner.internalName?.trim() || "当前角色"
 })
 const championSort = ref<{ key: ChampionSortKey; direction: SortDirection }>({
-  key: "wilsonScore",
+  key: "games",
   direction: "desc",
 })
 const augmentSort = ref<{ key: UsageSortKey; direction: SortDirection }>({
-  key: "wilsonScore",
+  key: "games",
   direction: "desc",
 })
 const itemSort = ref<{ key: UsageSortKey; direction: SortDirection }>({
-  key: "wilsonScore",
+  key: "games",
   direction: "desc",
 })
 const encounterSort = ref<{ key: UsageSortKey; direction: SortDirection }>({
-  key: "wilsonScore",
+  key: "games",
   direction: "desc",
 })
 const shareBusy = ref<"champions" | "games" | null>(null)
 const statsRootRef = ref<HTMLElement | null>(null)
 const tableWrapRef = ref<HTMLElement | null>(null)
+const detailLoadSentinelRef = ref<HTMLElement | null>(null)
 const championStatsCaptureRef = ref<HTMLElement | null>(null)
 const championGamesCaptureRef = ref<HTMLElement | null>(null)
 const funStatsResult = ref<FunStatsResult | null>(null)
@@ -176,13 +184,36 @@ let savedTableScrollTop = 0
 let savedPageScrollTop = 0
 let playerEloRequestToken = 0
 let playerEloPollTimer: number | null = null
+let detailLoadObserver: IntersectionObserver | null = null
+const selectedChampionId = computed(() => {
+  const selection = selectedStatsGamesFilter.value
+  return selection?.kind === "champion" ? Number(selection.id) : null
+})
+const selectedStatsGames = computed(() => {
+  const selection = selectedStatsGamesFilter.value
+  if (!selection) return []
+  return (props.stats?.recentGames || []).filter((game) => gameMatchesStatsSelection(game, selection))
+})
+const visibleSelectedStatsGames = computed(() =>
+  selectedStatsGames.value.slice(0, selectedStatsVisibleCount.value),
+)
+const hasMoreSelectedStatsGames = computed(
+  () => visibleSelectedStatsGames.value.length < selectedStatsGames.value.length,
+)
 const selectedChampionGames = computed(() => {
   if (!selectedChampionId.value) return []
-  return props.stats?.recentGames.filter((game) => game.championId === selectedChampionId.value) || []
+  return selectedStatsGames.value
 })
 const selectedChampionLabel = computed(() =>
-  championName(props.champions, selectedChampionId.value || undefined),
+  selectedStatsGamesFilter.value?.kind === "champion"
+    ? selectedStatsGamesFilter.value.label
+    : championName(props.champions, selectedChampionId.value || undefined),
 )
+const selectedStatsGamesTitle = computed(() => {
+  const selection = selectedStatsGamesFilter.value
+  if (!selection) return "相关战绩"
+  return `${selection.label} · ${statsSelectionTitle(selection.kind)}`
+})
 const topChampionIds = computed(
   () => props.stats?.championStats.slice(0, 5).map((champ) => champ.championId) || [],
 )
@@ -405,7 +436,8 @@ function roleBarLabel(label: string) {
 watch(
   () => props.stats,
   () => {
-    selectedChampionId.value = null
+    selectedStatsGamesFilter.value = null
+    selectedStatsVisibleCount.value = DETAIL_GAME_BATCH_SIZE
     championSearch.value = ""
     funStatsResult.value = null
     funStatsVisible.value = false
@@ -415,16 +447,25 @@ watch(
 watch(
   () => [props.stats?.summoner.puuid, props.stats?.summoner.gameName, props.stats?.summoner.tagLine, props.sgpServerId],
   () => {
+    if (!ELO_FEATURE_ENABLED) {
+      stopPlayerEloPolling()
+      playerEloEstimate.value = null
+      playerEloLoading.value = false
+      playerEloError.value = ""
+      return
+    }
     void refreshPlayerEloEstimate()
   },
   { immediate: true },
 )
 
 async function refreshPlayerEloEstimate() {
+  if (!ELO_FEATURE_ENABLED) return
   await refreshPlayerEloEstimateInternal(false)
 }
 
 async function refreshPlayerEloEstimateFromSource() {
+  if (!ELO_FEATURE_ENABLED) return
   await refreshPlayerEloEstimateInternal(true)
 }
 
@@ -527,6 +568,8 @@ function stopPlayerEloPolling() {
 
 onBeforeUnmount(() => {
   stopPlayerEloPolling()
+  detailLoadObserver?.disconnect()
+  detailLoadObserver = null
 })
 
 async function toggleFunStats() {
@@ -650,19 +693,138 @@ function persistCurrentFunStats(key: string, result: FunStatsResult) {
 }
 
 function openChampionGames(championId: number) {
-  savedTableScrollTop = tableWrapRef.value?.scrollTop ?? 0
-  savedPageScrollTop = scrollParent(statsRootRef.value)?.scrollTop ?? 0
-  selectedChampionId.value = championId
+  openStatsGames({
+    kind: "champion",
+    id: championId,
+    label: championName(props.champions, championId),
+  })
 }
 
-async function closeChampionGames() {
-  selectedChampionId.value = null
+function openUsageGames(kind: "augment" | "item", entry: UsageStatsRow) {
+  openStatsGames({ kind, id: entry.id, label: entry.name })
+}
+
+function openEncounterGames(entry: EncounterStatsRow) {
+  const kind = activeStatsTable.value
+  if (
+    kind !== "allySummoner" &&
+    kind !== "enemySummoner" &&
+    kind !== "allyChampion" &&
+    kind !== "enemyChampion"
+  ) {
+    return
+  }
+
+  openStatsGames({
+    kind,
+    id: entry.entityType === "champion" ? Number(entry.championId || 0) : entry.key,
+    label: entry.name,
+  })
+}
+
+function openStatsGames(selection: StatsGameSelection) {
+  savedTableScrollTop = tableWrapRef.value?.scrollTop ?? 0
+  savedPageScrollTop = scrollParent(statsRootRef.value)?.scrollTop ?? 0
+  selectedStatsVisibleCount.value = DETAIL_GAME_BATCH_SIZE
+  selectedStatsGamesFilter.value = selection
+}
+
+async function closeStatsGames() {
+  selectedStatsGamesFilter.value = null
+  selectedStatsVisibleCount.value = DETAIL_GAME_BATCH_SIZE
   await nextTick()
   if (tableWrapRef.value) tableWrapRef.value.scrollTop = savedTableScrollTop
 
   const parent = scrollParent(statsRootRef.value)
   if (parent) parent.scrollTop = savedPageScrollTop
 }
+
+function gameMatchesStatsSelection(game: RecentGame, selection: StatsGameSelection) {
+  const numericId = Number(selection.id)
+  switch (selection.kind) {
+    case "champion":
+      return game.championId === numericId
+    case "augment":
+      return (game.augmentIds || []).some((augmentId) => augmentId === numericId)
+    case "item":
+      return (game.itemIds || []).some((itemId) => itemId === numericId)
+    case "allySummoner":
+      return relatedPlayers(game, "ally").some(
+        (player) => normalizePuuidKey(player.puuid) === normalizePuuidKey(String(selection.id)),
+      )
+    case "enemySummoner":
+      return relatedPlayers(game, "enemy").some(
+        (player) => normalizePuuidKey(player.puuid) === normalizePuuidKey(String(selection.id)),
+      )
+    case "allyChampion":
+      return relatedPlayers(game, "ally").some((player) => Number(player.championId) === numericId)
+    case "enemyChampion":
+      return relatedPlayers(game, "enemy").some((player) => Number(player.championId) === numericId)
+  }
+}
+
+function statsSelectionTitle(kind: StatsTableTab) {
+  switch (kind) {
+    case "champion":
+      return "单英雄战绩"
+    case "augment":
+      return "海克斯战绩"
+    case "item":
+      return "装备战绩"
+    case "allySummoner":
+      return "同队战绩"
+    case "enemySummoner":
+      return "对手战绩"
+    case "allyChampion":
+      return "友方英雄战绩"
+    case "enemyChampion":
+      return "敌方英雄战绩"
+  }
+}
+
+function loadMoreSelectedStatsGames() {
+  if (!hasMoreSelectedStatsGames.value) return
+  selectedStatsVisibleCount.value = Math.min(
+    selectedStatsVisibleCount.value + DETAIL_GAME_BATCH_SIZE,
+    selectedStatsGames.value.length,
+  )
+}
+
+function handleDetailLoadIntersection(entries: IntersectionObserverEntry[]) {
+  if (entries.some((entry) => entry.isIntersecting)) loadMoreSelectedStatsGames()
+}
+
+function observeDetailLoadSentinel(current: HTMLElement | null, previous: HTMLElement | null) {
+  if (previous) detailLoadObserver?.unobserve(previous)
+  if (!current) return
+
+  if (!detailLoadObserver) {
+    detailLoadObserver = new IntersectionObserver(handleDetailLoadIntersection, {
+      root: null,
+      rootMargin: "160px 0px 220px 0px",
+      threshold: 0,
+    })
+  }
+  detailLoadObserver.observe(current)
+}
+
+function requestMoreSelectedGamesIfVisible() {
+  if (!hasMoreSelectedStatsGames.value) return
+  const sentinel = detailLoadSentinelRef.value
+  if (!sentinel) return
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+  if (sentinel.getBoundingClientRect().top <= viewportHeight + 180) loadMoreSelectedStatsGames()
+}
+
+watch(detailLoadSentinelRef, observeDetailLoadSentinel)
+
+watch(
+  () => [visibleSelectedStatsGames.value.length, selectedStatsGames.value.length] as const,
+  async () => {
+    await nextTick()
+    requestMoreSelectedGamesIfVisible()
+  },
+)
 
 function scrollParent(element: HTMLElement | null) {
   let current = element?.parentElement || null
@@ -877,7 +1039,6 @@ function buildUsageStats(
         losses: value.games - value.wins,
         pickRate: ratio(value.games, games.length),
         winRate: ratio(value.wins, value.games),
-        wilsonScore: weightedCompositeScore(value.wins, value.games),
         label: usageLabel(kind, value.games, ratio(value.wins, value.games), ratio(value.games, games.length)),
         topChampions,
         lastSeenAt: value.lastSeenAt,
@@ -947,7 +1108,6 @@ function buildEncounterSummonerStats(
         losses: value.games - value.wins,
         pickRate: ratio(value.games, games.length),
         winRate: ratio(value.wins, value.games),
-        wilsonScore: weightedCompositeScore(value.wins, value.games),
         label: encounterLabel(side === "ally" ? "allySummoner" : "enemySummoner", value.games, ratio(value.wins, value.games), ratio(value.games, games.length)),
         topChampions,
         lastSeenAt: value.lastSeenAt,
@@ -1012,7 +1172,6 @@ function buildEncounterChampionStats(
       losses: value.games - value.wins,
       pickRate: ratio(value.games, games.length),
       winRate: ratio(value.wins, value.games),
-      wilsonScore: weightedCompositeScore(value.wins, value.games),
       label: encounterLabel(side === "ally" ? "allyChampion" : "enemyChampion", value.games, ratio(value.wins, value.games), ratio(value.games, games.length)),
       topChampions: topChampionLinksFromMap(value.championMap),
       lastSeenAt: value.lastSeenAt,
@@ -1192,9 +1351,6 @@ function compareChampionStats(
   let result = 0
 
   switch (championSort.value.key) {
-    case "wilsonScore":
-      result = championWilsonScore(a) - championWilsonScore(b)
-      break
     case "name":
       result = championName(props.champions, a.championId).localeCompare(championName(props.champions, b.championId), "zh-CN")
       break
@@ -1230,7 +1386,6 @@ function compareChampionStats(
   if (result !== 0) return result * direction
 
   return (
-    (championWilsonScore(b) - championWilsonScore(a)) ||
     (b.games - a.games) ||
     (b.winRate - a.winRate) ||
     (profileB.averageScore - profileA.averageScore) ||
@@ -1257,9 +1412,6 @@ function compareUsageStats(
   let result = 0
 
   switch (sort.key) {
-    case "wilsonScore":
-      result = a.wilsonScore - b.wilsonScore
-      break
     case "name":
       result = a.name.localeCompare(b.name, "zh-CN")
       break
@@ -1286,7 +1438,6 @@ function compareUsageStats(
   if (result !== 0) return result * direction
 
   return (
-    (b.wilsonScore - a.wilsonScore) ||
     (b.games - a.games) ||
     (b.pickRate - a.pickRate) ||
     (b.winRate - a.winRate) ||
@@ -1307,9 +1458,6 @@ function compareEncounterStats(
   let result = 0
 
   switch (sort.key) {
-    case "wilsonScore":
-      result = a.wilsonScore - b.wilsonScore
-      break
     case "name":
       result = a.name.localeCompare(b.name, "zh-CN")
       break
@@ -1336,7 +1484,6 @@ function compareEncounterStats(
   if (result !== 0) return result * direction
 
   return (
-    (b.wilsonScore - a.wilsonScore) ||
     (b.games - a.games) ||
     (b.pickRate - a.pickRate) ||
     (b.winRate - a.winRate) ||
@@ -1351,35 +1498,6 @@ function compareEncounterStats(
 function sortIconState<K extends string>(state: { key: K; direction: SortDirection }, key: K) {
   if (state.key !== key) return "none"
   return state.direction
-}
-
-function wilsonLowerBound(wins: number, games: number, z = 1.96) {
-  if (!games || games <= 0) return 0
-  const p = wins / games
-  const z2 = z * z
-  const denominator = 1 + z2 / games
-  const center = p + z2 / (2 * games)
-  const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * games)) / games)
-  return Math.max(0, (center - margin) / denominator)
-}
-
-function weightedCompositeScore(wins: number, games: number) {
-  if (!games || games <= 0) return 0
-  const lowerBound = wilsonLowerBound(wins, games)
-  const sampleConfidence = Math.sqrt(games / (games + 8))
-  return lowerBound * sampleConfidence
-}
-
-function championWilsonScore(champ: PlayerStatsResponse["championStats"][number]) {
-  return weightedCompositeScore(champ.wins, champ.games)
-}
-
-function usageWilsonScoreText(entry: UsageStatsRow | EncounterStatsRow) {
-  return `${fixed(entry.wilsonScore * 100, 1)}`
-}
-
-function championWilsonScoreText(champ: PlayerStatsResponse["championStats"][number]) {
-  return `${fixed(championWilsonScore(champ) * 100, 1)}`
 }
 
 function statsTableTitle() {
@@ -1564,6 +1682,7 @@ function errorMessage(error: unknown) {
   <section class="stats" v-else ref="statsRootRef">
     <div class="stats-overview">
       <div
+        v-if="ELO_FEATURE_ENABLED"
         class="metric metric-elo metric-elo-wide"
         :title="playerEloEstimate ? playerEloEstimate.rawGameMaxElos.join(' / ') : ''"
       >
@@ -1702,7 +1821,7 @@ function errorMessage(error: unknown) {
       </aside>
     </div>
 
-    <div class="fun-stats-entry" v-if="!selectedChampionId">
+    <div class="fun-stats-entry" v-if="!selectedStatsGamesFilter">
       <button
         class="data-filter-button"
         type="button"
@@ -1716,7 +1835,7 @@ function errorMessage(error: unknown) {
     </div>
 
     <FunStatsPanel
-      v-if="!selectedChampionId && funStatsVisible && funStatsResult"
+      v-if="!selectedStatsGamesFilter && funStatsVisible && funStatsResult"
       :result="funStatsResult"
       :loading="funStatsLoading"
       :games="stats.recentGames"
@@ -1730,7 +1849,7 @@ function errorMessage(error: unknown) {
     />
 
     <div class="content-grid">
-      <section class="panel table-panel" v-if="!selectedChampionId">
+      <section class="panel table-panel" v-if="!selectedStatsGamesFilter">
         <div class="panel-heading">
           <div class="table-heading-block">
             <div class="section-title">{{ statsTableTitle() }}</div>
@@ -1809,17 +1928,9 @@ function errorMessage(error: unknown) {
           </div>
         </div>
         <div class="table-wrap" ref="tableWrapRef">
-          <table v-if="activeStatsTable === 'champion'">
+          <table v-if="activeStatsTable === 'champion'" class="champion-stats-table">
             <thead>
               <tr>
-                <th>
-                  <button class="table-sort" @click="toggleChampionSort('wilsonScore')">
-                    综合
-                    <ArrowUp v-if="sortIconState(championSort, 'wilsonScore') === 'asc'" :size="14" />
-                    <ArrowDown v-else-if="sortIconState(championSort, 'wilsonScore') === 'desc'" :size="14" />
-                    <ChevronsUpDown v-else :size="14" />
-                  </button>
-                </th>
                 <th>
                   <button class="table-sort" @click="toggleChampionSort('name')">
                     英雄
@@ -1913,7 +2024,6 @@ function errorMessage(error: unknown) {
                 @keydown.enter="openChampionGames(champ.championId)"
                 @keydown.space.prevent="openChampionGames(champ.championId)"
               >
-                <td>{{ championWilsonScoreText(champ) }}</td>
                 <td>
                   <ChampionAvatar :champion-id="champ.championId" :champions="champions" :size="30" />
                 </td>
@@ -1992,14 +2102,6 @@ function errorMessage(error: unknown) {
             <thead>
               <tr>
                 <th>
-                  <button class="table-sort" @click="toggleAugmentSort('wilsonScore')">
-                    综合
-                    <ArrowUp v-if="sortIconState(augmentSort, 'wilsonScore') === 'asc'" :size="14" />
-                    <ArrowDown v-else-if="sortIconState(augmentSort, 'wilsonScore') === 'desc'" :size="14" />
-                    <ChevronsUpDown v-else :size="14" />
-                  </button>
-                </th>
-                <th>
                   <button class="table-sort" @click="toggleAugmentSort('name')">
                     海克斯
                     <ArrowUp v-if="sortIconState(augmentSort, 'name') === 'asc'" :size="14" />
@@ -2058,11 +2160,19 @@ function errorMessage(error: unknown) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in filteredAugmentStats" :key="entry.id">
-                <td>{{ usageWilsonScoreText(entry) }}</td>
+              <tr
+                v-for="entry in filteredAugmentStats"
+                :key="entry.id"
+                class="stats-entry-row"
+                tabindex="0"
+                @click="openUsageGames('augment', entry)"
+                @keydown.enter="openUsageGames('augment', entry)"
+                @keydown.space.prevent="openUsageGames('augment', entry)"
+              >
                 <td>
                   <div class="asset-cell">
                     <AssetIcon
+                      :class="['augment-table-icon', entry.rarityClass]"
                       :path="entry.iconPath"
                       :label="entry.name"
                       :fallback="String(entry.id)"
@@ -2097,14 +2207,6 @@ function errorMessage(error: unknown) {
           <table v-else-if="activeStatsTable === 'item'">
             <thead>
               <tr>
-                <th>
-                  <button class="table-sort" @click="toggleItemSort('wilsonScore')">
-                    综合
-                    <ArrowUp v-if="sortIconState(itemSort, 'wilsonScore') === 'asc'" :size="14" />
-                    <ArrowDown v-else-if="sortIconState(itemSort, 'wilsonScore') === 'desc'" :size="14" />
-                    <ChevronsUpDown v-else :size="14" />
-                  </button>
-                </th>
                 <th>
                   <button class="table-sort" @click="toggleItemSort('name')">
                     装备
@@ -2164,8 +2266,15 @@ function errorMessage(error: unknown) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in filteredItemStats" :key="entry.id">
-                <td>{{ usageWilsonScoreText(entry) }}</td>
+              <tr
+                v-for="entry in filteredItemStats"
+                :key="entry.id"
+                class="stats-entry-row"
+                tabindex="0"
+                @click="openUsageGames('item', entry)"
+                @keydown.enter="openUsageGames('item', entry)"
+                @keydown.space.prevent="openUsageGames('item', entry)"
+              >
                 <td>
                   <div class="asset-cell">
                     <AssetIcon
@@ -2203,14 +2312,6 @@ function errorMessage(error: unknown) {
           <table v-else>
             <thead>
               <tr>
-                <th>
-                  <button class="table-sort" @click="toggleEncounterSort('wilsonScore')">
-                    综合
-                    <ArrowUp v-if="sortIconState(encounterSort, 'wilsonScore') === 'asc'" :size="14" />
-                    <ArrowDown v-else-if="sortIconState(encounterSort, 'wilsonScore') === 'desc'" :size="14" />
-                    <ChevronsUpDown v-else :size="14" />
-                  </button>
-                </th>
                 <th>
                   <button class="table-sort" @click="toggleEncounterSort('name')">
                     {{ encounterEntityColumnLabel() }}
@@ -2270,8 +2371,15 @@ function errorMessage(error: unknown) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in filteredEncounterStats" :key="entry.key">
-                <td>{{ usageWilsonScoreText(entry) }}</td>
+              <tr
+                v-for="entry in filteredEncounterStats"
+                :key="entry.key"
+                class="stats-entry-row"
+                tabindex="0"
+                @click="openEncounterGames(entry)"
+                @keydown.enter="openEncounterGames(entry)"
+                @keydown.space.prevent="openEncounterGames(entry)"
+              >
                 <td>
                   <div class="asset-cell">
                     <ChampionAvatar
@@ -2321,16 +2429,17 @@ function errorMessage(error: unknown) {
         </div>
       </section>
 
-      <section class="panel champion-games-panel" v-else>
+      <section class="panel stats-games-panel" v-else>
         <div class="detail-header">
           <div class="detail-title-group">
-            <button @click="closeChampionGames">返回</button>
+            <button @click="closeStatsGames">返回</button>
             <div>
-              <div class="section-title">{{ selectedChampionLabel }} · 单英雄战绩</div>
-              <span>{{ selectedChampionGames.length }} 局</span>
+              <div class="section-title">{{ selectedStatsGamesTitle }}</div>
+              <span>已显示 {{ visibleSelectedStatsGames.length }} / {{ selectedStatsGames.length }} 局</span>
             </div>
           </div>
           <button
+            v-if="selectedChampionId"
             class="share-action"
             :disabled="shareBusy !== null || shareSelectedChampionGames.length === 0"
             @click="copyChampionGamesImage"
@@ -2341,7 +2450,7 @@ function errorMessage(error: unknown) {
         </div>
 
         <GameRecordList
-          :games="selectedChampionGames"
+          :games="visibleSelectedStatsGames"
           :champions="champions"
           :game-assets="gameAssets"
           :sgp-server-id="sgpServerId"
@@ -2350,6 +2459,18 @@ function errorMessage(error: unknown) {
           external-detail
           @open-match="emit('openMatch', $event)"
         />
+        <button
+          v-if="hasMoreSelectedStatsGames"
+          ref="detailLoadSentinelRef"
+          class="detail-load-more"
+          type="button"
+          @click="loadMoreSelectedStatsGames"
+        >
+          继续下滑加载更多
+        </button>
+        <div v-else-if="selectedStatsGames.length" class="detail-load-complete">
+          已加载全部 {{ selectedStatsGames.length }} 场
+        </div>
       </section>
     </div>
 
@@ -3378,19 +3499,22 @@ td {
   padding: 0;
 }
 
-td:first-child {
+.champion-stats-table td:first-child {
   width: 54px;
 }
 
-.champion-row {
+.champion-row,
+.stats-entry-row {
   cursor: pointer;
 }
 
-.champion-row:hover td {
+.champion-row:hover td,
+.stats-entry-row:hover td {
   background: #f3f8f6;
 }
 
-.champion-row:focus-visible {
+.champion-row:focus-visible,
+.stats-entry-row:focus-visible {
   outline: 2px solid #2f78d6;
   outline-offset: -2px;
 }
@@ -3461,6 +3585,35 @@ td:first-child {
   color: #20333a;
   font-size: 13px;
   font-weight: 800;
+}
+
+:deep(.augment-table-icon) {
+  border-width: 2px;
+  background: #e7eeec;
+}
+
+:deep(.augment-table-icon img) {
+  object-fit: contain;
+}
+
+:deep(.augment-table-icon.augment-prismatic) {
+  border-color: #a77cd0;
+  background: #613b89;
+}
+
+:deep(.augment-table-icon.augment-gold) {
+  border-color: #d6ad4c;
+  background: #8f640f;
+}
+
+:deep(.augment-table-icon.augment-silver) {
+  border-color: #98a7b5;
+  background: #657789;
+}
+
+:deep(.augment-table-icon.augment-bronze) {
+  border-color: #b78669;
+  background: #734631;
 }
 
 .asset-meta small {
@@ -3541,6 +3694,34 @@ td:first-child {
 .detail-header span {
   color: #718087;
   font-size: 12px;
+}
+
+.detail-load-more,
+.detail-load-complete {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: #60757b;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.detail-load-more {
+  cursor: pointer;
+}
+
+.detail-load-more:hover {
+  color: #1f5f56;
+  background: #f3f8f6;
+}
+
+.detail-load-more:focus-visible {
+  outline: 2px solid #2f78d6;
+  outline-offset: -2px;
 }
 
 .share-capture-root {

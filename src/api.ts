@@ -75,6 +75,14 @@ export function loadGameflowPhase() {
   return invoke<string | null>("load_gameflow_phase")
 }
 
+export function setHexWinrateRecognitionEnabled(enabled: boolean) {
+  return invoke<void>("set_hex_winrate_recognition_enabled", { enabled })
+}
+
+export function setHexWinrateCaptureMode(mode: string) {
+  return invoke<void>("set_hex_winrate_capture_mode", { mode })
+}
+
 export function loadRankedStats(puuid: string, sgpServerId?: string) {
   return invoke<RankedStatsResponse>("load_ranked_stats", { puuid, sgpServerId })
 }

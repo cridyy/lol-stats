@@ -40,15 +40,18 @@ const HISTORY_PREMADE_THRESHOLD: usize = 3;
 const PLAYER_ELO_SAMPLE_TARGET: usize = 10;
 const PLAYER_ELO_BATCH_DEPTH: usize = 100;
 const PLAYER_ELO_MAX_DEPTH: usize = 1000;
+const PLAYER_ELO_DETAIL_CONCURRENCY: usize = 4;
 const PLAYER_ELO_PARTICIPANT_CONCURRENCY: usize = 4;
 const PLAYER_ELO_OWNER_HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const PLAYER_ELO_PARTICIPANT_HTTP_TIMEOUT: Duration = Duration::from_secs(4);
 const PLAYER_ELO_PARTICIPANT_FETCH_BUDGET: Duration = Duration::from_secs(14);
 const PLAYER_ELO_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const PLAYER_ELO_ALGORITHM_VERSION: i64 = 2;
 const EXTERNAL_ELO_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const EXTERNAL_ELO_FAILURE_CACHE_TTL: Duration = Duration::from_secs(20);
 const EXTERNAL_ELO_DB_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const EXTERNAL_ELO_DB_FAILURE_CACHE_TTL: Duration = Duration::from_secs(20);
+const LZYUMI_AREA_CACHE_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const EXTERNAL_ELO_OWNER_RETRY_COUNT: usize = 3;
 const EXTERNAL_ELO_PARTICIPANT_RETRY_COUNT: usize = 1;
 const EXTERNAL_ELO_RETRY_DELAY: Duration = Duration::from_millis(1100);
@@ -305,7 +308,17 @@ pub fn clear_player_elo_cache(
     summoner: &SummonerInfo,
 ) -> AppResult<bool> {
     let cache_key = player_elo_cache_key(auth, sgp_server_id, summoner);
-    Ok(delete_db_cached_player_elo(&cache_key).unwrap_or(false))
+    let player_cache_deleted = delete_db_cached_player_elo(&cache_key).unwrap_or(false);
+    let area_cache_deleted = lzyumi_area_cache_key(
+        cache_key.sgp_server_id.as_str(),
+        summoner.game_name.as_str(),
+        summoner.tag_line.as_str(),
+        Some(summoner.display_name.as_str()),
+    )
+    .and_then(|key| delete_db_cached_lzyumi_area(&key))
+    .unwrap_or(false);
+
+    Ok(player_cache_deleted || area_cache_deleted)
 }
 
 async fn estimate_player_elo_uncached(
@@ -322,14 +335,14 @@ async fn estimate_player_elo_uncached(
     let solo_games = owner_stats
         .recent_games
         .iter()
-        .filter(|game| is_solo_game(game))
+        .filter(|game| is_player_elo_sample_game(game))
         .take(PLAYER_ELO_SAMPLE_TARGET)
         .cloned()
         .collect::<Vec<_>>();
 
     if solo_games.is_empty() {
         return Err(AppError::InvalidInput(
-            "当前角色没有可用的单人开局样本".to_string(),
+            "当前角色没有可用的海克斯大乱斗单排样本".to_string(),
         ));
     }
 
@@ -345,14 +358,26 @@ async fn estimate_player_elo_uncached(
         game_ids: HashSet::new(),
     };
 
-    for game in &solo_games {
-        let detail = load_match_detail(
-            lcu,
-            Some(auth),
-            Some(resolved_sgp_server_id.as_str()),
-            game.game_id,
-        )
-        .await?;
+    // 对局详情互相独立，有限并发可以显著缩短首次 ELO 计算时间，同时避免瞬时请求过多。
+    let detail_results = stream::iter(solo_games.iter().cloned().map(|game| {
+        let resolved_sgp_server_id = resolved_sgp_server_id.clone();
+        async move {
+            let detail = load_match_detail(
+                lcu,
+                Some(auth),
+                Some(resolved_sgp_server_id.as_str()),
+                game.game_id,
+            )
+            .await?;
+            Ok::<_, AppError>((game, detail))
+        }
+    }))
+    .buffered(PLAYER_ELO_DETAIL_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    for result in detail_results {
+        let (game, detail) = result?;
         let detail_players = detail
             .teams
             .iter()
@@ -1026,6 +1051,60 @@ fn write_db_cached_external_elo(cache_key: &str, elo: Option<f64>) {
     );
 }
 
+fn read_db_cached_lzyumi_area(cache_key: &str) -> Option<EloArea> {
+    let conn = open_cache_db()?;
+    let (stored_at_ms, area_id): (i64, i64) = conn
+        .query_row(
+            r#"
+            SELECT stored_at_ms, area_id
+            FROM elo_area_cache
+            WHERE cache_key = ?1
+            "#,
+            params![cache_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .ok()??;
+
+    if cache_age(stored_at_ms)? > LZYUMI_AREA_CACHE_TTL {
+        let _ = conn.execute(
+            "DELETE FROM elo_area_cache WHERE cache_key = ?1",
+            params![cache_key],
+        );
+        return None;
+    }
+
+    lzyumi_area_from_id(area_id.try_into().ok()?)
+}
+
+fn write_db_cached_lzyumi_area(cache_key: &str, area: &EloArea) {
+    let Some(conn) = open_cache_db() else {
+        return;
+    };
+
+    let _ = conn.execute(
+        r#"
+        INSERT INTO elo_area_cache (cache_key, area_id, stored_at_ms)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(cache_key) DO UPDATE SET
+            area_id = excluded.area_id,
+            stored_at_ms = excluded.stored_at_ms
+        "#,
+        params![cache_key, area.id as i64, unix_time_ms()],
+    );
+}
+
+fn delete_db_cached_lzyumi_area(cache_key: &str) -> Option<bool> {
+    let conn = open_cache_db()?;
+    let affected = conn
+        .execute(
+            "DELETE FROM elo_area_cache WHERE cache_key = ?1",
+            params![cache_key],
+        )
+        .ok()?;
+    Some(affected > 0)
+}
+
 fn open_cache_db() -> Option<Connection> {
     let path = cache_db_path()?;
     let parent = path.parent()?;
@@ -1113,6 +1192,12 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
             elo REAL
         );
 
+        CREATE TABLE IF NOT EXISTS elo_area_cache (
+            cache_key TEXT NOT NULL PRIMARY KEY,
+            area_id INTEGER NOT NULL,
+            stored_at_ms INTEGER NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS cache_meta (
             key TEXT PRIMARY KEY,
             value INTEGER NOT NULL
@@ -1138,6 +1223,7 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
             DELETE FROM quick_match_cache;
             DELETE FROM player_elo_cache;
             DELETE FROM external_elo_cache;
+            DELETE FROM elo_area_cache;
             "#,
         )?;
         conn.execute(
@@ -1147,6 +1233,26 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             "#,
             params![CACHE_SCHEMA_VERSION],
+        )?;
+    }
+
+    let stored_elo_algorithm_version = conn
+        .query_row(
+            "SELECT value FROM cache_meta WHERE key = 'player_elo_algorithm_version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+
+    if stored_elo_algorithm_version != Some(PLAYER_ELO_ALGORITHM_VERSION) {
+        conn.execute("DELETE FROM player_elo_cache", [])?;
+        conn.execute(
+            r#"
+            INSERT INTO cache_meta (key, value)
+            VALUES ('player_elo_algorithm_version', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            "#,
+            params![PLAYER_ELO_ALGORITHM_VERSION],
         )?;
     }
 
@@ -2426,7 +2532,7 @@ async fn load_stats_until_solo_sample(
         let solo_games = stats
             .recent_games
             .iter()
-            .filter(|game| is_solo_game(game))
+            .filter(|game| is_player_elo_sample_game(game))
             .take(PLAYER_ELO_SAMPLE_TARGET)
             .count();
         let no_more_games = stats.depth_loaded < depth;
@@ -2450,6 +2556,18 @@ fn elo_participant_key(player: &MatchDetailPlayer) -> String {
 
 fn is_solo_game(game: &RecentGame) -> bool {
     (game.premade_teammate_puuids.len()) == 0
+}
+
+fn is_player_elo_sample_game(game: &RecentGame) -> bool {
+    is_hex_aram_game(game) && is_solo_game(game)
+}
+
+fn is_hex_aram_game(game: &RecentGame) -> bool {
+    game.queue_id == 2400
+        || matches!(
+            game.game_mode.to_ascii_uppercase().as_str(),
+            "STRAWBERRY" | "KIWI"
+        )
 }
 
 fn is_solo_detail_player(player: &MatchDetailPlayer, players: &[MatchDetailPlayer]) -> bool {
@@ -2527,6 +2645,32 @@ fn lzyumi_area_for_sgp_server(sgp_server_id: &str) -> Option<EloArea> {
     Some(EloArea { id, name })
 }
 
+fn lzyumi_area_from_id(area_id: u32) -> Option<EloArea> {
+    LZYUMI_SUPPORTED_AREAS
+        .iter()
+        .find(|(id, _)| *id == area_id)
+        .map(|(id, name)| EloArea {
+            id: *id,
+            name: *name,
+        })
+}
+
+fn lzyumi_area_cache_key(
+    sgp_server_id: &str,
+    game_name: &str,
+    tag_line: &str,
+    display_name: Option<&str>,
+) -> Option<String> {
+    let normalized_id = normalized_riot_id_with_fallback(game_name, tag_line, display_name);
+    (!normalized_id.is_empty()).then(|| {
+        format!(
+            "{}:{}",
+            sgp_server_id.trim().to_ascii_uppercase(),
+            normalized_id
+        )
+    })
+}
+
 fn is_lzyumi_supported_formal_server(sgp_server_id: &str) -> bool {
     matches!(
         sgp_server_id,
@@ -2587,6 +2731,26 @@ async fn resolve_lzyumi_area_for_summoner(
         )));
     }
 
+    let cache_key = lzyumi_area_cache_key(sgp_server_id, game_name, tag_line, display_name);
+    if let Some(cached_area) = cache_key.as_deref().and_then(read_db_cached_lzyumi_area) {
+        let elo = fetch_external_aram_elo_with_options(
+            &cached_area,
+            game_name,
+            tag_line,
+            display_name,
+            owner_external_elo_fetch_options(),
+        )
+        .await?;
+
+        if elo.is_some() {
+            return Ok(cached_area);
+        }
+
+        if let Some(cache_key) = cache_key.as_deref() {
+            delete_db_cached_lzyumi_area(cache_key);
+        }
+    }
+
     for area in candidates {
         let elo = fetch_external_aram_elo_with_options(
             &area,
@@ -2598,6 +2762,9 @@ async fn resolve_lzyumi_area_for_summoner(
         .await?;
 
         if elo.is_some() {
+            if let Some(cache_key) = cache_key.as_deref() {
+                write_db_cached_lzyumi_area(cache_key, &area);
+            }
             return Ok(area);
         }
     }
@@ -3528,6 +3695,25 @@ mod tests {
         let (sign, sign_str) = lzyumi_sign_components_at(0);
         assert_eq!(sign_str, "1180033333");
         assert_eq!(sign, format!("{:x}", md5::compute("dld01o01u08d00o00dld")));
+    }
+
+    #[test]
+    fn player_elo_samples_only_hex_aram_solo_games() {
+        let mut game = sample_recent_game(1, 266);
+        assert!(!is_player_elo_sample_game(&game));
+
+        game.queue_id = 2400;
+        game.game_mode = "STRAWBERRY".to_string();
+        assert!(is_player_elo_sample_game(&game));
+
+        game.premade_teammate_puuids
+            .push("premade-puuid".to_string());
+        assert!(!is_player_elo_sample_game(&game));
+
+        game.premade_teammate_puuids.clear();
+        game.queue_id = 1700;
+        game.game_mode = "CHERRY".to_string();
+        assert!(!is_player_elo_sample_game(&game));
     }
 
     #[test]

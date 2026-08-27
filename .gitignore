@@ -15,6 +15,7 @@ dist-ssr
 # Rust/Tauri output
 target
 src-tauri/target
+src-tauri/target-check
 gen/schemas
 
 # Editor directories and files

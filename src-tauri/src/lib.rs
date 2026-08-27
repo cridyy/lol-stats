@@ -19,6 +19,8 @@ pub fn run() {
             commands::load_current_ranked_stats,
             commands::load_gameflow_phase,
             commands::load_game_assets,
+            commands::set_hex_winrate_recognition_enabled,
+            commands::set_hex_winrate_capture_mode,
             commands::load_ranked_stats,
             commands::load_lcu_asset,
             commands::load_lcu_assets,

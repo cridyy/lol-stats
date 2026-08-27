@@ -657,6 +657,19 @@ pub async fn load_gameflow_phase() -> Result<Option<String>, String> {
     Ok(clients.lcu.gameflow_phase().await.ok())
 }
 
+/// 开关局内海克斯收益率识别服务。
+#[tauri::command]
+pub fn set_hex_winrate_recognition_enabled(enabled: bool) -> Result<(), String> {
+    crate::services::hex_winrate::set_enabled(enabled);
+    Ok(())
+}
+
+/// 设置局内海克斯收益率识别的截图来源。
+#[tauri::command]
+pub fn set_hex_winrate_capture_mode(mode: String) -> Result<(), String> {
+    crate::services::hex_winrate::set_capture_mode(&mode)
+}
+
 #[tauri::command]
 pub async fn load_ranked_stats(
     puuid: String,
