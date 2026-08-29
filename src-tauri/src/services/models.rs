@@ -10,7 +10,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ClientAuth {
     pub port: u16,
+    /// `--app-pid`，通常是 LeagueClient.exe 的 PID，用于 LCU 连接相关信息。
     pub pid: u32,
+    /// 枚举到命令行的 LeagueClientUx.exe PID，用于定位客户端窗口。
+    #[serde(default, skip_serializing)]
+    pub ux_pid: u32,
     pub auth_token: String,
     pub region: String,
     pub rso_platform_id: String,
@@ -784,9 +788,35 @@ pub struct GameflowPlayer {
 #[serde(rename_all = "camelCase")]
 pub struct ChampSelectSession {
     #[serde(default)]
+    pub game_id: u64,
+    #[serde(default)]
     pub my_team: Vec<ChampSelectPlayer>,
     #[serde(default)]
     pub their_team: Vec<ChampSelectPlayer>,
+    #[serde(default)]
+    pub allow_subset_champion_picks: bool,
+    #[serde(default)]
+    pub bench_enabled: bool,
+    #[serde(default)]
+    pub bench_champions: Vec<BenchChampion>,
+    #[serde(default)]
+    pub timer: ChampSelectTimer,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampSelectTimer {
+    #[serde(default)]
+    pub phase: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchChampion {
+    #[serde(default)]
+    pub champion_id: u32,
+    #[serde(default)]
+    pub is_priority: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

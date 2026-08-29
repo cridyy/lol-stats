@@ -8,6 +8,7 @@ import {
   setChatAvailability,
   setChatStatusMessage,
   setGameSettingsLocked,
+  setQuickBenchSwapEnabled,
 } from "../api"
 import {
   chatStatusLockAvailability,
@@ -20,6 +21,7 @@ import { notifyKey } from "../notifications"
 import {
   AUTO_ACCEPT_ENABLED_KEY,
   GAME_SETTINGS_LOCKED_KEY,
+  QUICK_BENCH_SWAP_ENABLED_KEY,
   readBooleanSetting,
   writeBooleanSetting,
 } from "../toolSettings"
@@ -29,7 +31,9 @@ const props = defineProps<{ active: boolean }>()
 const notify = inject(notifyKey, () => 0)
 const autoAcceptEnabled = ref(readBooleanSetting(AUTO_ACCEPT_ENABLED_KEY))
 const settingsLocked = ref(readBooleanSetting(GAME_SETTINGS_LOCKED_KEY))
+const quickBenchSwapEnabled = ref(readBooleanSetting(QUICK_BENCH_SWAP_ENABLED_KEY))
 const settingsLockBusy = ref(false)
+const quickBenchSwapBusy = ref(false)
 const exitBusy = ref(false)
 const chatLoading = ref(false)
 const availabilitySaving = ref(false)
@@ -68,6 +72,26 @@ function errorMessage(error: unknown) {
 function toggleAutoAccept() {
   autoAcceptEnabled.value = !autoAcceptEnabled.value
   writeBooleanSetting(AUTO_ACCEPT_ENABLED_KEY, autoAcceptEnabled.value)
+}
+
+async function toggleQuickBenchSwap() {
+  if (quickBenchSwapBusy.value) return
+  const next = !quickBenchSwapEnabled.value
+  quickBenchSwapBusy.value = true
+  try {
+    await setQuickBenchSwapEnabled(next)
+    quickBenchSwapEnabled.value = next
+    writeBooleanSetting(QUICK_BENCH_SWAP_ENABLED_KEY, next)
+  } catch (error) {
+    notify({
+      kind: "error",
+      title: "快速交换设置失败",
+      message: errorMessage(error),
+      duration: 7000,
+    })
+  } finally {
+    quickBenchSwapBusy.value = false
+  }
 }
 
 async function loadClientToolState() {
@@ -210,6 +234,7 @@ async function saveSignature() {
     signatureSaving.value = false
   }
 }
+
 </script>
 
 <template>
@@ -232,6 +257,23 @@ async function saveSignature() {
         role="switch"
         :aria-checked="autoAcceptEnabled"
         @click="toggleAutoAccept"
+      >
+        <span></span>
+      </button>
+    </div>
+
+    <div class="tool-row">
+      <div class="tool-title">
+        <strong>快速交换备战英雄</strong>
+        <span>{{ quickBenchSwapEnabled ? "保留原点击，100ms 后自动兜底交换" : "已关闭" }}</span>
+      </div>
+      <button
+        class="switch-control"
+        :class="{ active: quickBenchSwapEnabled }"
+        role="switch"
+        :aria-checked="quickBenchSwapEnabled"
+        :disabled="quickBenchSwapBusy"
+        @click="toggleQuickBenchSwap"
       >
         <span></span>
       </button>

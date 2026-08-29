@@ -5,6 +5,10 @@ mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|_| {
+            services::global_baselines::start_daily_update_check();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
             commands::accept_ready_check,
@@ -21,6 +25,7 @@ pub fn run() {
             commands::load_game_assets,
             commands::set_hex_winrate_recognition_enabled,
             commands::set_hex_winrate_capture_mode,
+            commands::set_quick_bench_swap_enabled,
             commands::load_ranked_stats,
             commands::load_lcu_asset,
             commands::load_lcu_assets,

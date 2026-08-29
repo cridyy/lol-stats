@@ -38,6 +38,7 @@ pub struct LcuClient {
     http: Client,
     base_url: String,
     auth_header: String,
+    ux_pid: u32,
 }
 
 impl LcuClient {
@@ -46,7 +47,17 @@ impl LcuClient {
             http: https_client()?,
             base_url: format!("https://127.0.0.1:{}", auth.port),
             auth_header: basic_auth_header(&auth.auth_token),
+            ux_pid: if auth.ux_pid > 0 {
+                auth.ux_pid
+            } else {
+                auth.pid
+            },
         })
+    }
+
+    /// `LeagueClientUx.exe` 的 PID，用于定位选人阶段的客户端窗口。
+    pub fn ux_pid(&self) -> u32 {
+        self.ux_pid
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> AppResult<T> {
@@ -232,6 +243,21 @@ impl LcuClient {
             .await
     }
 
+    /// 直接请求客户端交换当前备战席中的英雄。
+    ///
+    /// 客户端 UI 自己会展示交换动画或短暂冷却；这里调用的则是同一项 LCU 操作，
+    /// 服务端仍会对当前阶段和英雄可交换性做最终校验。
+    pub async fn bench_swap(&self, champion_id: u32) -> AppResult<()> {
+        if champion_id == 0 {
+            return Err(AppError::InvalidInput("英雄 ID 不能为空".to_string()));
+        }
+
+        self.post_empty(&format!(
+            "/lol-champ-select/v1/session/bench/swap/{champion_id}"
+        ))
+        .await
+    }
+
     pub async fn chat_me(&self) -> AppResult<ChatMe> {
         self.get_json("/lol-chat/v1/me").await
     }
@@ -270,6 +296,11 @@ impl LcuClient {
 
     pub async fn champ_select_session(&self) -> AppResult<Option<ChampSelectSession>> {
         self.get_optional_json("/lol-champ-select/v1/session").await
+    }
+
+    pub async fn subset_champion_list(&self) -> AppResult<Option<Vec<u32>>> {
+        self.get_optional_json("/lol-lobby-team-builder/champ-select/v1/subset-champion-list")
+            .await
     }
 
     pub async fn match_history(

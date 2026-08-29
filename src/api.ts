@@ -83,6 +83,10 @@ export function setHexWinrateCaptureMode(mode: string) {
   return invoke<void>("set_hex_winrate_capture_mode", { mode })
 }
 
+export function setQuickBenchSwapEnabled(enabled: boolean) {
+  return invoke<void>("set_quick_bench_swap_enabled", { enabled })
+}
+
 export function loadRankedStats(puuid: string, sgpServerId?: string) {
   return invoke<RankedStatsResponse>("load_ranked_stats", { puuid, sgpServerId })
 }

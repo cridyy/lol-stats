@@ -670,6 +670,16 @@ pub fn set_hex_winrate_capture_mode(mode: String) -> Result<(), String> {
     crate::services::hex_winrate::set_capture_mode(&mode)
 }
 
+/// 开关顶部备战席英雄的快速交换。
+///
+/// 开启后仅在英雄联盟客户端位于前台、处于选人阶段且用户实际点击顶部备战席英雄时，
+/// 直接调用 LCU 交换接口。关闭后不再轮询选人状态或读取鼠标按键。
+#[tauri::command]
+pub fn set_quick_bench_swap_enabled(enabled: bool) -> Result<(), String> {
+    crate::services::quick_bench_swap::set_enabled(enabled);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn load_ranked_stats(
     puuid: String,

@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsWindowVisible,
 };
 
-use super::wgc;
+use super::{dxgi, wgc};
 
 pub(crate) struct CapturedFrame<'a> {
     pub(crate) source: CaptureSource,
@@ -29,15 +29,18 @@ pub(crate) struct CapturedFrame<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureSource {
     Wgc,
+    Dxgi,
     DesktopDc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureMode {
-    /// WGC -> 桌面 DC（仅游戏前台）
+    /// WGC -> DXGI -> 桌面 DC（仅游戏前台）
     Auto,
     /// Windows Graphics Capture 窗口捕获
     Wgc,
+    /// DXGI Desktop Duplication GPU 截图
+    Dxgi,
     /// 旧式桌面 DC，只能拿到屏幕最上层的实际画面
     DesktopDc,
 }
@@ -201,6 +204,9 @@ pub(crate) struct GameWindowCapture {
     wgc_last_seq: u64,
     next_wgc_retry: Instant,
     wgc_pixels: Vec<u8>,
+    dxgi: Option<dxgi::DxgiState>,
+    next_dxgi_retry: Instant,
+    dxgi_pixels: Vec<u8>,
     desktop: DesktopDcCapture,
     last_search: Option<Instant>,
 }
@@ -213,6 +219,9 @@ impl GameWindowCapture {
             wgc_last_seq: 0,
             next_wgc_retry: Instant::now(),
             wgc_pixels: Vec::new(),
+            dxgi: None,
+            next_dxgi_retry: Instant::now(),
+            dxgi_pixels: Vec::new(),
             desktop: DesktopDcCapture::new(),
             last_search: None,
         }
@@ -239,7 +248,9 @@ impl GameWindowCapture {
         }
 
         let can_use_desktop = mode == CaptureMode::DesktopDc
-            || (mode == CaptureMode::Auto && is_foreground_window(hwnd));
+            || (matches!(mode, CaptureMode::Auto | CaptureMode::Dxgi)
+                && is_foreground_window(hwnd));
+        let mut dxgi_error = None::<String>;
 
         if matches!(mode, CaptureMode::Auto | CaptureMode::Wgc)
             && self.wgc.is_none()
@@ -251,7 +262,7 @@ impl GameWindowCapture {
                     self.wgc_last_seq = 0;
                 }
                 Err(_) => {
-                    // WGC 下一秒重试，自动模式期间可回退桌面 DC，避免识别线程忙等。
+                    // WGC 下一秒重试；自动模式会继续尝试 DXGI 和桌面 DC，避免识别线程忙等。
                     self.next_wgc_retry = Instant::now() + Duration::from_secs(2);
                 }
             }
@@ -285,6 +296,69 @@ impl GameWindowCapture {
             }
         }
 
+        if matches!(mode, CaptureMode::Auto | CaptureMode::Dxgi) {
+            let dxgi_needs_rebuild = match self.dxgi.as_ref() {
+                Some(state) => match state.matches_window(hwnd as isize) {
+                    Ok(matches) => !matches,
+                    Err(error) => {
+                        dxgi_error = Some(format!("DXGI 显示器检查失败：{error}"));
+                        true
+                    }
+                },
+                None => true,
+            };
+            if dxgi_needs_rebuild && self.dxgi.is_some() {
+                self.dxgi = None;
+                self.dxgi_pixels.clear();
+                self.next_dxgi_retry = Instant::now();
+            }
+
+            if self.dxgi.is_none() && Instant::now() >= self.next_dxgi_retry {
+                match dxgi::DxgiState::new(hwnd as isize) {
+                    Ok(state) => {
+                        self.dxgi = Some(state);
+                        dxgi_error = None;
+                    }
+                    Err(error) => {
+                        dxgi_error = Some(format!("DXGI 初始化失败：{error}"));
+                        self.next_dxgi_retry = Instant::now() + Duration::from_secs(2);
+                    }
+                }
+            }
+
+            if let Some(state) = self.dxgi.as_mut() {
+                match state.capture_into(
+                    bounds.origin_x,
+                    bounds.origin_y,
+                    bounds.width,
+                    bounds.height,
+                    80,
+                    &mut self.dxgi_pixels,
+                ) {
+                    Ok(Some(frame)) if frame.width >= 960 && frame.height >= 540 => {
+                        let length = frame.width as usize * frame.height as usize * 4;
+                        if self.dxgi_pixels.len() >= length {
+                            return Ok(Some(CapturedFrame {
+                                source: CaptureSource::Dxgi,
+                                origin_x: frame.origin_x,
+                                origin_y: frame.origin_y,
+                                width: frame.width,
+                                height: frame.height,
+                                bgra: &self.dxgi_pixels[..length],
+                            }));
+                        }
+                    }
+                    Ok(Some(_)) | Ok(None) => {}
+                    Err(error) => {
+                        dxgi_error = Some(error.to_string());
+                        self.dxgi = None;
+                        self.dxgi_pixels.clear();
+                        self.next_dxgi_retry = Instant::now() + Duration::from_secs(2);
+                    }
+                }
+            }
+        }
+
         if can_use_desktop && self.desktop.capture(bounds)? {
             let bgra = self
                 .desktop
@@ -298,6 +372,9 @@ impl GameWindowCapture {
                 height: bounds.height,
                 bgra,
             }));
+        }
+        if let Some(error) = dxgi_error {
+            return Err(format!("DXGI 截图失败：{error}"));
         }
         Ok(None)
     }
@@ -331,6 +408,9 @@ impl GameWindowCapture {
         self.wgc_last_seq = 0;
         self.wgc_pixels.clear();
         self.next_wgc_retry = Instant::now();
+        self.dxgi = None;
+        self.dxgi_pixels.clear();
+        self.next_dxgi_retry = Instant::now();
         self.desktop.release();
         self.hwnd = null_mut();
     }
@@ -490,6 +570,39 @@ mod tests {
 
         println!(
             "wgc capture saved: source={:?} origin=({}, {}) size={}x{} path={}",
+            frame.source,
+            frame.origin_x,
+            frame.origin_y,
+            frame.width,
+            frame.height,
+            output.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "手动触发：只验证英雄联盟 DXGI 截图并导出 PNG"]
+    fn manual_capture_dxgi_to_png() {
+        let mut capture = GameWindowCapture::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let frame = loop {
+            match capture
+                .capture(CaptureMode::Dxgi)
+                .expect("DXGI 截图调用失败")
+            {
+                Some(frame) => break frame,
+                None if Instant::now() < deadline => thread::sleep(Duration::from_millis(80)),
+                None => panic!("DXGI 在 3 秒内没有返回有效游戏窗口画面"),
+            }
+        };
+        let output = save_bgra_png(
+            frame.bgra,
+            frame.width,
+            frame.height,
+            "dxgi-window-capture.png",
+        );
+
+        println!(
+            "dxgi capture saved: source={:?} origin=({}, {}) size={}x{} path={}",
             frame.source,
             frame.origin_x,
             frame.origin_y,

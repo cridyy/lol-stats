@@ -30,9 +30,11 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW, RegisterClassW,
-    ShowWindow, TranslateMessage, UpdateLayeredWindow, HTTRANSPARENT, MA_NOACTIVATE, MSG, SW_HIDE,
-    SW_SHOWNOACTIVATE, ULW_ALPHA, WM_APP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, HTTRANSPARENT, HWND_TOPMOST,
+    MA_NOACTIVATE, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_APP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 use windows_numerics::Vector2;
 
@@ -431,6 +433,17 @@ unsafe fn apply_snapshot(hwnd: HWND, resources: &mut Option<RenderResources>) {
         COLORREF(0),
         Some(&blend),
         ULW_ALPHA,
+    );
+    // League 在全屏优化或无边框全屏切换时可能会重新占据顶层。创建窗口时的
+    // WS_EX_TOPMOST 不足以保证后续层级，因此每次叠层刷新后都重新置顶。
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_TOPMOST),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
     );
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 }

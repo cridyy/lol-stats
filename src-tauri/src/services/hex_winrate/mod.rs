@@ -2,9 +2,13 @@ mod aramkit;
 #[cfg(target_os = "windows")]
 mod capture;
 #[cfg(target_os = "windows")]
+pub(crate) mod client_window;
+#[cfg(target_os = "windows")]
 mod d3d11;
 #[cfg(target_os = "windows")]
 mod detector;
+#[cfg(target_os = "windows")]
+mod dxgi;
 #[cfg(target_os = "windows")]
 mod ncnn;
 #[cfg(target_os = "windows")]
@@ -52,6 +56,7 @@ const OCR_REPLACEMENT_CONFIRMATIONS: u8 = 2;
 const CAPTURE_MODE_AUTO: u8 = 0;
 const CAPTURE_MODE_WGC: u8 = 2;
 const CAPTURE_MODE_DESKTOP_DC: u8 = 3;
+const CAPTURE_MODE_DXGI: u8 = 4;
 
 #[cfg(target_os = "windows")]
 fn runtime_log(message: impl AsRef<str>) {
@@ -89,7 +94,7 @@ impl Controller {
         Self {
             enabled: AtomicBool::new(false),
             worker_started: AtomicBool::new(false),
-            capture_mode: AtomicU8::new(CAPTURE_MODE_DESKTOP_DC),
+            capture_mode: AtomicU8::new(CAPTURE_MODE_DXGI),
         }
     }
 
@@ -136,8 +141,9 @@ pub(crate) fn set_capture_mode(mode: &str) -> Result<(), String> {
         // 兼容旧版本已经写入 localStorage 的配置；窗口 DC 已移除，降级为桌面 DC。
         "window-dc" => CAPTURE_MODE_DESKTOP_DC,
         "wgc" => CAPTURE_MODE_WGC,
+        "dxgi" => CAPTURE_MODE_DXGI,
         "desktop-dc" => CAPTURE_MODE_DESKTOP_DC,
-        _ => return Err("不支持的海克斯截图模式，可选：auto、wgc、desktop-dc".to_string()),
+        _ => return Err("不支持的海克斯截图模式，可选：dxgi、wgc、auto、desktop-dc".to_string()),
     };
     CONTROLLER.capture_mode.store(value, Ordering::SeqCst);
     Ok(())
@@ -147,6 +153,7 @@ pub(crate) fn set_capture_mode(mode: &str) -> Result<(), String> {
 fn current_capture_mode() -> capture::CaptureMode {
     match CONTROLLER.capture_mode.load(Ordering::SeqCst) {
         CAPTURE_MODE_WGC => capture::CaptureMode::Wgc,
+        CAPTURE_MODE_DXGI => capture::CaptureMode::Dxgi,
         CAPTURE_MODE_DESKTOP_DC => capture::CaptureMode::DesktopDc,
         _ => capture::CaptureMode::Auto,
     }
@@ -180,6 +187,10 @@ async fn recognition_loop() {
     let mut current_player = CurrentPlayerIdentity::default();
     let mut last_gameflow_poll = Instant::now() - GAMEFLOW_POLL_INTERVAL;
     let mut session_info: Option<ActiveSession> = None;
+    let mut champ_select_info: Option<ChampSelectState> = None;
+    let mut champion_rankings_task = Some(tokio::spawn(aramkit::load_champion_rankings_once()));
+    let mut champion_rankings = None;
+    let mut selection_overlay_key = None::<SelectionOverlayKey>;
     let mut capture = capture::GameWindowCapture::new();
     let mut recognizer: Option<ocr::PpOcrRec> = None;
     // 本地词表中的 ID 可能是旧版本 ID；启动识别后用当前 LCU 清单补齐名称映射。
@@ -197,23 +208,47 @@ async fn recognition_loop() {
     let mut last_capture_mode = current_capture_mode();
 
     loop {
+        if champion_rankings_task
+            .as_ref()
+            .is_some_and(|task| task.is_finished())
+        {
+            let task = champion_rankings_task
+                .take()
+                .expect("已确认英雄总表任务存在");
+            match task.await {
+                Ok(Ok(table)) => {
+                    runtime_log(format!("AramKit 英雄总表加载完成：{} 个英雄", table.len()));
+                    champion_rankings = Some(table);
+                }
+                Ok(Err(error)) => {
+                    runtime_log(format!("AramKit 英雄总表读取失败：{error}"));
+                }
+                Err(error) => {
+                    let message = format!("英雄总表任务异常终止：{error}");
+                    runtime_log(&message);
+                }
+            }
+        }
+
         if !CONTROLLER.enabled.load(Ordering::SeqCst) {
             overlay::hide();
+            selection_overlay_key = None;
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
         }
 
         if last_gameflow_poll.elapsed() >= GAMEFLOW_POLL_INTERVAL {
             last_gameflow_poll = Instant::now();
-            match refresh_active_session(&mut lcu, &mut current_player).await {
-                Ok(next_session) => {
+            match refresh_phase_snapshot(&mut lcu, &mut current_player).await {
+                Ok(snapshot) => {
                     last_client_error = None;
-                    let changed = match (&session_info, &next_session) {
+                    let next_session = snapshot.active;
+                    let active_changed = match (&session_info, &next_session) {
                         (Some(previous), Some(next)) => previous.key() != next.key(),
                         (None, None) => false,
                         _ => true,
                     };
-                    if changed {
+                    if active_changed {
                         if let Some(next) = next_session.as_ref() {
                             runtime_log(format!(
                                 "进入识别 session：game_id={} champion_id={}",
@@ -233,6 +268,40 @@ async fn recognition_loop() {
                         overlay::hide();
                         session_info = next_session;
                     }
+
+                    // 游戏阶段仍是 ChampSelect 时，选人 session 接口可能在页面过渡的
+                    // 极短窗口返回 404/422。此时保留上一帧，避免已显示的候选卡胜率闪灭。
+                    if !snapshot.retain_champ_select || snapshot.champ_select.is_some() {
+                        let next_champ_select = snapshot.champ_select;
+                        let champ_select_changed = match (&champ_select_info, &next_champ_select) {
+                            (Some(previous), Some(next)) => previous != next,
+                            (None, None) => false,
+                            _ => true,
+                        };
+                        if champ_select_changed {
+                            if let Some(next) = next_champ_select.as_ref() {
+                                let (visible_layout, visible_ids) = next
+                                    .visible_cards()
+                                    .map(|(ids, layout)| (selection_layout_name(layout), ids))
+                                    .unwrap_or(("无", Vec::new()));
+                                runtime_log(format!(
+                                    "进入选人胜率 session：game_id={} 阶段={} 候选={} 顶部={} 画面={}（原始候选顺序：{:?}，显示顺序：{:?}）",
+                                    next.game_id,
+                                    next.timer_phase,
+                                    next.candidate_ids.len(),
+                                    next.bench_ids.len(),
+                                    visible_layout,
+                                    next.candidate_ids,
+                                    visible_ids,
+                                ));
+                            } else {
+                                runtime_log("当前没有可显示的选人英雄胜率 session");
+                            }
+                            champ_select_info = next_champ_select;
+                            selection_overlay_key = None;
+                            overlay::hide();
+                        }
+                    }
                 }
                 Err(error) => {
                     // 客户端重启或短暂切换阶段时，保留线程并在下一轮重新发现连接。
@@ -247,12 +316,50 @@ async fn recognition_loop() {
                     next_augment_assets_retry = Instant::now();
                     current_player.clear();
                     session_info = None;
+                    champ_select_info = None;
                     recognizer = None;
                     cards = std::array::from_fn(|_| TrackedCard::default());
                     last_frame_signature = None;
+                    selection_overlay_key = None;
                     overlay::hide();
                 }
             }
+        }
+
+        if session_info.is_none() {
+            let mut rendered = false;
+            if let (Some(select), Some(table), Some(client)) = (
+                champ_select_info.as_ref(),
+                champion_rankings.as_ref(),
+                lcu.as_ref(),
+            ) {
+                if let Some(bounds) = client_window::find_client_window(client.ux_pid()) {
+                    if client_window::is_foreground(&bounds) {
+                        let labels =
+                            champ_select_overlay_labels(select, table, bounds.width, bounds.height);
+                        if !labels.is_empty() {
+                            let key = SelectionOverlayKey::new(bounds, &labels);
+                            if selection_overlay_key.as_ref() != Some(&key) {
+                                overlay::show(
+                                    bounds.origin_x,
+                                    bounds.origin_y,
+                                    bounds.width,
+                                    bounds.height,
+                                    labels,
+                                );
+                                selection_overlay_key = Some(key);
+                            }
+                            rendered = true;
+                        }
+                    }
+                }
+            }
+            if !rendered && (selection_overlay_key.take().is_some() || champ_select_info.is_none())
+            {
+                overlay::hide();
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
         }
 
         let Some(active) = session_info.as_mut() else {
@@ -510,17 +617,38 @@ async fn recognition_loop() {
 }
 
 #[cfg(target_os = "windows")]
-async fn refresh_active_session(
+#[derive(Default)]
+struct PhaseSnapshot {
+    active: Option<ActiveSession>,
+    champ_select: Option<ChampSelectState>,
+    /// 当 gameflow 仍在选人阶段、但 `/lol-champ-select/v1/session` 短暂不可读时，
+    /// 不覆盖上一帧的选人状态。
+    retain_champ_select: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChampSelectState {
+    game_id: u64,
+    timer_phase: String,
+    allow_subset_champion_picks: bool,
+    bench_enabled: bool,
+    candidate_ids: Vec<u32>,
+    bench_ids: Vec<u32>,
+}
+
+#[cfg(target_os = "windows")]
+async fn refresh_phase_snapshot(
     lcu: &mut Option<LcuClient>,
     current_player: &mut CurrentPlayerIdentity,
-) -> Result<Option<ActiveSession>, String> {
+) -> Result<PhaseSnapshot, String> {
     if lcu.is_none() {
         let auth = discover_primary_client().map_err(|error| error.to_string())?;
         *lcu = Some(LcuClient::new(&auth).map_err(|error| error.to_string())?);
         current_player.clear();
     }
     let Some(client) = lcu.as_ref() else {
-        return Ok(None);
+        return Ok(PhaseSnapshot::default());
     };
 
     let session = match client.gameflow_session().await {
@@ -531,10 +659,66 @@ async fn refresh_active_session(
         }
     };
     let Some(session) = session else {
-        return Ok(None);
+        return Ok(PhaseSnapshot::default());
     };
+
+    if session.phase.eq_ignore_ascii_case("ChampSelect") {
+        if !is_hex_aram(&session) {
+            return Ok(PhaseSnapshot::default());
+        }
+
+        let champ_select = match client.champ_select_session().await {
+            Ok(session) => session,
+            Err(error) => {
+                // 选人接口在阶段切换的极短窗口可能返回 404/422；这不代表 LCU
+                // 连接失效，保留下一轮重试，避免整个识别线程反复重建客户端。
+                runtime_log(format!("选人 session 暂不可用，下一轮重试：{error}"));
+                return Ok(PhaseSnapshot {
+                    retain_champ_select: true,
+                    ..PhaseSnapshot::default()
+                });
+            }
+        };
+        let Some(champ_select) = champ_select else {
+            runtime_log("选人 session 暂未创建，下一轮重试");
+            return Ok(PhaseSnapshot {
+                retain_champ_select: true,
+                ..PhaseSnapshot::default()
+            });
+        };
+
+        // BAN_PICK 阶段的 2/3 张候选卡来自这个接口；FINALIZATION 阶段则
+        // 主要使用 session 中的 benchChampions。接口短暂不可用时保留顶部列表。
+        let candidate_ids = client
+            .subset_champion_list()
+            .await
+            .ok()
+            .flatten()
+            .map(|ids| unique_champion_ids(ids.into_iter()))
+            .unwrap_or_default();
+        let bench_ids = unique_champion_ids(
+            champ_select
+                .bench_champions
+                .into_iter()
+                .map(|champion| champion.champion_id),
+        );
+
+        return Ok(PhaseSnapshot {
+            active: None,
+            champ_select: Some(ChampSelectState {
+                game_id: champ_select.game_id.max(session.game_data.game_id),
+                timer_phase: champ_select.timer.phase,
+                allow_subset_champion_picks: champ_select.allow_subset_champion_picks,
+                bench_enabled: champ_select.bench_enabled,
+                candidate_ids,
+                bench_ids,
+            }),
+            retain_champ_select: false,
+        });
+    }
+
     if !ACTIVE_PHASES.contains(&session.phase.as_str()) || !is_hex_aram(&session) {
-        return Ok(None);
+        return Ok(PhaseSnapshot::default());
     }
 
     if current_player.needs_refresh() {
@@ -545,15 +729,30 @@ async fn refresh_active_session(
     }
     let champion_id = current_champion_id(&session, current_player).unwrap_or_default();
     if champion_id == 0 {
-        return Ok(None);
+        return Ok(PhaseSnapshot::default());
     }
 
-    Ok(Some(ActiveSession {
-        game_id: session.game_data.game_id,
-        champion_id,
-        stats: None,
-        next_stats_retry: Instant::now(),
-    }))
+    Ok(PhaseSnapshot {
+        active: Some(ActiveSession {
+            game_id: session.game_data.game_id,
+            champion_id,
+            stats: None,
+            next_stats_retry: Instant::now(),
+        }),
+        champ_select: None,
+        retain_champ_select: false,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn unique_champion_ids(ids: impl IntoIterator<Item = u32>) -> Vec<u32> {
+    let mut result = Vec::new();
+    for id in ids {
+        if id > 0 && !result.contains(&id) {
+            result.push(id);
+        }
+    }
+    result
 }
 
 #[cfg(target_os = "windows")]
@@ -667,6 +866,169 @@ fn is_hex_aram(session: &GameflowSession) -> bool {
                 .as_str(),
             "STRAWBERRY" | "KIWI"
         )
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+enum SelectionCardLayout {
+    Candidate,
+    Bench,
+}
+
+#[cfg(target_os = "windows")]
+fn selection_layout_name(layout: SelectionCardLayout) -> &'static str {
+    match layout {
+        SelectionCardLayout::Candidate => "候选卡",
+        SelectionCardLayout::Bench => "顶部可用英雄",
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn candidate_screen_order(mut ids: Vec<u32>) -> Vec<u32> {
+    // `subset-champion-list` 在三卡时的中间/右侧顺序与画面相反：接口为
+    // 1、3、2，屏幕为 1、2、3。两卡则已与屏幕顺序一致。
+    if ids.len() == 3 {
+        ids.swap(1, 2);
+    }
+    ids
+}
+
+#[cfg(target_os = "windows")]
+impl ChampSelectState {
+    fn visible_cards(&self) -> Option<(Vec<u32>, SelectionCardLayout)> {
+        let is_ban_pick = self.timer_phase.eq_ignore_ascii_case("BAN_PICK");
+        if is_ban_pick {
+            // 旧客户端偶尔不返回 allowSubsetChampionPicks / benchEnabled，但候选
+            // 接口本身的 2/3 个有效英雄已经足够说明当前画面是抽卡界面。
+            if matches!(self.candidate_ids.len(), 2 | 3) {
+                return Some((
+                    candidate_screen_order(self.candidate_ids.clone()),
+                    SelectionCardLayout::Candidate,
+                ));
+            }
+
+            // 候选接口偶发短暂空结果时，不应退回到顶部备战席坐标，否则胜率会
+            // 绘制到当前并不存在的英雄格上。下一轮拿到 2/3 张候选后再显示。
+            return None;
+        }
+
+        if self.bench_enabled && !self.bench_ids.is_empty() {
+            return Some((
+                self.bench_ids.iter().copied().take(10).collect(),
+                SelectionCardLayout::Bench,
+            ));
+        }
+
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn selection_label_position(
+    layout: SelectionCardLayout,
+    index: usize,
+    card_count: usize,
+) -> Option<(f32, f32)> {
+    match layout {
+        SelectionCardLayout::Candidate => {
+            let x_ratio = match card_count {
+                2 => [0.4152, 0.5848].get(index).copied(),
+                3 => [0.3333, 0.5, 0.6667].get(index).copied(),
+                _ => None,
+            }?;
+            Some((x_ratio, 0.638))
+        }
+        // 1280px 客户端中，十个顶部格的中心分别位于 x=379、438、496...906。
+        // 坐标随客户区缩放，文字落在图标正下方、两侧状态条正上方。
+        SelectionCardLayout::Bench if index < 10 => Some((0.2961 + index as f32 * 0.04575, 0.096)),
+        SelectionCardLayout::Bench => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn champ_select_overlay_labels(
+    state: &ChampSelectState,
+    table: &aramkit::ChampionWinrateTable,
+    width: i32,
+    height: i32,
+) -> Vec<overlay::OverlayLabel> {
+    let Some((champion_ids, layout)) = state.visible_cards() else {
+        return Vec::new();
+    };
+    if width <= 0 || height <= 0 {
+        return Vec::new();
+    }
+    let card_count = champion_ids.len();
+
+    champion_ids
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, champion_id)| {
+            let win_rate = table.win_rate(champion_id)?;
+            let (x_ratio, y_ratio) = selection_label_position(layout, index, card_count)?;
+            Some(overlay::OverlayLabel {
+                center_x: (width as f32 * x_ratio).round() as i32,
+                y: (height as f32 * y_ratio).round() as i32,
+                text: format!("{:.1}%", win_rate * 100.0),
+                tone: if win_rate >= 0.5 {
+                    overlay::OverlayLabelTone::Positive
+                } else {
+                    overlay::OverlayLabelTone::Negative
+                },
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, PartialEq, Eq)]
+struct SelectionOverlayKey {
+    hwnd: isize,
+    origin_x: i32,
+    origin_y: i32,
+    width: i32,
+    height: i32,
+    labels: Vec<SelectionOverlayLabelKey>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, PartialEq, Eq)]
+struct SelectionOverlayLabelKey {
+    center_x: i32,
+    y: i32,
+    text: String,
+    tone: u8,
+}
+
+#[cfg(target_os = "windows")]
+impl SelectionOverlayKey {
+    fn new(bounds: client_window::ClientWindowBounds, labels: &[overlay::OverlayLabel]) -> Self {
+        Self {
+            hwnd: bounds.hwnd as isize,
+            origin_x: bounds.origin_x,
+            origin_y: bounds.origin_y,
+            width: bounds.width,
+            height: bounds.height,
+            labels: labels
+                .iter()
+                .map(|label| SelectionOverlayLabelKey {
+                    center_x: label.center_x,
+                    y: label.y,
+                    text: label.text.clone(),
+                    tone: overlay_label_tone_key(label.tone),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_label_tone_key(tone: overlay::OverlayLabelTone) -> u8 {
+    match tone {
+        overlay::OverlayLabelTone::Positive => 0,
+        overlay::OverlayLabelTone::Negative => 1,
+        overlay::OverlayLabelTone::Unavailable => 2,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1172,8 +1534,9 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     use super::{
-        current_champion_id, is_hex_aram, refresh_active_session, resolve_augment,
-        tighten_title_rect, ActiveSession, CardResolution, CurrentPlayerIdentity, TrackedCard,
+        candidate_screen_order, current_champion_id, is_hex_aram, refresh_phase_snapshot,
+        resolve_augment, selection_label_position, tighten_title_rect, ActiveSession,
+        CardResolution, ChampSelectState, CurrentPlayerIdentity, SelectionCardLayout, TrackedCard,
     };
     #[cfg(target_os = "windows")]
     use crate::services::models::{GameflowGameData, GameflowSession, PlayerChampionSelection};
@@ -1390,11 +1753,113 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
+    #[test]
+    fn three_candidate_cards_restore_the_screen_order() {
+        assert_eq!(candidate_screen_order(vec![11, 33, 22]), vec![11, 22, 33]);
+        assert_eq!(candidate_screen_order(vec![11, 22]), vec![11, 22]);
+
+        let state = ChampSelectState {
+            game_id: 1,
+            timer_phase: "BAN_PICK".to_string(),
+            allow_subset_champion_picks: true,
+            bench_enabled: true,
+            candidate_ids: vec![11, 33, 22],
+            bench_ids: vec![101, 102],
+        };
+        let (ids, layout) = state.visible_cards().expect("应显示三张候选卡");
+        assert_eq!(ids, vec![11, 22, 33]);
+        assert!(matches!(layout, SelectionCardLayout::Candidate));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ban_pick_never_falls_back_to_bench_positions_when_candidates_are_missing() {
+        let state = ChampSelectState {
+            game_id: 1,
+            timer_phase: "BAN_PICK".to_string(),
+            allow_subset_champion_picks: false,
+            bench_enabled: true,
+            candidate_ids: Vec::new(),
+            bench_ids: vec![101, 102, 103],
+        };
+
+        assert!(state.visible_cards().is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn candidate_cards_render_even_if_older_client_omits_feature_flags() {
+        let state = ChampSelectState {
+            game_id: 1,
+            timer_phase: "BAN_PICK".to_string(),
+            candidate_ids: vec![11, 22],
+            allow_subset_champion_picks: false,
+            bench_enabled: false,
+            bench_ids: Vec::new(),
+        };
+
+        let (ids, layout) = state.visible_cards().expect("应显示两张候选卡");
+        assert_eq!(ids, vec![11, 22]);
+        assert!(matches!(layout, SelectionCardLayout::Candidate));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn finalization_prefers_the_top_bench_heroes() {
+        let state = ChampSelectState {
+            game_id: 1,
+            timer_phase: "FINALIZATION".to_string(),
+            allow_subset_champion_picks: true,
+            bench_enabled: true,
+            candidate_ids: vec![11, 33, 22],
+            bench_ids: vec![101, 102, 103],
+        };
+        let (ids, layout) = state.visible_cards().expect("应显示顶部可用英雄");
+        assert_eq!(ids, vec![101, 102, 103]);
+        assert!(matches!(layout, SelectionCardLayout::Bench));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn selection_label_coordinates_follow_the_client_layout() {
+        let (left_x, candidate_y) =
+            selection_label_position(SelectionCardLayout::Candidate, 0, 2).unwrap();
+        let (right_x, _) = selection_label_position(SelectionCardLayout::Candidate, 1, 2).unwrap();
+        assert!((left_x - 0.4152).abs() < f32::EPSILON);
+        assert!((right_x - 0.5848).abs() < f32::EPSILON);
+        assert!((candidate_y - 0.638).abs() < f32::EPSILON);
+
+        let (first_bench_x, bench_y) =
+            selection_label_position(SelectionCardLayout::Bench, 0, 10).unwrap();
+        let (last_bench_x, _) =
+            selection_label_position(SelectionCardLayout::Bench, 9, 10).unwrap();
+        assert!((first_bench_x * 1280.0 - 379.0).abs() < 1.0);
+        assert!((last_bench_x * 1280.0 - 906.0).abs() < 1.0);
+        assert!((bench_y * 720.0 - 69.0).abs() < 1.0);
+    }
+
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "手动触发：输出当前局内海克斯识别前置条件"]
     async fn manual_debug_live_recognition_prerequisites() {
         let auth = crate::services::client_discovery::discover_primary_client()
             .expect("应能发现英雄联盟客户端");
+        match super::client_window::find_client_window(auth.ux_pid) {
+            Some(bounds) => println!(
+                "hex-winrate prerequisite => ux_pid={} window=0x{:x} client_origin=({}, {}) client_size={}x{} foreground={}",
+                auth.ux_pid,
+                bounds.hwnd as usize,
+                bounds.origin_x,
+                bounds.origin_y,
+                bounds.width,
+                bounds.height,
+                super::client_window::is_foreground(&bounds),
+            ),
+            None => println!(
+                "hex-winrate prerequisite => ux_pid={} 未找到可见客户端窗口",
+                auth.ux_pid
+            ),
+        }
         let mut lcu =
             Some(crate::services::lcu::LcuClient::new(&auth).expect("应能创建 LCU 客户端"));
         let client = lcu.as_ref().expect("LCU 客户端应存在");
@@ -1430,10 +1895,10 @@ mod tests {
         }
 
         let mut identity = CurrentPlayerIdentity::default();
-        let active = refresh_active_session(&mut lcu, &mut identity)
+        let snapshot = refresh_phase_snapshot(&mut lcu, &mut identity)
             .await
             .expect("识别前置检查不应失败");
-        print_active_session(active.as_ref());
+        print_active_session(snapshot.active.as_ref());
     }
 
     #[cfg(target_os = "windows")]

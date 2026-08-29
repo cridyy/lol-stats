@@ -1,8 +1,12 @@
+#[cfg(target_os = "windows")]
+pub mod bench_click_overlay;
 pub mod client_discovery;
 pub mod error;
+pub mod global_baselines;
 pub mod hex_winrate;
 pub mod lcu;
 pub mod models;
+pub mod quick_bench_swap;
 pub mod sgp;
 pub mod stats;
 pub mod tools;

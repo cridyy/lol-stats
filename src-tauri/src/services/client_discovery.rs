@@ -90,6 +90,7 @@ pub fn parse_ux_command_line(command_line: &str, fallback_pid: u32) -> Option<Cl
     Some(ClientAuth {
         port,
         pid,
+        ux_pid: fallback_pid,
         auth_token,
         region: capture(&region_re, command_line).unwrap_or_default(),
         rso_platform_id: capture(&rso_re, command_line).unwrap_or_default(),
@@ -107,6 +108,24 @@ fn read_process_command_line(pid: u32) -> AppResult<String> {
 #[cfg(not(target_os = "windows"))]
 fn read_process_command_line(_pid: u32) -> AppResult<String> {
     Err(AppError::Windows("当前仅支持 Windows 客户端".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ux_command_line;
+
+    #[test]
+    fn keeps_the_ux_window_pid_separate_from_the_lcu_app_pid() {
+        let command_line = concat!(
+            "LeagueClientUx.exe --app-port=55091 ",
+            "--remoting-auth-token=test_token ",
+            "--app-pid=26192 --region=TENCENT --rso_platform_id=HN1"
+        );
+
+        let auth = parse_ux_command_line(command_line, 28716).expect("应解析客户端命令行");
+        assert_eq!(auth.pid, 26192);
+        assert_eq!(auth.ux_pid, 28716);
+    }
 }
 
 #[cfg(target_os = "windows")]

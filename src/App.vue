@@ -9,9 +9,11 @@ import {
   ChevronRight,
   FileText,
   LoaderCircle,
+  Moon,
   RefreshCw,
   Search,
   Settings,
+  Sun,
   Swords,
   UserRound,
   Wrench,
@@ -39,6 +41,7 @@ import {
   setChatAvailability,
   setHexWinrateCaptureMode,
   setHexWinrateRecognitionEnabled,
+  setQuickBenchSwapEnabled,
 } from "./api"
 import {
   chatStatusLockAvailability,
@@ -54,13 +57,16 @@ import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
 import {
   AUTO_ACCEPT_ENABLED_KEY,
+  DARK_MODE_ENABLED_KEY,
   type LiveHexWinrateCaptureMode,
   LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY,
+  QUICK_BENCH_SWAP_ENABLED_KEY,
   readBooleanSetting,
   readLiveHexWinrateCaptureMode,
   writeBooleanSetting,
   writeLiveHexWinrateCaptureMode,
 } from "./toolSettings"
+import { applyTheme } from "./theme"
 import { championName, riotId } from "./utils"
 import type {
   AppUpdateInfo,
@@ -245,6 +251,7 @@ const gameAssets = ref<GameAssetBundle>(emptyGameAssets())
 const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
 const settingsOpen = ref(false)
+const darkModeEnabled = ref(readBooleanSetting(DARK_MODE_ENABLED_KEY))
 const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
@@ -1698,6 +1705,8 @@ function buildLiveGameRenderSignature(game: LiveGameResponse) {
         premadeGroup: player.premade?.groupId || "",
         gameName: player.summoner?.gameName || player.summoner?.displayName || "",
         tagLine: player.summoner?.tagLine || "",
+        profileIconId: player.summoner?.profileIconId || 0,
+        summonerLevel: player.summoner?.summonerLevel || 0,
         error: player.error || "",
         depthLoaded: player.stats?.depthLoaded || 0,
         recentGameIds: player.stats?.recentGames.map((recent) => recent.gameId) || [],
@@ -1754,6 +1763,12 @@ function toggleLiveHexWinrateRecognition() {
   void setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
     notifyError("海克斯胜率识别启动失败", error)
   })
+}
+
+function toggleDarkMode() {
+  darkModeEnabled.value = !darkModeEnabled.value
+  writeBooleanSetting(DARK_MODE_ENABLED_KEY, darkModeEnabled.value)
+  applyTheme(darkModeEnabled.value)
 }
 
 function updateLiveHexWinrateCaptureMode() {
@@ -1946,6 +1961,9 @@ onMounted(async () => {
   void setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
     notifyError("海克斯胜率识别初始化失败", error)
   })
+  void setQuickBenchSwapEnabled(readBooleanSetting(QUICK_BENCH_SWAP_ENABLED_KEY)).catch((error) => {
+    notifyError("快速交换备战英雄初始化失败", error)
+  })
   startGameflowWatcher()
   if (chatStatusLockEnabled.value) startChatStatusLockWatcher()
   void checkForAppUpdate()
@@ -1993,6 +2011,16 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="sidebar-footer">
+        <button
+          class="theme-entry"
+          type="button"
+          :aria-label="darkModeEnabled ? '切换至浅色模式' : '切换至黑暗模式'"
+          :title="darkModeEnabled ? '切换至浅色模式' : '切换至黑暗模式'"
+          @click="toggleDarkMode"
+        >
+          <Sun v-if="darkModeEnabled" :size="18" />
+          <Moon v-else :size="18" />
+        </button>
         <button class="settings-entry" @click="settingsOpen = true">
           <Settings :size="18" />
           设置
@@ -2345,9 +2373,10 @@ onUnmounted(() => {
           <label class="settings-select">
             <span>截图来源</span>
             <select v-model="liveHexWinrateCaptureMode" @change="updateLiveHexWinrateCaptureMode">
-              <option value="desktop-dc">桌面 DC（默认，受前台遮挡影响）</option>
+              <option value="dxgi">DXGI（默认，GPU 截图）</option>
               <option value="wgc">WGC 窗口捕获</option>
-              <option value="auto">自动（WGC 优先）</option>
+              <option value="auto">自动（WGC → DXGI → 桌面 DC）</option>
+              <option value="desktop-dc">桌面 DC（兼容模式，受前台遮挡影响）</option>
             </select>
           </label>
         </section>
@@ -2530,6 +2559,27 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.theme-entry {
+  display: grid;
+  width: 100%;
+  min-height: 38px;
+  place-items: center;
+  border-radius: 8px;
+  color: #315f58;
+  background: #edf5f3;
+  cursor: pointer;
+}
+
+.theme-entry:hover {
+  color: #1f4f48;
+  background: #d9e9e5;
+}
+
+.theme-entry:focus-visible {
+  outline: 2px solid #2f78d6;
+  outline-offset: 2px;
 }
 
 .settings-entry {

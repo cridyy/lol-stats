@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref, watch } from "vue"
+import { loadRankedStats } from "../api"
 import {
   buildChampionProfiles,
   buildPlayerProfile,
@@ -8,18 +9,20 @@ import {
   type ChampionProfile,
   type PlayerProfile,
 } from "../playerProfile"
+import { calculateOutputRating, outputRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
   GameAssetEntry,
   LiveGameResponse,
   LivePlayer,
-  LivePremadeMarker,
   LiveTeam,
+  RankedQueueEntry,
+  RankedStatsResponse,
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
-import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
+import { championName, fixed, mitigationValue, percent, phaseName, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
@@ -38,9 +41,25 @@ const props = withDefaults(
   },
 )
 
-const emit = defineEmits<{
-  openPlayer: [player: LivePlayer]
-}>()
+const RANK_CACHE_TTL_MS = 5 * 60 * 1000
+const rankedData = ref<Record<string, RankedStatsResponse | null>>({})
+const rankedLoading = ref<Record<string, boolean>>({})
+const rankedCache = new Map<string, { data: RankedStatsResponse | null; loadedAt: number }>()
+const rankedRequests = new Map<string, Promise<void>>()
+
+const rankTierLabels: Record<string, string> = {
+  IRON: "黑铁",
+  BRONZE: "黄铜",
+  SILVER: "白银",
+  GOLD: "黄金",
+  PLATINUM: "铂金",
+  EMERALD: "翡翠",
+  DIAMOND: "钻石",
+  MASTER: "大师",
+  GRANDMASTER: "宗师",
+  CHALLENGER: "王者",
+}
+const apexRankTiers = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"])
 
 interface RecentSummary {
   winRate: number
@@ -82,7 +101,7 @@ const liveTeamViews = computed<LiveTeamView[]>(() => {
   if (!liveGame) return []
 
   return liveGame.teams.map((team) => {
-    const players = team.players.map((player) => buildLivePlayerView(player, liveGame.queryStage))
+    const players = team.players.map((player) => buildLivePlayerView(player))
     return {
       team,
       players,
@@ -90,6 +109,19 @@ const liveTeamViews = computed<LiveTeamView[]>(() => {
     }
   })
 })
+
+watch(
+  () =>
+    props.liveGame?.teams
+      .flatMap((team) => team.players)
+      .map((player) => player.puuid)
+      .join("|") || "",
+  () => {
+    const players = props.liveGame?.teams.flatMap((team) => team.players) || []
+    for (const player of players) void ensureRanked(player)
+  },
+  { immediate: true },
+)
 
 function indexAssets(entries: GameAssetEntry[]) {
   return entries.reduce<Record<number, GameAssetEntry>>((acc, entry) => {
@@ -125,29 +157,119 @@ function queueName(liveGame: LiveGameResponse) {
   return liveGame.gameMode || liveGame.queueType || (liveGame.queueId ? `队列 ${liveGame.queueId}` : "-")
 }
 
-function positionName(player: LivePlayer) {
-  const raw = (player.position || player.selectedRole || "").toUpperCase()
-  const map: Record<string, string> = {
-    TOP: "上路",
-    JUNGLE: "打野",
-    MIDDLE: "中路",
-    MID: "中路",
-    BOTTOM: "下路",
-    ADC: "下路",
-    UTILITY: "辅助",
-    SUPPORT: "辅助",
-    NONE: "-",
-    UNSELECTED: "-",
-  }
-  return map[raw] || raw || "-"
-}
-
 function filterRecentGames(player: LivePlayer) {
   return (
     player.stats?.recentGames
       .filter((game) => game.gameDuration >= MIN_VALID_GAME_DURATION_SECONDS)
       .slice(0, LIVE_DISPLAY_DEPTH) || []
   )
+}
+
+function rankedKey(player: LivePlayer) {
+  return player.puuid.trim().toLowerCase()
+}
+
+function setRankedData(key: string, data: RankedStatsResponse | null) {
+  rankedData.value = { ...rankedData.value, [key]: data }
+}
+
+function setRankedLoading(key: string, loading: boolean) {
+  const next = { ...rankedLoading.value }
+  if (loading) next[key] = true
+  else delete next[key]
+  rankedLoading.value = next
+}
+
+async function ensureRanked(player: LivePlayer) {
+  const key = rankedKey(player)
+  if (!key || player.isPlaceholder) return
+
+  const cached = rankedCache.get(key)
+  if (cached && Date.now() - cached.loadedAt < RANK_CACHE_TTL_MS) {
+    setRankedData(key, cached.data)
+    return
+  }
+
+  const existing = rankedRequests.get(key)
+  if (existing) return existing
+
+  setRankedLoading(key, true)
+  const request = loadRankedStats(player.puuid)
+    .then((data) => {
+      rankedCache.set(key, { data, loadedAt: Date.now() })
+      setRankedData(key, data)
+    })
+    .catch(() => {
+      rankedCache.set(key, { data: null, loadedAt: Date.now() })
+      setRankedData(key, null)
+    })
+    .finally(() => {
+      setRankedLoading(key, false)
+      rankedRequests.delete(key)
+    })
+
+  rankedRequests.set(key, request)
+  return request
+}
+
+function playerLevel(player: LivePlayer) {
+  const level = player.summoner?.summonerLevel || 0
+  return level > 0 ? String(level) : "-"
+}
+
+function normalizedRankTier(tier?: string) {
+  const value = tier?.trim().toUpperCase() || ""
+  return value && value !== "NA" && value !== "NONE" ? value : "UNRANKED"
+}
+
+function hasRankTier(entry?: RankedQueueEntry | null) {
+  return Boolean(entry && normalizedRankTier(entry.tier) !== "UNRANKED")
+}
+
+function rankedResponseFor(player: LivePlayer) {
+  const key = rankedKey(player)
+  if (!key) return undefined
+  return Object.prototype.hasOwnProperty.call(rankedData.value, key)
+    ? rankedData.value[key]
+    : undefined
+}
+
+function rankedEntryFor(player: LivePlayer) {
+  const ranked = rankedResponseFor(player)
+  if (!ranked || ranked.unavailableReason) return null
+
+  const solo = ranked.queueMap?.RANKED_SOLO_5x5
+  const flex = ranked.queueMap?.RANKED_FLEX_SR
+  const preferred = props.liveGame?.queueId === 440 ? flex : solo
+  const fallback = preferred === flex ? solo : flex
+  return hasRankTier(preferred) ? preferred : hasRankTier(fallback) ? fallback : preferred || fallback || null
+}
+
+function rankTextFor(player: LivePlayer) {
+  if (player.isPlaceholder || !rankedKey(player)) return "未定级"
+  if (rankedLoading.value[rankedKey(player)]) return "读取中"
+
+  const ranked = rankedResponseFor(player)
+  if (ranked === undefined) return "读取中"
+  if (!ranked || ranked.unavailableReason) return "暂不可读"
+
+  const entry = rankedEntryFor(player)
+  if (!entry) return "未定级"
+
+  const tier = normalizedRankTier(entry.tier)
+  if (tier === "UNRANKED") return "未定级"
+  const tierLabel = rankTierLabels[tier] || tier
+  const division = apexRankTiers.has(tier) ? "" : entry.division?.trim().toUpperCase() || ""
+  return `${tierLabel}${division ? ` ${division}` : ""}`
+}
+
+function rankTitleFor(player: LivePlayer) {
+  const ranked = rankedResponseFor(player)
+  const entry = rankedEntryFor(player)
+  if (ranked?.unavailableReason) return ranked.unavailableReason
+  if (!entry || !hasRankTier(entry)) return rankTextFor(player)
+  const lp = entry.leaguePoints > 0 ? ` · ${entry.leaguePoints} LP` : ""
+  return `${rankTextFor(player)}${lp}`
 }
 
 function gameKda(game: RecentGame) {
@@ -173,19 +295,6 @@ function averageKda(games: RecentGame[]) {
   return (kills + assists) / Math.max(deaths, 1)
 }
 
-function damageShare(game: RecentGame) {
-  return ratio(game.damageToChampions, game.teamDamageToChampions)
-}
-
-function mitigationShare(game: RecentGame) {
-  return ratio(mitigationValue(game), teamMitigationValue(game))
-}
-
-function damageConversion(game: RecentGame) {
-  const goldShare = ratio(game.goldEarned, game.teamGoldEarned)
-  return goldShare > 0 ? damageShare(game) / goldShare : 0
-}
-
 function summarizeRecentGames(games: RecentGame[]): RecentSummary {
   const wins = games.filter((game) => game.win).length
   const damage = games.reduce((sum, game) => sum + game.damageToChampions, 0)
@@ -206,16 +315,16 @@ function summarizeRecentGames(games: RecentGame[]): RecentSummary {
   }
 }
 
-function buildLivePlayerView(player: LivePlayer, queryStage: string): LivePlayerView {
+function buildLivePlayerView(player: LivePlayer): LivePlayerView {
   const games = filterRecentGames(player)
   // 实时战绩只看短样本，不使用数据统计页的大样本时间衰减。
   const profile = player.stats
     ? buildPlayerProfile(games, ratingContext.value, { timeWeighted: false })
     : null
-  const championGames =
-    queryStage === "in-game" && player.championId
-      ? games.filter((game) => game.championId === player.championId)
-      : []
+  const selectedChampionId = currentChampionId(player)
+  const championGames = selectedChampionId
+    ? games.filter((game) => game.championId === selectedChampionId)
+    : []
   const championProfile = championGames.length
     ? buildChampionProfiles(championGames, ratingContext.value, { timeWeighted: false })[0] || null
     : null
@@ -252,42 +361,43 @@ function teamAverageName(team: LiveTeam, index: number, teams: LiveTeam[]) {
   return team.name
 }
 
-function kdaTone(value: number) {
-  if (value > 3.5) return "tone-good"
-  if (value >= 2) return "tone-warn"
-  return "tone-bad"
-}
-
 function winRateTone(value: number) {
-  if (value > 0.6) return "tone-good"
-  if (value >= 0.35) return "tone-warn"
-  return "tone-bad"
+  if (value > 0.5) return "tone-good"
+  if (value < 0.5) return "tone-bad"
+  return "tone-warn"
 }
 
-function damageConversionTone(value: number) {
-  if (value > 1.2) return "tone-good"
-  if (value >= 0.9) return "tone-warn"
-  return "tone-bad"
+function kdaTone(value: number) {
+  if (value > 2.5) return "tone-good"
+  if (value < 2.5) return "tone-bad"
+  return "tone-warn"
 }
 
 function selectedChampionScoreText(profile: ChampionProfile | null) {
-  return profile?.games ? `${Math.round(profile.averageScore)}分` : "样本不足"
+  return profile?.games ? `${Math.round(profile.averageScore)}分` : "-"
 }
 
 function selectedChampionLabel(profile: ChampionProfile | null) {
   return profile?.label || "暂无英雄样本"
 }
 
+function selectedChampionScoreTitle(player: LivePlayer, profile: ChampionProfile | null) {
+  const champion = championName(props.champions, currentChampionId(player))
+  return profile?.games
+    ? `${champion} · 历史均分 ${selectedChampionScoreText(profile)} · ${profile.label}`
+    : `${champion} · 暂无历史评分`
+}
+
 function selectedChampionClass(profile: ChampionProfile | null) {
   return profile?.games ? profileTierClass(profile.averageScore) : "profile-empty"
 }
 
-function profileScoreText(profile: PlayerProfile | null) {
-  return profile?.games ? `${Math.round(profile.overallScore)}分` : "样本不足"
+function currentChampionId(player: LivePlayer) {
+  return player.championId || player.championPickIntent || 0
 }
 
-function abilityScoreText(score: number, games: number) {
-  return games ? `${Math.round(score)}分` : "样本不足"
+function profileScoreText(profile: PlayerProfile | null) {
+  return profile?.games ? `${Math.round(profile.overallScore)}分` : "-"
 }
 
 function playerProfileTierLabel(profile: PlayerProfile | null) {
@@ -299,33 +409,18 @@ function profileClass(profile: PlayerProfile | null) {
   return profile?.games ? profileTierClass(profile.overallScore) : "profile-empty"
 }
 
-function carryProfileClass(profile: PlayerProfile | null) {
-  const carry = profile?.abilities.carry
-  if (!carry) return "profile-empty"
-  return carry.games ? profileTierClass(carry.averageScore) : "profile-empty"
+function gameRating(game: RecentGame) {
+  return calculateOutputRating(game, ratingContext.value)
 }
 
-function premadeClass(marker: LivePremadeMarker) {
-  return `premade-${marker.groupId.toLowerCase()}`
+function gameRatingClass(game: RecentGame) {
+  return `score-${gameRating(game).level}`
 }
 
-function premadeMembers(marker: LivePremadeMarker) {
-  const players = props.liveGame?.teams.flatMap((team) => team.players) || []
-  return marker.memberPuuids
-    .map((puuid) => players.find((player) => player.puuid.toLowerCase() === puuid.toLowerCase()))
-    .filter((player): player is LivePlayer => Boolean(player))
-    .map((player) => riotId(player.summoner))
-    .join("、")
+function gameRatingTitle(game: RecentGame) {
+  return outputRatingTitle(game, ratingContext.value)
 }
 
-function premadeTitle(marker: LivePremadeMarker) {
-  const members = premadeMembers(marker)
-  const source =
-    marker.source === "历史同队" && marker.togetherTimes
-      ? `${marker.source} ${marker.togetherTimes} 次以上`
-      : marker.source
-  return members ? `${marker.label} · ${source} · ${members}` : `${marker.label} · ${source}`
-}
 </script>
 
 <template>
@@ -342,7 +437,7 @@ function premadeTitle(marker: LivePremadeMarker) {
       </div>
     </header>
 
-    <div class="live-empty" v-if="loading && !liveGame">正在读取双方近 50 局</div>
+    <div class="live-empty" v-if="loading && !liveGame">正在读取双方数据</div>
     <div class="live-empty error" v-else-if="!liveGame && error">{{ error }}</div>
     <div class="live-empty" v-else-if="!liveGame">当前没有可读取的对局</div>
 
@@ -404,13 +499,12 @@ function premadeTitle(marker: LivePremadeMarker) {
               :key="`${teamView.team.name}-${playerView.player.puuid}`"
             >
               <div
-                v-if="liveGame.queryStage === 'in-game'"
+                v-if="currentChampionId(playerView.player)"
                 :class="['locked-hero-line', selectedChampionClass(playerView.championProfile)]"
-                :title="`${championName(champions, playerView.player.championId)} · ${selectedChampionScoreText(playerView.championProfile)} · ${selectedChampionLabel(playerView.championProfile)}`"
+                :title="selectedChampionScoreTitle(playerView.player, playerView.championProfile)"
               >
                 <ChampionAvatar
-                  v-if="playerView.player.championId"
-                  :champion-id="playerView.player.championId"
+                  :champion-id="currentChampionId(playerView.player)"
                   :champions="champions"
                   :size="34"
                 />
@@ -418,90 +512,43 @@ function premadeTitle(marker: LivePremadeMarker) {
                 <span>{{ selectedChampionLabel(playerView.championProfile) }}</span>
               </div>
 
-              <div class="identity">
-                <ChampionAvatar
-                  v-if="playerView.player.championId && liveGame.queryStage !== 'in-game'"
-                  :champion-id="playerView.player.championId"
-                  :champions="champions"
-                  :size="42"
-                />
-                <div class="identity-text">
-                  <div class="name-line">
-                    <button class="player-name-button" type="button" @click="emit('openPlayer', playerView.player)">
-                      {{ riotId(playerView.player.summoner) }}
-                    </button>
-                    <span
-                      v-if="playerView.player.premade"
-                      :class="['premade-tag', premadeClass(playerView.player.premade)]"
-                      :title="premadeTitle(playerView.player.premade)"
-                    >
-                      {{ playerView.player.premade.label }}
-                    </span>
-                    <b v-if="playerView.player.stats" class="kda-badge">
-                      <span>KDA</span>
-                      <em :class="kdaTone(playerView.summary.averageKda)">
-                        {{ statFixed(playerView.summary.averageKda) }}
-                      </em>
-                    </b>
-                  </div>
-                  <div class="summary-line" v-if="playerView.player.stats">
-                    <span>
-                      <i>胜率</i>
-                      <b :class="winRateTone(playerView.summary.winRate)">
-                        {{ statPercent(playerView.summary.winRate) }}
-                      </b>
-                    </span>
-                    <span>
-                      <i>伤转</i>
-                      <b :class="damageConversionTone(playerView.summary.damageConversion)">
-                        {{ statFixed(playerView.summary.damageConversion) }}
-                      </b>
-                    </span>
-                    <span>
-                      <i>承伤</i>
-                      <b>{{ statPercent(playerView.summary.mitigationShare) }}</b>
-                    </span>
-                  </div>
-                  <span v-else>
-                    {{ championName(champions, playerView.player.championId) }} ·
-                    {{ positionName(playerView.player) }}
-                  </span>
-                </div>
+              <div class="rank-line" :title="rankTitleFor(playerView.player)">
+                <span class="rank-level">
+                  <i>等级</i>
+                  <b>{{ playerLevel(playerView.player) }}</b>
+                </span>
+                <span class="rank-divider" aria-hidden="true"></span>
+                <span class="rank-entry">
+                  <strong>{{ rankTextFor(playerView.player) }}</strong>
+                </span>
+                <span class="rank-divider" aria-hidden="true"></span>
+                <span class="rank-win-rate">
+                  <i>胜率</i>
+                  <b :class="winRateTone(playerView.summary.winRate)">
+                    {{ statPercent(playerView.summary.winRate) }}
+                  </b>
+                </span>
+                <span class="rank-divider" aria-hidden="true"></span>
+                <span class="rank-kda">
+                  <i>KDA</i>
+                  <b :class="kdaTone(playerView.summary.averageKda)">
+                    {{ statFixed(playerView.summary.averageKda, 1) }}
+                  </b>
+                </span>
               </div>
 
-              <div
-                v-if="playerView.player.stats"
-                class="profile-panel-line"
-              >
-                <div :class="['profile-main-row', profileClass(playerView.profile)]">
+              <div class="profile-panel-line" v-if="playerView.player.stats">
+                <div
+                  :class="['profile-main-row', profileClass(playerView.profile)]"
+                  :title="`${playerProfileTierLabel(playerView.profile)} · ${profileScoreText(playerView.profile)}`"
+                >
                   <strong>{{ playerProfileTierLabel(playerView.profile) }}</strong>
                   <b>{{ profileScoreText(playerView.profile) }}</b>
                 </div>
                 <div :class="['profile-stat-row', 'profile-overall-row', profileClass(playerView.profile)]">
-                  <span>主玩 <b>{{ playerView.profile?.mainRoleLabel }}</b></span>
+                  <span>主玩 <b>{{ playerView.profile?.mainRoleLabel || "-" }}</b></span>
                   <span>carry率 <b>{{ statPercent(playerView.profile?.highlightRate) }}</b></span>
                   <span>战犯率 <b>{{ statPercent(playerView.profile?.disasterRate) }}</b></span>
-                </div>
-                <div :class="['profile-stat-row', 'profile-carry-row', carryProfileClass(playerView.profile)]">
-                  <span>
-                    输出能力
-                    <b>
-                      {{
-                        abilityScoreText(
-                          playerView.profile?.abilities.carry.averageScore || 0,
-                          playerView.profile?.abilities.carry.games || 0,
-                        )
-                      }}
-                    </b>
-                  </span>
-                  <span>
-                    carry率
-                    <b>{{ statPercent(playerView.profile?.abilities.carry.highlightRate) }}</b>
-                  </span>
-                  <span>
-                    战犯率
-                    <b>{{ statPercent(playerView.profile?.abilities.carry.disasterRate) }}</b>
-                  </span>
                 </div>
               </div>
 
@@ -511,28 +558,23 @@ function premadeTitle(marker: LivePremadeMarker) {
               </div>
 
               <div class="recent-strip" v-if="playerView.games.length">
-                <div class="recent-header" aria-hidden="true">
-                  <span></span>
-                  <span>K/D/A</span>
-                  <span>伤害</span>
-                  <span>伤转</span>
-                  <span>承伤</span>
-                </div>
-                <button
+                <div
                   class="recent-game"
                   v-for="game in playerView.games"
                   :key="game.gameId"
                   :class="{ win: game.win, loss: !game.win }"
-                  :title="`${championName(champions, game.championId)} · ${gameKda(game)}`"
+                  :title="`${championName(champions, game.championId)} · ${gameKda(game)} · ${gameRatingTitle(game)}`"
                 >
-                  <ChampionAvatar :champion-id="game.championId" :champions="champions" :size="24" />
-                  <b>{{ gameKda(game) }}</b>
-                  <em>{{ statPercent(damageShare(game)) }}</em>
-                  <em>{{ statFixed(damageConversion(game)) }}</em>
-                  <em>{{ statPercent(mitigationShare(game)) }}</em>
-                </button>
+                  <ChampionAvatar :champion-id="game.championId" :champions="champions" :size="22" />
+                  <div class="recent-kda">
+                    <strong>{{ gameKda(game) }}</strong>
+                  </div>
+                  <div :class="['score-cell', 'recent-score-cell', gameRatingClass(game)]">
+                    <strong>{{ gameRating(game).score }}分</strong>
+                  </div>
+                </div>
               </div>
-              <div class="recent-empty" v-else-if="playerView.player.stats">暂无符合当前模式的近 50 局</div>
+              <div class="recent-empty" v-else-if="playerView.player.stats">暂无数据</div>
             </article>
           </div>
         </section>
@@ -717,7 +759,7 @@ h2 {
 .player-card {
   display: flex;
   min-width: var(--live-player-card-min);
-  min-height: calc(330px + var(--live-card-extra-height, 0px));
+  min-height: calc(447px + var(--live-card-extra-height, 0px));
   flex-direction: column;
   gap: 8px;
   border: 1px solid #dce7e4;
@@ -754,157 +796,94 @@ h2 {
   white-space: nowrap;
 }
 
-.identity {
+.rank-line {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
+  border-top: 1px solid #edf2f0;
+  border-bottom: 1px solid #edf2f0;
+  padding: 4px 1px;
+  color: #53666c;
 }
 
-.identity-text {
-  min-width: 0;
-  width: 100%;
-}
-
-.name-line {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.identity-text strong,
-.player-name-button {
-  display: block;
-  overflow: hidden;
-  min-width: 0;
-  color: #233238;
-  font-size: 15px;
-  font-weight: 900;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.player-name-button {
-  flex: 1 1 auto;
-  border: 0;
-  background: transparent;
-  color: #0f6f8f;
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-}
-
-.player-name-button:hover,
-.player-name-button:focus-visible {
-  color: #0a526b;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.player-name-button:focus-visible {
-  outline: 2px solid rgba(15, 111, 143, 0.35);
-  outline-offset: 2px;
-}
-
-.name-line > strong,
-.name-line > .player-name-button {
-  flex: 1 1 auto;
-}
-
-.premade-tag {
+.rank-level,
+.rank-entry,
+.rank-win-rate,
+.rank-kda {
   display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-radius: 999px;
-  padding: 2px 7px;
-  color: #1d2730;
-  font-size: 12px;
-  font-weight: 950;
-  line-height: 1.1;
-  white-space: nowrap;
-  box-shadow: 0 6px 14px rgba(20, 35, 45, 0.1);
-}
-
-.premade-a {
-  background: linear-gradient(135deg, #fde68a, #f59e0b);
-}
-
-.premade-b {
-  background: linear-gradient(135deg, #bfdbfe, #3b82f6);
-  color: #071827;
-}
-
-.premade-c {
-  background: linear-gradient(135deg, #bbf7d0, #22c55e);
-}
-
-.premade-d {
-  background: linear-gradient(135deg, #fecdd3, #fb7185);
-}
-
-.premade-e {
-  background: linear-gradient(135deg, #ddd6fe, #8b5cf6);
-  color: #120b24;
-}
-
-.premade-f,
-.premade-g,
-.premade-h,
-.premade-i,
-.premade-j,
-.premade-z {
-  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
-}
-
-.kda-badge {
-  display: inline-flex;
-  flex: 0 0 auto;
+  min-width: 0;
   align-items: baseline;
   gap: 4px;
-  color: #1f2a2e;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.kda-badge span,
-.kda-badge em {
-  font-style: normal;
-}
-
-.summary-line {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  overflow: hidden;
-  margin-top: 5px;
-}
-
-.summary-line span {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: baseline;
-  gap: 2px;
-  color: #1f2a2e;
-  font-size: 14.4px;
-  font-weight: 800;
   white-space: nowrap;
 }
 
-.summary-line i,
-.summary-line b {
+.rank-level {
+  flex: 0 0 auto;
+}
+
+.rank-entry {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.rank-win-rate {
+  flex: 0 0 auto;
+}
+
+.rank-kda {
+  flex: 0 0 auto;
+}
+
+.rank-level i,
+.rank-entry i,
+.rank-win-rate i,
+.rank-kda i {
+  color: #829095;
+  font-size: 11px;
   font-style: normal;
+  font-weight: 800;
 }
 
-.summary-line i {
-  color: #1f2a2e;
-}
-
-.summary-line b {
+.rank-level b,
+.rank-entry strong,
+.rank-win-rate b,
+.rank-kda b {
+  color: #263c42;
+  font-size: 13px;
   font-weight: 950;
+}
+
+.rank-win-rate b.tone-good,
+.rank-kda b.tone-good {
+  color: #16844f;
+}
+
+.rank-win-rate b.tone-warn,
+.rank-kda b.tone-warn {
+  color: #c67900;
+}
+
+.rank-win-rate b.tone-bad,
+.rank-kda b.tone-bad {
+  color: #c9403d;
+}
+
+.rank-level b {
+  color: #c9403d;
+}
+
+.rank-entry strong {
+  color: #16844f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rank-divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 1px;
+  background: #dbe7e4;
 }
 
 .profile-panel-line {
@@ -956,10 +935,6 @@ h2 {
   background: #dcecff;
 }
 
-.profile-carry-row {
-  color: inherit;
-}
-
 .profile-stat-row span {
   display: inline-flex;
   flex: 1 1 0;
@@ -979,10 +954,6 @@ h2 {
   font-size: 13.5px;
   font-weight: 950;
   white-space: nowrap;
-}
-
-.profile-carry-row b {
-  color: #d22f2f;
 }
 
 .profile-tier-apex {
@@ -1017,6 +988,34 @@ h2 {
   background: #edf4f2;
 }
 
+.score-cell.score-excellent::after {
+  position: absolute;
+  inset: -60% auto -60% -80%;
+  width: 58%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0.74),
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  content: "";
+  transform: rotate(18deg);
+  animation: live-score-shine 2.8s ease-in-out infinite;
+}
+
+@keyframes live-score-shine {
+  0% {
+    left: -90%;
+  }
+
+  52%,
+  100% {
+    left: 132%;
+  }
+}
+
 .tone-good {
   color: #16844f;
 }
@@ -1027,16 +1026,6 @@ h2 {
 
 .tone-bad {
   color: #c9403d;
-}
-
-.identity-text > span {
-  display: block;
-  overflow: hidden;
-  margin-top: 5px;
-  color: #738188;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .player-error {
@@ -1068,54 +1057,29 @@ h2 {
 .recent-strip {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  max-height: calc(185px + var(--live-card-extra-height, 0px));
+  max-height: calc(271px + var(--live-card-extra-height, 0px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   margin-top: auto;
-  padding: 1px 4px 1px 1px;
+  padding: 1px 3px 1px 1px;
   scrollbar-width: thin;
-}
-
-.recent-header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: 24px 58px repeat(3, minmax(0, 1fr));
-  align-items: center;
-  gap: 4px;
-  border-radius: 6px;
-  color: #1f2a2e;
-  background: rgba(255, 255, 255, 0.94);
-  padding: 2px 6px;
-  font-size: 10px;
-  font-weight: 950;
-}
-
-.recent-header span {
-  overflow: hidden;
-  text-align: right;
-  text-overflow: clip;
-  white-space: nowrap;
-}
-
-.recent-header span:first-child {
-  text-align: left;
 }
 
 .recent-game {
   display: grid;
-  grid-template-columns: 24px 58px repeat(3, minmax(0, 1fr));
+  grid-template-columns: 22px minmax(0, 1fr) 42px;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex: 0 0 auto;
   width: 100%;
+  min-height: 28px;
   border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 5px 6px;
+  border-left-width: 3px;
+  border-radius: 5px;
+  padding: 1px 3px;
   color: #263238;
   font: inherit;
   text-align: left;
@@ -1123,32 +1087,93 @@ h2 {
 
 .recent-game.win {
   border-color: #b9d9f1;
+  border-left-color: #3e89cf;
   background: #edf7ff;
 }
 
 .recent-game.loss {
   border-color: #efc9c8;
+  border-left-color: #ca4b4b;
   background: #fff1f1;
 }
 
-.recent-game b {
-  overflow: visible;
+.recent-kda {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0;
+}
+
+.recent-kda strong {
+  overflow: hidden;
   color: #202b31;
   font-size: 12px;
-  font-weight: 900;
-  text-overflow: clip;
+  font-weight: 950;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.recent-game em {
+.score-cell {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  height: 22px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
-  color: #202b31;
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 800;
-  text-align: right;
-  text-overflow: clip;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 2px;
+  text-align: center;
+}
+
+.score-cell strong,
+.score-cell span {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  color: inherit;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.score-cell strong {
+  font-size: 14px;
+  font-weight: 950;
+}
+
+.score-cell span {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+}
+
+.score-excellent {
+  color: #5d3300;
+  border-color: rgba(245, 185, 52, 0.72);
+  background:
+    linear-gradient(135deg, rgba(255, 244, 184, 0.96), rgba(255, 195, 64, 0.9) 45%, rgba(255, 236, 150, 0.96)),
+    #ffd36a;
+}
+
+.score-good {
+  color: #145b3e;
+  border-color: rgba(77, 168, 111, 0.46);
+  background: rgba(204, 239, 218, 0.88);
+}
+
+.score-average {
+  color: #174d83;
+  border-color: rgba(77, 133, 201, 0.4);
+  background: rgba(205, 229, 255, 0.92);
+}
+
+.score-poor {
+  color: #8f3434;
+  border-color: rgba(202, 75, 75, 0.42);
+  background: rgba(248, 214, 213, 0.92);
 }
 
 .recent-game:hover {
@@ -1157,7 +1182,7 @@ h2 {
 
 .recent-empty {
   display: grid;
-  min-height: 120px;
+  min-height: 56px;
   place-items: center;
   border-radius: 7px;
   color: #718087;
