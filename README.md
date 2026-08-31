@@ -56,10 +56,11 @@ LOL Stats 使用 Tauri 2、Rust 和 Vue 3 开发，主要解决两件事：
 - 单英雄统计包含场次、胜率、评分、评价、定位和代表标签。
 - 点击英雄横条可进入该英雄对应模式的全部具体战绩，并保持返回前的滚动位置。
 - 玩家画像分别统计综合能力、输出能力、前排能力和辅助能力。
-- 评分系统会结合英雄标签、结算装备、伤害、伤转、参团、生存、承伤、治疗和控制等数据。
+- 评分系统会结合英雄标签、结算装备、伤害、伤转、参团、生存、承伤、治疗和控制等数据；目前只有海克斯大乱斗的辅助正式引入英雄全服基准。
+- 战绩会生成评分评价、评分 tag、娱乐称号和事实标签；称号可以同时命中多个，展示时随机抽取一个。
 - 短时碾压局会使用全场数据、K/D 差、伤害差、阵容和推塔情况进行受控校准。
 
-评分公式、定位判断、分数构成和标签条件见 [评分系统说明](docs/scoring-system.md)。
+评分、定位、全服基准、称号和画像的文档入口见 [docs/README.md](docs/README.md)。
 
 ### 数据筛选
 
@@ -149,7 +150,16 @@ LOL Stats 使用 Tauri 2、Rust 和 Vue 3 开发，主要解决两件事：
 ```text
 lol-stats
 ├─ docs
-│  └─ scoring-system.md          # 当前评分系统完整说明
+│  ├─ README.md                  # 评分文档入口
+│  ├─ scoring-system.md          # 单局评分与碾压校准
+│  ├─ role-classification.md     # 英雄和装备定位
+│  ├─ global-baselines.md        # 21 项全服基准与辅助全服分
+│  ├─ title-system.md            # 评分 tag、娱乐称号和国服称号
+│  ├─ profile-system.md          # 玩家画像与单英雄画像
+│  ├─ calibration.md             # 样本校准与验证流程
+│  ├─ local-api.md               # 127.0.0.1:17390 本机接口
+│  ├─ changelog.md               # 规则变更记录
+│  └─ ...
 ├─ scripts
 │  └─ publish-release.ps1        # GitHub / Gitee Release 自动发布
 ├─ src
@@ -351,6 +361,8 @@ pwsh -NoLogo -NoProfile -File .\scripts\publish-release.ps1 -DryRun
 ```
 
 ## 数据来源与连接方式
+
+评分和称号的规则文档集中在 [`docs/`](docs/README.md)；本机加工数据接口说明见 [`docs/local-api.md`](docs/local-api.md)。
 
 项目主要读取本机客户端和国服战绩接口：
 
