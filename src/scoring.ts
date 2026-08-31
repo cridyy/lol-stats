@@ -1489,14 +1489,22 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
   if (loserTowerKills >= 2) {
     return inactive("败方已推掉至少2座防御塔，不属于碾压局", imbalance, diagnostics)
   }
-  if (gameMinutes > 16) return inactive("对局时长超过16分钟", imbalance, diagnostics)
+  // 败方零塔是最明确的推塔压制证据：即使对局拖过16分钟，也允许该门控继续生效。
+  // 一塔局仍受16分钟硬截止约束，避免把晚期僵持误判成短时碾压。
+  const zeroTowerDurationOverride = loserTowerKills === 0 && towerGateActive
+  if (gameMinutes > 16 && !zeroTowerDurationOverride) {
+    return inactive("对局时长超过16分钟", imbalance, diagnostics)
+  }
   if (!killDeathGateActive && !damageGateActive && !towerGateActive) {
     return inactive("K/D、伤害差和推塔时间均未达到门槛", imbalance, diagnostics)
   }
 
   const durationFactor = gameMinutes <= 12
     ? 1
-    : mix(1, 10 / 35, (gameMinutes - 12) / 4)
+    : gameMinutes <= 16
+      ? mix(1, 10 / 35, (gameMinutes - 12) / 4)
+      // 零塔例外在16分钟后继续衰减，避免长局获得与短局相同的全场混合强度。
+      : (10 / 35) * (16 / gameMinutes)
   const combatStrength = killDeathGateActive
     ? mix(0.18, 1, smoothstepRange(winnerKillDeathRatio, 1.3, 3))
     : 0
@@ -1522,9 +1530,12 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
   const towerGateReason = loserTowerKills === 0
     ? "败方零塔门控"
     : "败方首塔偏晚门控"
+  const towerGateReasonWithDuration = zeroTowerDurationOverride && gameMinutes > 16
+    ? `${towerGateReason}（超过16分钟零塔例外）`
+    : towerGateReason
   const reason = calibrationGates.length
-    ? `已触发${calibrationGates.join("、")}校准${towerGateActive ? `，同时命中${towerGateReason}` : ""}`
-    : `${towerGateReason}命中，仅启用K/D评分`
+    ? `已触发${calibrationGates.join("、")}校准${towerGateActive ? `，同时命中${towerGateReasonWithDuration}` : ""}`
+    : `${towerGateReasonWithDuration}命中，仅启用K/D评分`
 
   return {
     active: true,

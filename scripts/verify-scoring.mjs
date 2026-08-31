@@ -116,6 +116,14 @@ assert.equal(adjustment(1, 14 * 60).active, true)
 assert.equal(adjustment(1, 14 * 60).maxKdaWeight, 17.5)
 assert.equal(adjustment(1, 16 * 60).maxKdaWeight, 35)
 assert.equal(adjustment(1).active, false)
+const longZeroTowerAdjustment = adjustment(0, undefined, { gameDuration: 17 * 60 })
+assert.equal(longZeroTowerAdjustment.active, true)
+assert.equal(longZeroTowerAdjustment.loserTowerKills, 0)
+assert.equal(longZeroTowerAdjustment.towerKdaWeight, 35)
+assert.match(longZeroTowerAdjustment.reason, /超过16分钟零塔例外/)
+const longOneTowerAdjustment = adjustment(1, 15 * 60, { gameDuration: 17 * 60 })
+assert.equal(longOneTowerAdjustment.active, false)
+assert.equal(longOneTowerAdjustment.reason, "对局时长超过16分钟")
 
 const twoTowerGame = adjustment(2, 15 * 60, {
   teamKills: 20,
