@@ -30,9 +30,7 @@ const rating = computed<OutputRating>(() => presentation.value.rating)
 const globalRating = computed<GlobalRating>(() => presentation.value.globalRating)
 const titleSet = computed(() => presentation.value.titleSet)
 const championLabel = computed(() => championName(props.champions, props.game.championId))
-const allTitles = computed(() => titleSet.value.titles.length
-  ? titleSet.value.titles
-  : [titleSet.value.displayTitle])
+const allTitles = computed(() => titleSet.value.titles)
 
 function clearCloseTimer() {
   if (closeTimer !== undefined) {
@@ -136,9 +134,10 @@ onBeforeUnmount(() => {
 
       <div class="game-title-popover-block">
         <span class="game-title-popover-label">全部称号</span>
-        <div class="game-title-popover-chips">
+        <div v-if="allTitles.length" class="game-title-popover-chips">
           <span v-for="title in allTitles" :key="title" class="game-title-popover-chip">{{ title }}</span>
         </div>
+        <span v-else class="game-title-popover-empty">本局暂无专属称号</span>
       </div>
 
       <div v-if="titleSet.factTags.length" class="game-title-popover-block">
@@ -265,6 +264,12 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.game-title-popover-empty {
+  color: #98a5a8;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .game-title-popover-chip {

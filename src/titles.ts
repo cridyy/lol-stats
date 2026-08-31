@@ -118,6 +118,17 @@ function randomTitleSeed() {
 
 /** 当前响应/刷新使用的称号随机种子；重开软件时模块会重新生成。 */
 let titleSelectionSeed = randomTitleSeed()
+let titleSelectionRevision = 0
+
+/**
+ * 当前称号展示版本。
+ *
+ * 评分和命中的称号不会因为抽签变化；界面缓存只需要用这个版本判断
+ * 是否应该重新抽取当前展示的一个称号。
+ */
+export function titleSelectionVersion() {
+  return titleSelectionRevision
+}
 
 /**
  * 让一次新的战绩刷新重新抽取展示称号。
@@ -126,6 +137,7 @@ let titleSelectionSeed = randomTitleSeed()
  */
 export function refreshTitleSelectionSeed() {
   titleSelectionSeed = randomTitleSeed()
+  titleSelectionRevision += 1
 }
 
 const ROLE_FIGHTERS = new Set<PlayerRole>(["fighter", "bruiser", "fighterAssassin"])

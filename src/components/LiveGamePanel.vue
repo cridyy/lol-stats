@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { loadRankedStats } from "../api"
+import { gamePresentation } from "../gamePresentation"
 import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import {
   buildChampionProfiles,
@@ -10,7 +11,7 @@ import {
   type ChampionProfile,
   type PlayerProfile,
 } from "../playerProfile"
-import { calculateOfficialRating, globalRatingTitle } from "../scoring"
+import { globalRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -23,6 +24,7 @@ import type {
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import GameTitlePopover from "./GameTitlePopover.vue"
 import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
@@ -426,11 +428,19 @@ function openLivePlayer(player: LivePlayer) {
 }
 
 function gameRating(game: RecentGame) {
-  return calculateOfficialRating(
+  return gamePresentation(
     game,
     ratingContext.value,
     globalBaselinesByChampionId.value,
-  )
+  ).rating
+}
+
+function gameDisplayTitle(game: RecentGame) {
+  return gamePresentation(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  ).titleSet.displayTitle
 }
 
 function gameRatingClass(game: RecentGame) {
@@ -602,9 +612,18 @@ function gameRatingTitle(game: RecentGame) {
                   <div class="recent-kda">
                     <strong>{{ gameKda(game) }}</strong>
                   </div>
-                  <div :class="['score-cell', 'recent-score-cell', gameRatingClass(game)]">
-                    <strong>{{ gameRating(game).score }}分</strong>
-                  </div>
+                  <GameTitlePopover
+                    :game="game"
+                    :champions="champions"
+                    :rating-context="ratingContext"
+                    :global-baselines="globalBaselinesByChampionId"
+                    compact
+                  >
+                    <div :class="['score-cell', 'recent-score-cell', gameRatingClass(game)]">
+                      <strong>{{ gameRating(game).score }}分</strong>
+                      <span>{{ gameDisplayTitle(game) }}</span>
+                    </div>
+                  </GameTitlePopover>
                 </div>
               </div>
               <div class="recent-empty" v-else-if="playerView.player.stats">暂无数据</div>

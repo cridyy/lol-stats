@@ -3,11 +3,11 @@ import { computed, inject, ref, watch } from "vue"
 import { BarChart3, ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
 import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
+import { gamePresentation } from "../gamePresentation"
 import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import { notifyKey } from "../notifications"
 import { buildPlayerProfile, profileTierClass, profileTierLabel, type PlayerProfile } from "../playerProfile"
 import {
-  calculateOfficialRating,
   globalRatingTitle,
 } from "../scoring"
 import { matchTeamSummary } from "../matchTeamSummary"
@@ -18,10 +18,12 @@ import type {
   MatchDetailPlayer,
   MatchDetailResponse,
   RecentGame,
+  RecentGameParticipantRecord,
 } from "../types"
 import { fixed, formatDate, mitigationValue, teamMitigationValue } from "../utils"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import GameTitlePopover from "./GameTitlePopover.vue"
 
 const PLAYER_ABILITY_SCAN_DEPTH = 150
 const PLAYER_ABILITY_DISPLAY_DEPTH = 100
@@ -67,6 +69,29 @@ const ratingContext = computed(() => ({
   items: itemMap.value,
   champions: props.champions,
 }))
+const titleGameMap = computed(() => {
+  const players = allMatchPlayers()
+  const records: RecentGameParticipantRecord[] = players.map((player) => ({
+    ...player,
+    participantId: player.participantId,
+    puuid: player.puuid,
+    gameName: player.gameName,
+    tagLine: player.tagLine,
+    summonerName: player.summonerName,
+    // 对每个悬浮玩家都要让称号比较以“当前玩家”为主体；
+    // deriveComparison 会通过 PUUID/参与者编号自动找到主体。
+    isOwner: false,
+  }))
+
+  const entries: Array<[string, RecentGame]> = players.map((player) => [
+    playerKey(player),
+    {
+      ...player,
+      matchParticipants: records,
+    },
+  ])
+  return new Map(entries)
+})
 const chartMetrics: Array<{ key: ChartMetric; label: string }> = [
   { key: "damage", label: "伤害" },
   { key: "mitigation", label: "承伤" },
@@ -226,11 +251,19 @@ function detailStatLeader(
 }
 
 function outputRating(game: RecentGame) {
-  return calculateOfficialRating(
-    game,
+  return gamePresentation(
+    titleGame(game),
     ratingContext.value,
     globalBaselinesByChampionId.value,
-  )
+  ).rating
+}
+
+function displayTitle(game: RecentGame) {
+  return gamePresentation(
+    titleGame(game),
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  ).titleSet.displayTitle
 }
 
 function displayedRatingLevel(game: RecentGame) {
@@ -309,6 +342,16 @@ function playerAbilityKey(player: MatchDetailPlayer) {
 
 function allMatchPlayers() {
   return props.matchDetail?.teams.flatMap((team) => team.players) || []
+}
+
+function playerKey(player: Pick<MatchDetailPlayer, "puuid" | "teamId" | "participantId">) {
+  return player.puuid || `${player.teamId}:${player.participantId}`
+}
+
+function titleGame(game: RecentGame) {
+  if (!("participantId" in game)) return game
+  const detailPlayer = game as MatchDetailPlayer
+  return titleGameMap.value.get(playerKey(detailPlayer)) || game
 }
 
 async function loadPlayerAbilities() {
@@ -674,13 +717,21 @@ async function copyImage() {
               </strong>
             </div>
 
-            <div
-              :class="['score-cell', `score-${displayedRatingLevel(player)}`]"
-              :title="outputRatingHint(player)"
+            <GameTitlePopover
+              :game="titleGame(player)"
+              :champions="champions"
+              :rating-context="ratingContext"
+              :global-baselines="globalBaselinesByChampionId"
+              compact
             >
-              <strong>{{ scoreText(player) }}</strong>
-              <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
-            </div>
+              <div
+                :class="['score-cell', `score-${displayedRatingLevel(player)}`]"
+                :title="outputRatingHint(player)"
+              >
+                <strong>{{ scoreText(player) }}</strong>
+                <span>{{ outputRating(player).role.label }} · {{ displayTitle(player) }}</span>
+              </div>
+            </GameTitlePopover>
           </article>
         </div>
       </section>
@@ -1230,10 +1281,12 @@ async function copyImage() {
   position: relative;
   z-index: 1;
   max-width: 100%;
+  overflow: hidden;
   color: inherit;
   font-size: 10.5px;
   font-weight: 900;
   line-height: 1;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

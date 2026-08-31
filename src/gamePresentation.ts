@@ -1,10 +1,16 @@
+import { shallowRef } from "vue"
 import {
   calculateGlobalRating,
   calculateOfficialRating,
   type GlobalRating,
   type OutputRating,
 } from "./scoring"
-import { buildGameTitleSet, titleSelectionVersion, type GameTitleSet } from "./titles"
+import {
+  buildGameTitleSet,
+  refreshTitleSelectionSeed,
+  titleSelectionVersion,
+  type GameTitleSet,
+} from "./titles"
 import type { RatingContext } from "./roleClassifier"
 import type { GlobalChampionBaseline, RecentGame } from "./types"
 
@@ -23,13 +29,21 @@ interface PresentationCacheEntry {
 // 战绩列表会在同一帧内多次读取评分、称号和全服分；按对局和定位上下文缓存，
 // 避免每个模板表达式都重新扫描同局参与者。刷新称号种子后通过 titleVersion 自动失效。
 const presentationCache = new WeakMap<RecentGame, Map<RatingContext, PresentationCacheEntry>>()
+const reactiveTitleSelectionVersion = shallowRef(titleSelectionVersion())
+
+/** 重新抽取界面展示称号，并让所有已缓存的战绩展示立即失效。 */
+export function refreshGameTitleSelection() {
+  refreshTitleSelectionSeed()
+  reactiveTitleSelectionVersion.value = titleSelectionVersion()
+}
 
 export function gamePresentation(
   game: RecentGame,
   context: RatingContext = {},
   baselines?: ReadonlyMap<number, GlobalChampionBaseline>,
 ): GamePresentation {
-  const titleVersion = titleSelectionVersion()
+  // 读取响应式版本，使在 Vue 计算属性和渲染函数中的调用能随刷新立即更新。
+  const titleVersion = reactiveTitleSelectionVersion.value
   let contextCache = presentationCache.get(game)
   if (!contextCache) {
     contextCache = new Map<RatingContext, PresentationCacheEntry>()

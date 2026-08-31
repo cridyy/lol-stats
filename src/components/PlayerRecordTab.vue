@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue"
 import { loadRankedStats, searchPlayer } from "../api"
+import { refreshGameTitleSelection } from "../gamePresentation"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -46,6 +47,7 @@ function errorMessage(error: unknown) {
 
 async function loadRecent(forceRefresh = false, previousLoaded?: number) {
   if (recentLoading.value) return false
+  if (forceRefresh) refreshGameTitleSelection()
   recentLoading.value = true
   error.value = ""
 
@@ -102,6 +104,7 @@ async function loadStats(forceRefresh = false) {
     return
   }
   if (statsLoading.value) return
+  if (forceRefresh) refreshGameTitleSelection()
   statsLoading.value = true
   error.value = ""
 

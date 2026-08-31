@@ -5,10 +5,8 @@ import { loadMatchDetail } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { matchTeamSummary } from "../matchTeamSummary"
 import { notifyKey } from "../notifications"
-import {
-  calculateOfficialRating,
-  globalRatingTitle,
-} from "../scoring"
+import { globalRatingTitle } from "../scoring"
+import { gamePresentation } from "../gamePresentation"
 import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import type {
   ChampionSummaryItem,
@@ -22,6 +20,7 @@ import type {
 import { fixed, formatDate, mitigationValue, teamMitigationValue } from "../utils"
 import AssetIcon from "./AssetIcon.vue"
 import ChampionAvatar from "./ChampionAvatar.vue"
+import GameTitlePopover from "./GameTitlePopover.vue"
 
 const props = defineProps<{
   games: RecentGame[]
@@ -248,11 +247,19 @@ function detailStatLeader(game: RecentGame, kind: "damage" | "gold" | "mitigatio
 }
 
 function outputRating(game: RecentGame) {
-  return calculateOfficialRating(
+  return gamePresentation(
     game,
     ratingContext.value,
     globalBaselinesByChampionId.value,
-  )
+  ).rating
+}
+
+function displayTitle(game: RecentGame) {
+  return gamePresentation(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  ).titleSet.displayTitle
 }
 
 function displayedRatingLevel(game: RecentGame) {
@@ -449,13 +456,20 @@ async function openMatchDetail(game: RecentGame) {
         <span>伤害转化率</span>
       </div>
 
-      <div
-        :class="['score-cell', `score-${displayedRatingLevel(game)}`]"
-        :title="outputRatingHint(game)"
+      <GameTitlePopover
+        :game="game"
+        :champions="champions"
+        :rating-context="ratingContext"
+        :global-baselines="globalBaselinesByChampionId"
       >
-        <strong>{{ scoreText(game) }}</strong>
-        <span>{{ outputRating(game).role.label }} · {{ outputRating(game).label }}</span>
-      </div>
+        <div
+          :class="['score-cell', `score-${displayedRatingLevel(game)}`]"
+          :title="outputRatingHint(game)"
+        >
+          <strong>{{ scoreText(game) }}</strong>
+          <span>{{ outputRating(game).role.label }} · {{ displayTitle(game) }}</span>
+        </div>
+      </GameTitlePopover>
 
       <div class="accolade-tags" v-if="hasAccolade(game)">
         <span
@@ -622,13 +636,21 @@ async function openMatchDetail(game: RecentGame) {
                   </strong>
                 </div>
 
-                <div
-                  :class="['score-cell detail-score-cell', `score-${displayedRatingLevel(player)}`]"
-                  :title="outputRatingHint(player)"
+                <GameTitlePopover
+                  :game="player"
+                  :champions="champions"
+                  :rating-context="ratingContext"
+                  :global-baselines="globalBaselinesByChampionId"
+                  compact
                 >
-                  <strong>{{ scoreText(player) }}</strong>
-                  <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
-                </div>
+                  <div
+                    :class="['score-cell', 'detail-score-cell', `score-${displayedRatingLevel(player)}`]"
+                    :title="outputRatingHint(player)"
+                  >
+                    <strong>{{ scoreText(player) }}</strong>
+                    <span>{{ outputRating(player).role.label }} · {{ displayTitle(player) }}</span>
+                  </div>
+                </GameTitlePopover>
               </article>
             </div>
           </section>
@@ -923,10 +945,12 @@ async function openMatchDetail(game: RecentGame) {
   position: relative;
   z-index: 1;
   max-width: 100%;
+  overflow: hidden;
   color: inherit;
   font-size: 11.5px;
   font-weight: 900;
   line-height: 1;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

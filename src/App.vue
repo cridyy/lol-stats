@@ -62,6 +62,7 @@ import {
   globalBaselinesByChampionId,
   initializeGlobalBaselines,
 } from "./globalBaselines"
+import { refreshGameTitleSelection } from "./gamePresentation"
 import {
   buildLocalApiResponse,
   localApiModeMatches,
@@ -1479,6 +1480,7 @@ async function handleLocalApiRequest(request: LocalApiRequestPayload) {
 
 async function loadCurrentRecent(forceRefresh = false, previousLoaded?: number) {
   if (currentRecentLoading.value) return false
+  if (forceRefresh) refreshGameTitleSelection()
   currentRecentLoading.value = true
   currentError.value = ""
   try {
@@ -1536,6 +1538,7 @@ async function loadCurrentRanked() {
 async function loadCurrentStats(forceRefresh = false) {
   if (currentFullStats.value && !forceRefresh) return
   if (currentStatsLoading.value) return
+  if (forceRefresh) refreshGameTitleSelection()
   const requestId = createRequestId("current-stats")
   const startedAt = Date.now()
   currentStatsLoading.value = true
@@ -1720,6 +1723,7 @@ async function loadSearchRanked(puuid: string, forceRefresh = false) {
 
 async function loadSearchRecent(forceRefresh = false, previousLoaded?: number) {
   if (!activeSearchQuery.value || searchRecentLoading.value) return false
+  if (forceRefresh) refreshGameTitleSelection()
   searchRecentLoading.value = true
   searchError.value = ""
   try {
@@ -1768,6 +1772,7 @@ async function loadSearchRecentMore() {
 async function loadSearchStats(forceRefresh = false) {
   if (searchFullStats.value && !forceRefresh) return
   if (!activeSearchQuery.value || searchStatsLoading.value) return
+  if (forceRefresh) refreshGameTitleSelection()
   const requestId = createRequestId("search-stats")
   const startedAt = Date.now()
   searchStatsLoading.value = true
@@ -1841,6 +1846,7 @@ async function refreshLiveGame(options: { silent?: boolean; switchPage?: boolean
   const silent = Boolean(options.silent)
   const switchPage = options.switchPage ?? !silent
   if (liveLoading.value || liveRefreshing.value) return
+  if (!silent) refreshGameTitleSelection()
 
   if (liveGame.value) {
     liveRefreshing.value = true

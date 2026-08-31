@@ -4,13 +4,14 @@ import {
   type ChampionProfile,
   type PlayerProfile,
 } from "./playerProfile"
+import { refreshGameTitleSelection } from "./gamePresentation"
 import {
   calculateGlobalRating,
   calculateOfficialRating,
   globalRatingTitle,
   scoreEvaluationLabel,
 } from "./scoring"
-import { buildGameTitleSet, refreshTitleSelectionSeed } from "./titles"
+import { buildGameTitleSet } from "./titles"
 import type { RatingContext } from "./roleClassifier"
 import type {
   ChampionSummaryItem,
@@ -72,7 +73,7 @@ export function buildLocalApiResponse(
   options: LocalApiBuildOptions,
 ) {
   // 每次接口刷新重新抽取展示称号；同一响应内仍保持稳定，便于列表和悬浮窗对应。
-  refreshTitleSelectionSeed()
+  refreshGameTitleSelection()
   const profile = buildPlayerProfile(games, options.ratingContext, {
     globalBaselines: options.globalBaselines,
   })
