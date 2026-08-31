@@ -777,7 +777,8 @@ const TITLE_RULES: TitleRule[] = [
     || (f.metrics.killParticipation >= 0.78 && f.metrics.damageShare <= 0.16)
     || (f.metrics.mitigationShare >= 0.35 && f.metrics.damageShare <= 0.16)
   ), "资源、击杀或承伤与实际产出明显错位"),
-  rule("泉水指挥官", "调侃", "通用", (f) => numberOr(f.game.deaths) >= 14
+  rule("泉水指挥官", "调侃", "通用", (f) => f.score < 60
+    && numberOr(f.game.deaths) >= 14
     && f.metrics.deathShare >= 0.26 && numberOr(f.game.deaths) / f.gameMinutes >= 0.7, "死亡次数和死亡负担都很高"),
   rule("喜欢K？", "调侃", "对局", (f) => !f.game.win && f.score <= 65
     && f.metrics.killShare >= 0.28
@@ -801,7 +802,7 @@ const TITLE_RULES: TitleRule[] = [
 
   // 坦克 / 前排。
   rule("自转的陀螺", "特征", "定位", (f) => isTank(f.role) && f.game.win
-    && f.score >= 60 && f.metrics.mitigationShare >= 0.32 && f.metrics.killParticipation <= 0.68, "赢下对局但主要靠承伤旋转战场"),
+    && f.score < 60 && f.metrics.mitigationShare >= 0.32 && f.metrics.killParticipation <= 0.68, "赢下对局但主要靠承伤旋转战场"),
   rule("旋转至败", "调侃", "定位", (f) => isTank(f.role) && !f.game.win
     && f.metrics.mitigationShare >= 0.3 && f.metrics.killParticipation <= 0.68, "败方仍然承担了大量伤害"),
   rule("一夫当关", "高光", "定位", (f) => isTank(f.role) && f.score >= 78
@@ -816,7 +817,8 @@ const TITLE_RULES: TitleRule[] = [
   rule("喜欢当Tes？", "调侃", "对局", (f) => isTank(f.role) && !f.game.win
     && f.score >= 62 && f.matchAvailable && f.allyMageOrAdcCount >= 3
     && (atMost(f.comparison?.teamScoreRank, 2) || atLeast(f.comparison?.teamScoreGapToTeammates, 8)), "前排队友全是输出位且最终落败"),
-  rule("发癫了？", "调侃", "定位", (f) => (isTank(f.role) || isFighter(f.role))
+  rule("发癫了？", "调侃", "定位", (f) => f.score < 60
+    && (isTank(f.role) || isFighter(f.role))
     && numberOr(f.game.deaths) >= 15 && f.metrics.deathShare >= 0.27
     && numberOr(f.game.deaths) / f.gameMinutes >= 0.75, "冲得很勤，回城也很勤"),
 

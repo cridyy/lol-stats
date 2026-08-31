@@ -260,6 +260,34 @@ const atSixtyTitles = buildGameTitleSet(belowSixtyGame, { ...belowSixtyRating, s
 assert.equal(atSixtyTitles.titles.includes("一般人机"), false)
 assert.equal(atSixtyTitles.titles.includes("小泯一把"), false)
 
+// 低分调侃/错位称号的分界统一为 60 分以下；60 分及以上不能命中。
+const tankContext = { champions: { 1: { roles: ["Tank"] } } }
+const tankGame = sampleGame(0, undefined, {
+  win: true,
+  deaths: 15,
+  gameDeaths: 30,
+  itemIds: [],
+})
+const tankBaseRating = calculateOfficialRating(tankGame, tankContext)
+const tankLowRating = {
+  ...tankBaseRating,
+  score: 59,
+  metrics: {
+    ...tankBaseRating.metrics,
+    mitigationShare: 0.34,
+    killParticipation: 0.6,
+    deathShare: 0.3,
+  },
+}
+const tankLowTitles = buildGameTitleSet(tankGame, tankLowRating, { ratingContext: tankContext })
+assert.equal(tankLowTitles.titles.includes("自转的陀螺"), true)
+assert.equal(tankLowTitles.titles.includes("发癫了？"), true)
+assert.equal(tankLowTitles.titles.includes("泉水指挥官"), true)
+const tankAtSixtyTitles = buildGameTitleSet(tankGame, { ...tankLowRating, score: 60 }, { ratingContext: tankContext })
+assert.equal(tankAtSixtyTitles.titles.includes("自转的陀螺"), false)
+assert.equal(tankAtSixtyTitles.titles.includes("发癫了？"), false)
+assert.equal(tankAtSixtyTitles.titles.includes("泉水指挥官"), false)
+
 const profileOptions = { timeWeighted: false, globalBaselines: baselines }
 const playerProfile = buildPlayerProfile([formalGame], supportContext, profileOptions)
 const championProfile = buildChampionProfiles([formalGame], supportContext, profileOptions)[0]
