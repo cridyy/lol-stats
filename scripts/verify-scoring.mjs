@@ -14,7 +14,7 @@ const bundle = await build({
     contents: [
       'export { calculateOfficialRating, calculateOutputRating, globalRatingTitle } from "./src/scoring.ts"',
       'export { buildChampionProfiles, buildPlayerProfile } from "./src/playerProfile.ts"',
-      'export { buildGameTitleSet } from "./src/titles.ts"',
+      'export { buildGameTitleSet, titleRuleNames } from "./src/titles.ts"',
     ].join("\n"),
     resolveDir: rootDir,
     sourcefile: "scoring-verification.ts",
@@ -36,6 +36,7 @@ const {
   calculateOfficialRating,
   calculateOutputRating,
   buildGameTitleSet,
+  titleRuleNames,
   globalRatingTitle,
 } = verificationModule.exports
 
@@ -181,7 +182,7 @@ const nationalBaseline = {
 const nationalBaselines = new Map([[1, nationalBaseline]])
 const nationalContext = {
   champions: {
-    1: { name: "测试英雄", alias: "Test", roles: ["Marksman"] },
+    1: { name: "疾风剑豪", title: "亚索", alias: "Yasuo", roles: ["Marksman"] },
   },
 }
 const nationalGame = sampleGame(2, 15 * 60, {
@@ -212,7 +213,52 @@ const nationalTitles = buildGameTitleSet(nationalGame, nationalRating, {
   ratingContext: nationalContext,
   globalBaselines: nationalBaselines,
 })
-assert.equal(nationalTitles.titles.includes("国服最强测试英雄"), true)
+assert.equal(nationalTitles.titles.includes("国服最强亚索"), true)
+assert.equal(nationalTitles.titles.includes(nationalRating.label), true)
+assert.equal(nationalTitles.details.some((detail) => detail.name === nationalRating.label && detail.category === "评分"), true)
+assert.equal(titleRuleNames().includes("区区！？"), false)
+
+// 国服输出称号额外要求至少 1.40 的修正伤转；只堆伤害占比而伤转不足时不能命中。
+const lowConversionNationalGame = {
+  ...nationalGame,
+  goldEarned: 37_000,
+  teamGoldEarned: 100_000,
+}
+const lowConversionNationalRating = calculateOfficialRating(
+  lowConversionNationalGame,
+  nationalContext,
+  nationalBaselines,
+)
+const lowConversionNationalTitles = buildGameTitleSet(lowConversionNationalGame, lowConversionNationalRating, {
+  ratingContext: nationalContext,
+  globalBaselines: nationalBaselines,
+})
+assert.ok(lowConversionNationalRating.score >= 90)
+assert.ok(lowConversionNationalRating.metrics.effectiveDamageConversion < 1.4)
+assert.equal(lowConversionNationalTitles.titles.includes("国服最强亚索"), false)
+
+// 普通称号明确位于 60 分以下；60 分及以上不能命中这两个称号。
+const belowSixtyGame = sampleGame(2, 15 * 60, {
+  gameId: 2,
+  gameDuration: 12 * 60,
+})
+const belowSixtyRating = {
+  ...calculateOfficialRating(belowSixtyGame, {}),
+  score: 59,
+  metrics: {
+    ...calculateOfficialRating(belowSixtyGame, {}).metrics,
+    damageShare: 0.2,
+    effectiveDamageConversion: 1,
+    killParticipation: 0.6,
+    deathShare: 0.2,
+  },
+}
+const belowSixtyTitles = buildGameTitleSet(belowSixtyGame, belowSixtyRating)
+assert.equal(belowSixtyTitles.titles.includes("一般人机"), true)
+assert.equal(belowSixtyTitles.titles.includes("小泯一把"), true)
+const atSixtyTitles = buildGameTitleSet(belowSixtyGame, { ...belowSixtyRating, score: 60 })
+assert.equal(atSixtyTitles.titles.includes("一般人机"), false)
+assert.equal(atSixtyTitles.titles.includes("小泯一把"), false)
 
 const profileOptions = { timeWeighted: false, globalBaselines: baselines }
 const playerProfile = buildPlayerProfile([formalGame], supportContext, profileOptions)

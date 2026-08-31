@@ -16,7 +16,7 @@ import { mitigationValue } from "./utils"
 
 /** 称号稀有度只影响展示池抽取概率，不影响是否命中。 */
 export type GameTitleTier = "神话" | "高光" | "特征" | "普通" | "调侃"
-export type GameTitleCategory = "通用" | "定位" | "英雄" | "对局"
+export type GameTitleCategory = "评分" | "通用" | "定位" | "英雄" | "对局"
 
 export interface GameTitleDetail {
   name: string
@@ -27,9 +27,9 @@ export interface GameTitleDetail {
 }
 
 export interface GameTitleSet {
-  /** 当前会显示的一个称号；没有命中专属称号时回退到评分标签。 */
+  /** 当前会显示的一个称号；从评分称号和娱乐称号的合并池中抽取。 */
   displayTitle: string
-  /** 当前对局命中的全部专属称号，顺序稳定，便于悬浮窗展示。 */
+  /** 当前对局命中的全部评分称号和娱乐称号，顺序稳定，便于悬浮窗展示。 */
   titles: string[]
   details: GameTitleDetail[]
   /** 伤害第一、队内第一等事实标签，与娱乐称号分开。 */
@@ -215,7 +215,9 @@ function championTitleName(
   baseline: GlobalChampionBaseline | undefined,
 ) {
   const champion = context.champions?.[game.championId]
-  const name = String(champion?.name || baseline?.name || champion?.alias || "").trim()
+  // LCU 的 champion-summary 中，name 通常是“疾风剑豪”这类英雄称号，
+  // title 是“亚索”这类短名；国服称号使用短名，避免生成“国服最强疾风剑豪”。
+  const name = String(champion?.title || champion?.name || baseline?.name || champion?.alias || "").trim()
   return name || `英雄${game.championId}`
 }
 
@@ -489,6 +491,8 @@ const NATIONAL_SCORE_MINIMUM = 90
 const NATIONAL_PRIMARY_RATIO = 1.4
 const NATIONAL_SECONDARY_RATIO = 1.2
 const NATIONAL_COMBINED_RATIO = 1.3
+/** 输出路线的国服称号必须先通过评分口径的修正伤转门槛。 */
+const NATIONAL_OUTPUT_CONVERSION_MINIMUM = 1.4
 
 /** 保留玩家已经约定的几个梗名，其余英雄统一使用“国服最强 + 短名”。 */
 const NATIONAL_TITLE_ALIASES: Readonly<Record<number, string>> = {
@@ -656,7 +660,11 @@ function nationalTitleDetail(facts: TitleFacts): GameTitleDetail | null {
     .filter((entry) => entry.validMetricCount >= 2
       && entry.primaryRatio >= NATIONAL_PRIMARY_RATIO
       && entry.secondaryRatio >= NATIONAL_SECONDARY_RATIO
-      && entry.combinedRatio >= NATIONAL_COMBINED_RATIO)
+      && entry.combinedRatio >= NATIONAL_COMBINED_RATIO
+      // 输出、法师、射手和输出型战士的“国服”不能只靠刷伤害占比，
+      // 还要有至少 1.40 的修正伤转；前排/治疗/护盾路线仍按自身职责评价。
+      && (entry.route.name !== "输出路线"
+        || facts.metrics.effectiveDamageConversion >= NATIONAL_OUTPUT_CONVERSION_MINIMUM))
     .sort((left, right) => right.combinedRatio - left.combinedRatio)
   const evidence = candidates[0]
   if (!evidence) return null
@@ -689,6 +697,38 @@ function rule(
   }
 }
 
+function ratingTitleTier(score: number): GameTitleTier {
+  if (score >= 90) return "神话"
+  if (score >= 80) return "高光"
+  if (score >= 60) return "普通"
+  return "调侃"
+}
+
+/**
+ * 原评分系统已经存在的单个行为称号（rating.label）。
+ * 现在它和娱乐称号共用一个池子，但仍通过 category=评分 保留来源信息。
+ */
+function legacyRatingTitleDetail(rating: OutputRating): GameTitleDetail | null {
+  const name = String(rating.label || "").trim()
+  if (!name) return null
+  return {
+    name,
+    tier: ratingTitleTier(rating.score),
+    category: "评分",
+    reason: `评分系统根据${rating.role.label}定位与本局指标生成的评分称号`,
+  }
+}
+
+function uniqueTitleDetails(details: GameTitleDetail[]) {
+  const seen = new Set<string>()
+  return details.filter((detail) => {
+    const name = detail.name.trim()
+    if (!name || seen.has(name)) return false
+    seen.add(name)
+    return true
+  })
+}
+
 /**
  * 规则故意分成“普通可见、强表现、极少数神话、负面调侃”四层。
  * 称号不改变评分，只描述这一局发生了什么；同一局可以同时命中多个称号。
@@ -702,10 +742,10 @@ const TITLE_RULES: TitleRule[] = [
     && (!f.matchAvailable || (atLeast(f.comparison?.teamScoreRank, 4) && atMost(f.comparison?.teamScoreGapToTeammates, -6))), "赢了但位于队伍后段"),
   rule("少冰七分糖", "调侃", "通用", (f) => f.score >= 40 && f.score < 60
     && f.weakSignals >= 1, "评分处于拉跨区间，并出现至少一个明确的唐点"),
-  rule("一般人机", "普通", "通用", (f) => f.score >= 60 && f.score <= 79 && f.weakSignals <= 1
+  rule("一般人机", "普通", "通用", (f) => f.score < 60 && f.weakSignals <= 1
     && f.metrics.killParticipation >= 0.5 && f.metrics.killParticipation <= 0.8
     && !f.gameDamageLeader && !f.teamDamageLeader, "大多数指标处在正常区间"),
-  rule("小泯一把", "普通", "对局", (f) => f.game.win && f.score >= 60 && f.score <= 79
+  rule("小泯一把", "普通", "对局", (f) => f.game.win && f.score < 60
     && !f.gameDamageLeader && !f.teamDamageLeader
     // teamScoreRank 是 1 到 5，排名 3 以后才表示“没有成为队伍核心”。
     && (!f.matchAvailable || atLeast(f.comparison?.teamScoreRank, 3)), "赢下对局但没有成为队伍核心"),
@@ -714,6 +754,8 @@ const TITLE_RULES: TitleRule[] = [
     && (atMost(f.comparison?.teammatesAverageScore, 62) || atLeast(f.comparison?.scoreGapToOpponents, 8)), "败方仍是队内前列，队友或对手差距明显"),
   rule("女武神", "高光", "对局", (f) => !f.game.win && f.matchAvailable
     && f.score >= 85 && atMost(f.comparison?.teamScoreRank, 1)
+    && f.metrics.mitigationShare >= 0.3
+    && f.metrics.effectiveDamageConversion >= 1.35
     && (atLeast(f.comparison?.teamScoreGapToTeammates, 5) || atLeast(f.comparison?.scoreGapToOpponents, 5)), "败方队内第一且个人表现明显高于队友"),
   rule("渡劫失败", "高光", "对局", (f) => !f.game.win && f.matchAvailable
     && f.score >= 82
@@ -724,7 +766,8 @@ const TITLE_RULES: TitleRule[] = [
       || atLeast(f.comparison?.teamScoreGapToTeammates, 15)), "队友整体掉队，自己已经尽力但仍然落败"),
   rule("本质高手", "高光", "通用", (f) => f.score >= 85
     && (!f.matchAvailable || atMost(f.comparison?.gameScoreRank, 3) || atMost(f.comparison?.teamScoreRank, 2))
-    && (f.metrics.damageShare >= 0.28 || f.metrics.mitigationShare >= 0.32 || f.metrics.killParticipation >= 0.78 || f.protectionRatio >= 1.2), "高分且在至少一个关键维度领先"),
+    && f.metrics.damageShare >= 0.3
+    && f.metrics.effectiveDamageConversion >= 1.25, "高分且伤害占比、修正伤转同时突出"),
   rule("已击败全服1%的对手", "调侃", "通用", (f) => f.score <= 40 && f.weakSignals >= 2
     && ["damageToChampions", "damageTaken", "selfMitigatedDamage", "allyHealing", "allyShielding", "crowdControlDurationSeconds"]
       .filter((key) => atMost(f.globalRatios[key as GlobalBaselineMetricKey], 0.7)).length >= 2, "相对英雄全服均值的核心表现明显偏低（娱乐称号）"),
@@ -790,9 +833,6 @@ const TITLE_RULES: TitleRule[] = [
   rule("吾乃常山赵子龙", "高光", "定位", (f) => isFighter(f.role) && f.score >= 78
     && f.metrics.deathShare <= 0.18 && f.metrics.mitigationShare >= 0.28
     && f.metrics.healingShare >= 0.2 && f.metrics.killParticipation >= 0.65, "少死、能扛、还能持续参团"),
-  rule("区区！？", "特征", "定位", (f) => isFighter(f.role) && f.game.win && f.score >= 78
-    && f.metrics.mitigationShare >= 0.28 && f.metrics.deathShare <= 0.2
-    && f.metrics.kda >= 3.5, "战士赢下正面碰撞"),
   rule("独断万古荒天帝", "神话", "定位", (f) => isFighter(f.role) && f.game.win && f.score >= 95
     && (f.comparison?.gameScoreLeader === true || f.gameDamageLeader)
     && f.metrics.damageShare >= 0.35 && f.metrics.effectiveDamageConversion >= 1.6, "战士获胜且全场输出登顶"),
@@ -908,7 +948,7 @@ export function buildGameTitleSet(
   suppliedComparison?: TitleMatchComparison | null,
 ): GameTitleSet {
   const facts = buildFacts(game, rating, options, suppliedComparison)
-  const details = TITLE_RULES
+  const entertainmentDetails = TITLE_RULES
     .filter((candidate) => candidate.test(facts))
     .map((candidate) => ({
       name: candidate.name,
@@ -917,7 +957,13 @@ export function buildGameTitleSet(
       reason: candidate.reason(facts),
     }))
   const nationalTitle = nationalTitleDetail(facts)
-  if (nationalTitle) details.push(nationalTitle)
+  const legacyTitle = legacyRatingTitleDetail(rating)
+  const details = uniqueTitleDetails([
+    // 原评分称号与新增娱乐称号同池随机展示，不再由娱乐称号覆盖旧称号。
+    ...(legacyTitle ? [legacyTitle] : []),
+    ...entertainmentDetails,
+    ...(nationalTitle ? [nationalTitle] : []),
+  ])
   const fallback = rating.label
   return {
     displayTitle: pickDisplayTitle(details, game, fallback),
