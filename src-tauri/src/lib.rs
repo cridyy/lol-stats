@@ -1,12 +1,20 @@
 mod commands;
 mod services;
 
+use services::local_api::{start_local_api_server, LocalApiState};
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(LocalApiState::default())
         .plugin(tauri_plugin_opener::init())
-        .setup(|_| {
+        .setup(|app| {
             services::global_baselines::start_daily_update_check();
+            let local_api_state = app.state::<LocalApiState>().inner().clone();
+            if let Err(error) = start_local_api_server(app.handle().clone(), local_api_state) {
+                eprintln!("[local-api] {error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -23,6 +31,7 @@ pub fn run() {
             commands::load_current_ranked_stats,
             commands::load_gameflow_phase,
             commands::load_game_assets,
+            commands::load_global_baselines,
             commands::set_hex_winrate_recognition_enabled,
             commands::set_hex_winrate_capture_mode,
             commands::set_quick_bench_swap_enabled,
@@ -39,6 +48,8 @@ pub fn run() {
             commands::start_player_elo_estimate_task,
             commands::get_player_elo_estimate_task,
             commands::clear_player_elo_cache,
+            commands::complete_local_api_request,
+            commands::set_local_api_frontend_ready,
             commands::load_live_game,
             commands::load_friends,
             commands::set_chat_availability,

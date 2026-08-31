@@ -3,9 +3,13 @@ import { computed, inject, ref, watch } from "vue"
 import { BarChart3, ClipboardCopy, LoaderCircle, Eye, EyeOff } from "lucide-vue-next"
 import { searchPlayer } from "../api"
 import { copyElementAsPng } from "../imageShare"
+import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import { notifyKey } from "../notifications"
 import { buildPlayerProfile, profileTierClass, profileTierLabel, type PlayerProfile } from "../playerProfile"
-import { calculateOutputRating, outputRatingTitle } from "../scoring"
+import {
+  calculateOfficialRating,
+  globalRatingTitle,
+} from "../scoring"
 import { matchTeamSummary } from "../matchTeamSummary"
 import type {
   ChampionSummaryItem,
@@ -222,11 +226,28 @@ function detailStatLeader(
 }
 
 function outputRating(game: RecentGame) {
-  return calculateOutputRating(game, ratingContext.value)
+  return calculateOfficialRating(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  )
+}
+
+function displayedRatingLevel(game: RecentGame) {
+  return outputRating(game).level
+}
+
+function scoreText(game: RecentGame) {
+  return `${outputRating(game).score}分`
 }
 
 function outputRatingHint(game: RecentGame) {
-  return outputRatingTitle(game, ratingContext.value)
+  return globalRatingTitle(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+    globalBaselineDataset.value?.datasetVersion,
+  )
 }
 
 function playerAbilityLabel(player: MatchDetailPlayer) {
@@ -329,7 +350,9 @@ async function loadPlayerAbility(player: MatchDetailPlayer) {
           abilityQueueMatches(game, props.matchDetail || props.game),
       )
       .slice(0, PLAYER_ABILITY_DISPLAY_DEPTH)
-    const profile = buildPlayerProfile(games, ratingContext.value)
+    const profile = buildPlayerProfile(games, ratingContext.value, {
+      globalBaselines: globalBaselinesByChampionId.value,
+    })
 
     setPlayerAbilityState(player, { loading: false, error: "", profile })
   } catch (error) {
@@ -652,10 +675,10 @@ async function copyImage() {
             </div>
 
             <div
-              :class="['score-cell', `score-${outputRating(player).level}`]"
-            :title="outputRatingHint(player)"
-          >
-              <strong>{{ outputRating(player).score }}分</strong>
+              :class="['score-cell', `score-${displayedRatingLevel(player)}`]"
+              :title="outputRatingHint(player)"
+            >
+              <strong>{{ scoreText(player) }}</strong>
               <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
             </div>
           </article>
@@ -997,6 +1020,12 @@ async function copyImage() {
   gap: 4px;
 }
 
+.overview-body:not(.chart-mode) .detail-list {
+  gap: 0;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
 .detail-row {
   height: 48px;
   min-height: 48px;
@@ -1007,6 +1036,20 @@ async function copyImage() {
   border-radius: 8px;
   cursor: pointer;
   padding: 2px 7px;
+}
+
+.overview-body:not(.chart-mode) .detail-row {
+  border: 0;
+  border-left: 5px solid transparent;
+  border-radius: 0;
+}
+
+.overview-body:not(.chart-mode) .detail-row:first-child {
+  border-radius: 6px 6px 0 0;
+}
+
+.overview-body:not(.chart-mode) .detail-row:last-child {
+  border-radius: 0 0 6px 6px;
 }
 
 .detail-row:hover {

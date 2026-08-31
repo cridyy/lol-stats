@@ -1051,6 +1051,344 @@ html[data-theme="dark"] body .app-shell .search-landing .history-open span {
 html[data-theme="dark"] body .app-shell .search-landing .history-open strong {
   color: #e1e1e1 !important;
 }
+
+/* Live player cards keep a restrained tier tint on the headline and neutral metrics below. */
+html[data-theme="dark"] .app-shell .profile-panel-line {
+  gap: 4px !important;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row) {
+  --live-profile-accent: #b7b7b7;
+  --live-profile-surface: #292929;
+}
+
+html[data-theme="dark"] .app-shell .profile-main-row {
+  border: 0 !important;
+  background: var(--live-profile-surface) !important;
+  box-shadow: none !important;
+  color: #ededed !important;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row).profile-tier-apex {
+  --live-profile-accent: #c7a15d;
+  --live-profile-surface: #302a21;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row).profile-tier-steady {
+  --live-profile-accent: #59d99b;
+  --live-profile-surface: #202c25;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row).profile-tier-normal {
+  --live-profile-accent: #75baff;
+  --live-profile-surface: #222b35;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row).profile-tier-small-pit {
+  --live-profile-accent: #f0b45e;
+  --live-profile-surface: #322b21;
+}
+
+html[data-theme="dark"] .app-shell :is(.profile-main-row, .profile-stat-row).profile-tier-big-pit {
+  --live-profile-accent: #ff7777;
+  --live-profile-surface: #332325;
+}
+
+html[data-theme="dark"] .app-shell .profile-main-row b {
+  color: var(--live-profile-accent) !important;
+}
+
+html[data-theme="dark"] .app-shell .profile-stat-row {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #b6b6b6 !important;
+  padding: 6px 3px 1px !important;
+}
+
+html[data-theme="dark"] .app-shell .profile-stat-row span {
+  color: #b6b6b6 !important;
+}
+
+/* Historical match rows use quiet result tints, neutral outlines, and a slim status rail. */
+html[data-theme="dark"] .app-shell .recent-game {
+  border-width: 1px !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.win {
+  border-color: #4a4a4a !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.loss {
+  border-color: #4a4a4a !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.win:hover {
+  border-color: #5a5a5a !important;
+  background: #26352c !important;
+  border-left-color: #599c72 !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.loss:hover {
+  border-color: #5a5a5a !important;
+  background: #3b292c !important;
+  border-left-color: #ca4b4b !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game {
+  border-left-width: 3px !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.win {
+  border-left-color: #599c72 !important;
+}
+
+html[data-theme="dark"] .app-shell .recent-game.loss {
+  border-left-color: #ca4b4b !important;
+}
+
+/* Apply the same quiet result treatment to the current player's match history. */
+html[data-theme="dark"] .app-shell .record-row.interactive {
+  border-width: 1px !important;
+  border-left-width: 5px !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] .app-shell .record-row.interactive.win {
+  border-color: #4a4a4a !important;
+  border-left-color: #599c72 !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] .app-shell .record-row.interactive.lose {
+  border-color: #4a4a4a !important;
+  border-left-color: #ca4b4b !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] .app-shell .record-row.interactive.win:hover {
+  border-color: #5a5a5a !important;
+  border-left-color: #599c72 !important;
+  background: #26352c !important;
+  filter: none !important;
+}
+
+html[data-theme="dark"] .app-shell .record-row.interactive.lose:hover {
+  border-color: #5a5a5a !important;
+  border-left-color: #ca4b4b !important;
+  background: #3b292c !important;
+  filter: none !important;
+}
+
+/* Score cells use a bright border matching their rating tier. */
+html[data-theme="dark"] .app-shell .score-cell.score-excellent {
+  border: 1px solid #c7a15d !important;
+}
+
+html[data-theme="dark"] .app-shell .score-cell.score-good {
+  border: 1px solid #59d99b !important;
+}
+
+html[data-theme="dark"] .app-shell .score-cell.score-average {
+  border: 1px solid #75baff !important;
+}
+
+html[data-theme="dark"] .app-shell .score-cell.score-poor {
+  border: 1px solid #ff7777 !important;
+}
+
+/* The match detail dialog is teleported outside .app-shell, so it needs its own dark rules. */
+html[data-theme="dark"] body .match-detail-tab,
+html[data-theme="dark"] body .match-detail-tab.active {
+  color: #f4f4f4 !important;
+  border: 1px solid #4a4a4a !important;
+  background: #303030 !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal {
+  border-color: #3b3b3b !important;
+  background: #1f1f1f !important;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 42%) !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-toolbar {
+  border-bottom-color: #3b3b3b !important;
+  background: #252525 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-body {
+  background: #1f1f1f !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-team {
+  border-color: #3b3b3b !important;
+  background: #252525 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-team-header {
+  border: 1px solid #4a4a4a !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-team-header.win {
+  color: #a8eabc !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .match-detail-team-header.lose {
+  color: #ff9696 !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row {
+  border-width: 1px !important;
+  border-left-width: 5px !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row.win {
+  border-color: #4a4a4a !important;
+  border-left-color: #599c72 !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row.lose {
+  border-color: #4a4a4a !important;
+  border-left-color: #ca4b4b !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row .queue-name {
+  color: #e1e1e1 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row.win .queue-name {
+  color: #a8eabc !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .record-row.detail-row.lose .queue-name {
+  color: #ff9696 !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .score-cell.score-excellent {
+  border: 1px solid #c7a15d !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .score-cell.score-good {
+  border: 1px solid #59d99b !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .score-cell.score-average {
+  border: 1px solid #75baff !important;
+}
+
+html[data-theme="dark"] body .match-detail-modal .score-cell.score-poor {
+  border: 1px solid #ff7777 !important;
+}
+
+/* The standalone detail tab has its own component tree, separate from the modal detail view. */
+html[data-theme="dark"] .app-shell .overview-panel {
+  border-color: #3b3b3b !important;
+  background: #1f1f1f !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-toolbar {
+  border-bottom-color: #3b3b3b !important;
+  background: #252525 !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-body {
+  background: #1f1f1f !important;
+}
+
+html[data-theme="dark"] .app-shell .team-block {
+  border-color: #3b3b3b !important;
+  background: #252525 !important;
+}
+
+html[data-theme="dark"] .app-shell .team-header.win {
+  border: 1px solid #4a4a4a !important;
+  color: #a8eabc !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] .app-shell .team-header.lose {
+  border: 1px solid #4a4a4a !important;
+  color: #ff9696 !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row {
+  border-width: 1px !important;
+  border-left-width: 5px !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.win {
+  border-color: #4a4a4a !important;
+  border-left-color: #599c72 !important;
+  background: #202c25 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.lose {
+  border-color: #4a4a4a !important;
+  border-left-color: #ca4b4b !important;
+  background: #332325 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.win .champion-cell > span:not(.player-ability-cell) {
+  color: #a8eabc !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.lose .champion-cell > span:not(.player-ability-cell) {
+  color: #ff9696 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.win:hover {
+  border-color: #5a5a5a !important;
+  border-left-color: #599c72 !important;
+  background: #26352c !important;
+  filter: none !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-row.lose:hover {
+  border-color: #5a5a5a !important;
+  border-left-color: #ca4b4b !important;
+  background: #3b292c !important;
+  filter: none !important;
+}
+
+/* Stack a team's rows into one continuous result surface. */
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-list {
+  gap: 0 !important;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-row {
+  border: 0 !important;
+  border-left: 5px solid transparent !important;
+  border-radius: 0 !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-row.win {
+  border-left-color: #599c72 !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-row.lose {
+  border-left-color: #ca4b4b !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-row:first-child {
+  border-radius: 6px 6px 0 0 !important;
+}
+
+html[data-theme="dark"] .app-shell .overview-panel .overview-body:not(.chart-mode) .detail-row:last-child {
+  border-radius: 0 0 6px 6px !important;
+}
 `
 
 const DARK_THEME_FIXES = {
@@ -1072,22 +1410,32 @@ const DARK_THEME_FIXES = {
   ignoreCSSUrl: [],
 }
 
+function syncDarkThemeCss() {
+  let style = document.getElementById(THEME_STYLE_ID)
+  if (!style) {
+    style = document.createElement("style")
+    style.id = THEME_STYLE_ID
+    style.classList.add("darkreader")
+    document.head.appendChild(style)
+  }
+  style.textContent = DARK_THEME_CSS
+}
+
 export function applyTheme(darkModeEnabled: boolean) {
   document.documentElement.dataset.theme = darkModeEnabled ? "dark" : "light"
   document.documentElement.style.colorScheme = darkModeEnabled ? "dark" : "light"
 
   if (darkModeEnabled) {
     enable(DARK_THEME, DARK_THEME_FIXES)
-    let style = document.getElementById(THEME_STYLE_ID)
-    if (!style) {
-      style = document.createElement("style")
-      style.id = THEME_STYLE_ID
-      style.classList.add("darkreader")
-      document.head.appendChild(style)
-    }
-    style.textContent = DARK_THEME_CSS
+    syncDarkThemeCss()
   } else {
     disable()
     document.getElementById(THEME_STYLE_ID)?.remove()
   }
+}
+
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload()
+  })
 }

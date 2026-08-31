@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { loadRankedStats } from "../api"
+import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import {
   buildChampionProfiles,
   buildPlayerProfile,
@@ -9,7 +10,7 @@ import {
   type ChampionProfile,
   type PlayerProfile,
 } from "../playerProfile"
-import { calculateOutputRating, outputRatingTitle } from "../scoring"
+import { calculateOfficialRating, globalRatingTitle } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -22,7 +23,7 @@ import type {
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
-import { championName, fixed, mitigationValue, percent, phaseName, teamMitigationValue } from "../utils"
+import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
@@ -40,6 +41,10 @@ const props = withDefaults(
     cardExtraHeight: 0,
   },
 )
+
+const emit = defineEmits<{
+  openPlayer: [player: LivePlayer]
+}>()
 
 const RANK_CACHE_TTL_MS = 5 * 60 * 1000
 const rankedData = ref<Record<string, RankedStatsResponse | null>>({})
@@ -319,14 +324,20 @@ function buildLivePlayerView(player: LivePlayer): LivePlayerView {
   const games = filterRecentGames(player)
   // 实时战绩只看短样本，不使用数据统计页的大样本时间衰减。
   const profile = player.stats
-    ? buildPlayerProfile(games, ratingContext.value, { timeWeighted: false })
+    ? buildPlayerProfile(games, ratingContext.value, {
+      timeWeighted: false,
+      globalBaselines: globalBaselinesByChampionId.value,
+    })
     : null
   const selectedChampionId = currentChampionId(player)
   const championGames = selectedChampionId
     ? games.filter((game) => game.championId === selectedChampionId)
     : []
   const championProfile = championGames.length
-    ? buildChampionProfiles(championGames, ratingContext.value, { timeWeighted: false })[0] || null
+    ? buildChampionProfiles(championGames, ratingContext.value, {
+      timeWeighted: false,
+      globalBaselines: globalBaselinesByChampionId.value,
+    })[0] || null
     : null
 
   return {
@@ -377,14 +388,10 @@ function selectedChampionScoreText(profile: ChampionProfile | null) {
   return profile?.games ? `${Math.round(profile.averageScore)}分` : "-"
 }
 
-function selectedChampionLabel(profile: ChampionProfile | null) {
-  return profile?.label || "暂无英雄样本"
-}
-
 function selectedChampionScoreTitle(player: LivePlayer, profile: ChampionProfile | null) {
   const champion = championName(props.champions, currentChampionId(player))
   return profile?.games
-    ? `${champion} · 历史均分 ${selectedChampionScoreText(profile)} · ${profile.label}`
+    ? `${champion} · 历史均分 ${selectedChampionScoreText(profile)}`
     : `${champion} · 暂无历史评分`
 }
 
@@ -409,8 +416,21 @@ function profileClass(profile: PlayerProfile | null) {
   return profile?.games ? profileTierClass(profile.overallScore) : "profile-empty"
 }
 
+function livePlayerRiotId(player: LivePlayer) {
+  return player.summoner ? riotId(player.summoner) : player.puuid || "未知玩家"
+}
+
+function openLivePlayer(player: LivePlayer) {
+  if (!player.puuid || player.isPlaceholder) return
+  emit("openPlayer", player)
+}
+
 function gameRating(game: RecentGame) {
-  return calculateOutputRating(game, ratingContext.value)
+  return calculateOfficialRating(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  )
 }
 
 function gameRatingClass(game: RecentGame) {
@@ -418,7 +438,12 @@ function gameRatingClass(game: RecentGame) {
 }
 
 function gameRatingTitle(game: RecentGame) {
-  return outputRatingTitle(game, ratingContext.value)
+  return globalRatingTitle(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+    globalBaselineDataset.value?.datasetVersion,
+  )
 }
 
 </script>
@@ -509,7 +534,15 @@ function gameRatingTitle(game: RecentGame) {
                   :size="34"
                 />
                 <strong>{{ selectedChampionScoreText(playerView.championProfile) }}</strong>
-                <span>{{ selectedChampionLabel(playerView.championProfile) }}</span>
+                <button
+                  class="live-summoner-link"
+                  type="button"
+                  :title="`查看 ${livePlayerRiotId(playerView.player)} 的总览`"
+                  :disabled="!playerView.player.puuid || playerView.player.isPlaceholder"
+                  @click="openLivePlayer(playerView.player)"
+                >
+                  {{ livePlayerRiotId(playerView.player) }}
+                </button>
               </div>
 
               <div class="rank-line" :title="rankTitleFor(playerView.player)">
@@ -787,13 +820,36 @@ h2 {
   white-space: nowrap;
 }
 
-.locked-hero-line span {
+.live-summoner-link {
+  appearance: none;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
   color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
   font-size: 16px;
   font-weight: 950;
   line-height: 1;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.live-summoner-link:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
+.live-summoner-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
 }
 
 .rank-line {

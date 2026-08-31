@@ -1,4 +1,4 @@
-import type { RecentGame } from "./types"
+import type { GlobalChampionBaseline, RecentGame } from "./types"
 import {
   analyzePlayerRole,
   roleVectorText,
@@ -45,6 +45,51 @@ export interface OutputRating {
   contextAdjustment: MatchContextAdjustment
 }
 
+export type GlobalBenchmarkMetricKey =
+  | "damageToChampions"
+  | "damageTaken"
+  | "selfMitigatedDamage"
+  | "allyHealing"
+  | "allyShielding"
+  | "crowdControlDurationSeconds"
+
+export interface GlobalBenchmarkMetricResult {
+  key: GlobalBenchmarkMetricKey
+  label: string
+  ledger: "branch" | "addedBranch"
+  referenceLabel: string
+  actualPerMinute: number
+  unadjustedBaselinePerMinute: number
+  baselinePerMinute: number
+  unadjustedRoleBaselinePerMinute?: number
+  roleBaselinePerMinute?: number
+  ratio: number
+  weight: number
+  perMinuteDigits: number
+}
+
+export interface GlobalRating {
+  available: boolean
+  reason: string
+  baseRating: OutputRating
+  score: number
+  level: OutputRating["level"]
+  globalScore: number
+  globalScoreMax: number
+  globalPassingScore: number
+  replacedScore: number
+  scoreDelta: number
+  performanceRatio: number
+  metrics: GlobalBenchmarkMetricResult[]
+  eligibleMetricCount: number
+  baselineName: string
+  baselineSourceDate: string
+  branchChanged: boolean
+  nativeBranchLabel: string
+  evaluatedBranchLabel: string
+  baselineDurationMultiplier: number
+}
+
 export interface MatchContextAdjustment {
   active: boolean
   scoringApplied: boolean
@@ -61,6 +106,9 @@ export interface MatchContextAdjustment {
   towerGateActive: boolean
   winnerTowerKills: number
   loserTowerKills: number
+  loserFirstTowerTimeSeconds?: number
+  loserFirstTowerTimeRatio: number
+  towerKdaWeight: number
   maxKdaWeight: number
   kdaWeight: number
   kdaPoints: number
@@ -102,6 +150,9 @@ interface StompMatchContext {
   towerGateActive: boolean
   winnerTowerKills: number
   loserTowerKills: number
+  loserFirstTowerTimeSeconds?: number
+  loserFirstTowerTimeRatio: number
+  towerKdaWeight: number
   participantScale: number
   teamKillStrength: number
 }
@@ -200,8 +251,263 @@ export function outputRatingMetrics(game: RecentGame): OutputRatingMetrics {
 
 type RatingFamily = "carry" | "fighter" | "frontline" | "mage" | "support"
 
+type GlobalBaselineValueField =
+  | "damageToChampions"
+  | "damageTaken"
+  | "selfMitigatedDamage"
+  | "allyHealing"
+  | "allyShielding"
+  | "crowdControlDurationSeconds"
+
+interface GlobalBenchmarkMetricDefinition {
+  key: GlobalBenchmarkMetricKey
+  label: string
+  baselineField: GlobalBaselineValueField
+  minimumBaselineValue: number
+  perMinuteDigits: number
+  actualValue: (game: RecentGame) => number | undefined
+}
+
+interface GlobalSupportBenchmark {
+  label: string
+  metrics: Partial<Record<GlobalBenchmarkMetricKey, number>>
+}
+
+interface GlobalBranchSelection {
+  nativeFamily: RatingFamily
+  evaluatedFamily: RatingFamily
+  branchChanged: boolean
+}
+
+interface GlobalMetricComparison {
+  ledger: GlobalBenchmarkMetricResult["ledger"]
+  referenceLabel: string
+  actualPerMinute: number
+  unadjustedBaselinePerMinute: number
+  baselinePerMinute: number
+  unadjustedRoleBaselinePerMinute?: number
+  roleBaselinePerMinute?: number
+  ratio: number
+  allocationEffect: number
+  scoringRatio: number
+}
+
+interface GlobalMetricRoute {
+  eligible: boolean
+  measured: boolean
+  effect: number
+  weights: Record<GlobalBenchmarkMetricKey, number>
+}
+
+const GLOBAL_SCORE_SUPPORT_MAX = 25
+const GLOBAL_SCORE_SUPPORT_PASSING = 15
+const GLOBAL_SCORE_FULL_PERFORMANCE_RATIO = 1.5
+const GLOBAL_BASELINE_MIN_DURATION_MINUTES = 8
+const GLOBAL_BASELINE_STANDARD_DURATION_MINUTES = 16
+const GLOBAL_BASELINE_MAX_DURATION_MINUTES = 20
+const GLOBAL_BASELINE_MIN_DURATION_MULTIPLIER = 0.6
+const GLOBAL_BASELINE_MAX_DURATION_MULTIPLIER = 1.1
+
+const GLOBAL_BENCHMARK_METRICS: GlobalBenchmarkMetricDefinition[] = [
+  {
+    key: "damageToChampions",
+    label: "对英雄伤害",
+    baselineField: "damageToChampions",
+    minimumBaselineValue: 1_000,
+    perMinuteDigits: 0,
+    actualValue: (game) => Number(game.damageToChampions || 0),
+  },
+  {
+    key: "damageTaken",
+    label: "承受伤害",
+    baselineField: "damageTaken",
+    minimumBaselineValue: 1_000,
+    perMinuteDigits: 0,
+    actualValue: (game) => Number(game.totalDamageTaken || 0),
+  },
+  {
+    key: "selfMitigatedDamage",
+    label: "自我减免",
+    baselineField: "selfMitigatedDamage",
+    minimumBaselineValue: 1_000,
+    perMinuteDigits: 0,
+    actualValue: (game) => Number(game.damageSelfMitigated || 0),
+  },
+  {
+    key: "allyHealing",
+    label: "队友治疗",
+    baselineField: "allyHealing",
+    minimumBaselineValue: 100,
+    perMinuteDigits: 0,
+    actualValue: (game) => optionalMetricValue(game.totalHealsOnTeammates),
+  },
+  {
+    key: "allyShielding",
+    label: "队友护盾",
+    baselineField: "allyShielding",
+    minimumBaselineValue: 100,
+    perMinuteDigits: 0,
+    actualValue: (game) => Number(game.totalDamageShieldedOnTeammates || 0),
+  },
+  {
+    key: "crowdControlDurationSeconds",
+    label: "控制时长",
+    baselineField: "crowdControlDurationSeconds",
+    minimumBaselineValue: 1,
+    perMinuteDigits: 1,
+    actualValue: (game) => optionalMetricValue(game.timeCCingOthers),
+  },
+]
+
+const GLOBAL_BRANCH_LABELS: Record<RatingFamily, string> = {
+  carry: "输出",
+  fighter: "战士",
+  frontline: "前排",
+  mage: "法师",
+  support: "辅助",
+}
+
+function optionalMetricValue(value: number | null | undefined) {
+  if (value === undefined || value === null) return undefined
+  return Number(value)
+}
+
+function globalRatioEffect(value: number) {
+  return clamp(Math.log2(Math.max(value, 0.5)), -1, 1)
+}
+
+function globalBaselineDurationMultiplier(gameSeconds: number) {
+  const gameMinutes = gameSeconds / 60
+  if (gameMinutes <= GLOBAL_BASELINE_STANDARD_DURATION_MINUTES) {
+    const earlyDurationProgress = clamp(
+      (gameMinutes - GLOBAL_BASELINE_MIN_DURATION_MINUTES)
+        / (GLOBAL_BASELINE_STANDARD_DURATION_MINUTES - GLOBAL_BASELINE_MIN_DURATION_MINUTES),
+      0,
+      1,
+    )
+    return GLOBAL_BASELINE_MIN_DURATION_MULTIPLIER
+      + earlyDurationProgress * (1 - GLOBAL_BASELINE_MIN_DURATION_MULTIPLIER)
+  }
+
+  const lateDurationProgress = clamp(
+    (gameMinutes - GLOBAL_BASELINE_STANDARD_DURATION_MINUTES)
+      / (GLOBAL_BASELINE_MAX_DURATION_MINUTES - GLOBAL_BASELINE_STANDARD_DURATION_MINUTES),
+    0,
+    1,
+  )
+  return 1 + lateDurationProgress * (GLOBAL_BASELINE_MAX_DURATION_MULTIPLIER - 1)
+}
+
+function globalScoreFromPerformance(
+  performanceRatio: number,
+) {
+  if (performanceRatio <= 1) {
+    return GLOBAL_SCORE_SUPPORT_PASSING * clamp01(performanceRatio)
+  }
+
+  const extraProgress = clamp01(
+    (performanceRatio - 1) / (GLOBAL_SCORE_FULL_PERFORMANCE_RATIO - 1),
+  )
+  return GLOBAL_SCORE_SUPPORT_PASSING
+    + (GLOBAL_SCORE_SUPPORT_MAX - GLOBAL_SCORE_SUPPORT_PASSING) * extraProgress
+}
+
+function supportGlobalSlotReplacedScore(baseRating: OutputRating) {
+  const metrics = baseRating.scoringMetrics
+  return 5 * clamp01((metrics.killParticipation - 0.45) / 0.35)
+    + 7 * killQualityScore(metrics)
+    + 13 * clamp01(metrics.damageShare / 0.22)
+}
+
+function globalMetricKeys() {
+  return GLOBAL_BENCHMARK_METRICS.map((definition) => definition.key)
+}
+
+function championOnlyRatingFamily(
+  championId: number,
+  context: RatingContext,
+  fallback: RatingFamily,
+) {
+  if (!context.champions?.[championId]) return fallback
+
+  const nativeRole = analyzePlayerRole(
+    { championId, itemIds: [] } as unknown as RecentGame,
+    { champions: context.champions },
+  )
+  return ratingFamily(nativeRole.role)
+}
+
+function selectGlobalBranch(
+  game: RecentGame,
+  context: RatingContext,
+  role: RoleAnalysis,
+): GlobalBranchSelection {
+  const evaluatedFamily = ratingFamily(role.role)
+  const nativeFamily = championOnlyRatingFamily(game.championId, context, evaluatedFamily)
+  return {
+    nativeFamily,
+    evaluatedFamily,
+    branchChanged: nativeFamily !== evaluatedFamily,
+  }
+}
+
+function medianValue(values: number[]) {
+  if (!values.length) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2
+}
+
+function buildGlobalSupportBenchmark(
+  baselines: ReadonlyMap<number, GlobalChampionBaseline>,
+  context: RatingContext,
+) {
+  const metricPool = new Map<GlobalBenchmarkMetricKey, number[]>()
+
+  for (const baseline of baselines.values()) {
+    if (!context.champions?.[baseline.id] || baseline.gameDurationSeconds <= 0) continue
+    const family = championOnlyRatingFamily(baseline.id, context, "carry")
+    if (family !== "support") continue
+
+    for (const definition of GLOBAL_BENCHMARK_METRICS) {
+      const totalValue = Number(baseline[definition.baselineField] || 0)
+      if (totalValue < definition.minimumBaselineValue) continue
+
+      const values = metricPool.get(definition.key) || []
+      values.push(totalValue * 60 / baseline.gameDurationSeconds)
+      metricPool.set(definition.key, values)
+    }
+  }
+
+  const metrics = Object.fromEntries(
+    globalMetricKeys().flatMap((key) => {
+      const value = medianValue(metricPool.get(key) || [])
+      return value > 0 ? [[key, value]] : []
+    }),
+  ) as Partial<Record<GlobalBenchmarkMetricKey, number>>
+  return {
+    label: GLOBAL_BRANCH_LABELS.support,
+    metrics,
+  }
+}
+
+function isHexAramGame(game: RecentGame) {
+  const mode = String(game.gameMode || "").toUpperCase()
+  return game.queueId === 2400 || mode === "STRAWBERRY" || mode === "KIWI"
+}
+
 const DEFAULT_RATING_CONTEXT: RatingContext = {}
 const outputRatingCache = new WeakMap<RecentGame, WeakMap<RatingContext, OutputRating>>()
+const globalRatingCache = new WeakMap<
+  RecentGame,
+  WeakMap<RatingContext, WeakMap<object, GlobalRating>>
+>()
+const globalSupportBenchmarkCache = new WeakMap<
+  object,
+  WeakMap<RatingContext, GlobalSupportBenchmark>
+>()
 
 export function calculateOutputRating(
   game: RecentGame,
@@ -221,6 +527,511 @@ export function calculateOutputRating(
   return rating
 }
 
+export function calculateGlobalRating(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+  baselines?: ReadonlyMap<number, GlobalChampionBaseline>,
+): GlobalRating {
+  const baseRating = calculateOutputRating(game, context)
+  if (ratingFamily(baseRating.role.role) !== "support") {
+    return unavailableGlobalRating(baseRating, "仅辅助评分分支引入全服水平")
+  }
+  if (!isHexAramGame(game)) {
+    return unavailableGlobalRating(baseRating, "全服基准目前只适用于海克斯大乱斗")
+  }
+  if (!baselines) {
+    return unavailableGlobalRating(baseRating, "全服基准尚未加载")
+  }
+  const baseline = baselines.get(game.championId)
+  if (!baseline) {
+    return unavailableGlobalRating(baseRating, "该英雄暂无全服平均数据")
+  }
+
+  const baselineCacheKey = baselines as object
+  let contextCache = globalRatingCache.get(game)
+  if (!contextCache) {
+    contextCache = new WeakMap<RatingContext, WeakMap<object, GlobalRating>>()
+    globalRatingCache.set(game, contextCache)
+  }
+  let baselineCache = contextCache.get(context)
+  if (!baselineCache) {
+    baselineCache = new WeakMap<object, GlobalRating>()
+    contextCache.set(context, baselineCache)
+  }
+
+  const cached = baselineCache.get(baselineCacheKey)
+  if (cached) return cached
+
+  const rating = calculateGlobalRatingUncached(
+    game,
+    context,
+    baseRating,
+    baseline,
+    baselines,
+  )
+  baselineCache.set(baselineCacheKey, rating)
+  return rating
+}
+
+export function calculateOfficialRating(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+  baselines?: ReadonlyMap<number, GlobalChampionBaseline>,
+): OutputRating {
+  const globalRating = calculateGlobalRating(game, context, baselines)
+  return officialRatingFromGlobal(game, globalRating)
+}
+
+function officialRatingFromGlobal(game: RecentGame, globalRating: GlobalRating): OutputRating {
+  const baseRating = globalRating.baseRating
+  if (!globalRating.available) return baseRating
+
+  const metrics = baseRating.scoringMetrics
+  const parts = { ...baseRating.parts }
+  const replacedParticipation = 5 * clamp01((metrics.killParticipation - 0.45) / 0.35)
+  parts.participation = Math.max(0, (parts.participation || 0) - replacedParticipation)
+  delete parts.killQuality
+  delete parts.effectiveDamage
+  parts.globalBaseline = globalRating.globalScore
+
+  return {
+    ...baseRating,
+    score: globalRating.score,
+    level: globalRating.level,
+    label: outputRatingLabel(
+      game,
+      metrics,
+      globalRating.score,
+      baseRating.role,
+      ratingFamily(baseRating.role.role),
+    ),
+    parts,
+  }
+}
+
+function unavailableGlobalRating(baseRating: OutputRating, reason: string): GlobalRating {
+  return {
+    available: false,
+    reason,
+    baseRating,
+    score: baseRating.score,
+    level: baseRating.level,
+    globalScore: 0,
+    globalScoreMax: 0,
+    globalPassingScore: 0,
+    replacedScore: 0,
+    scoreDelta: 0,
+    performanceRatio: 0,
+    metrics: [],
+    eligibleMetricCount: 0,
+    baselineName: "",
+    baselineSourceDate: "",
+    branchChanged: false,
+    nativeBranchLabel: "",
+    evaluatedBranchLabel: "",
+    baselineDurationMultiplier: 1,
+  }
+}
+
+function calculateGlobalRatingUncached(
+  game: RecentGame,
+  context: RatingContext,
+  baseRating: OutputRating,
+  baseline: GlobalChampionBaseline,
+  baselines: ReadonlyMap<number, GlobalChampionBaseline>,
+): GlobalRating {
+  const gameSeconds = Number(game.gameDuration || 0)
+  const baselineSeconds = Number(baseline.gameDurationSeconds || 0)
+  if (gameSeconds <= 0 || baselineSeconds <= 0) {
+    return unavailableGlobalRating(baseRating, "本局或全服平均游戏时长无效")
+  }
+
+  const branch = selectGlobalBranch(game, context, baseRating.role)
+  const baselineDurationMultiplier = globalBaselineDurationMultiplier(gameSeconds)
+  const calculation = calculateSupportGlobalMetrics(
+    game,
+    context,
+    baseline,
+    baselines,
+    gameSeconds,
+    baselineSeconds,
+    branch,
+    baselineDurationMultiplier,
+  )
+  if (!calculation.metrics.length) {
+    return unavailableGlobalRating(baseRating, "本局没有可与全服平均值比较的指标")
+  }
+
+  const metrics = calculation.metrics
+  const globalScore = globalScoreFromPerformance(calculation.performanceRatio)
+  const replacedScore = supportGlobalSlotReplacedScore(baseRating)
+  const scoreDelta = globalScore - replacedScore
+  const score = Math.round(clamp(baseRating.score + scoreDelta, 0, 100))
+  return {
+    available: true,
+    reason: "",
+    baseRating,
+    score,
+    level: outputRatingLevel(score),
+    globalScore,
+    globalScoreMax: GLOBAL_SCORE_SUPPORT_MAX,
+    globalPassingScore: GLOBAL_SCORE_SUPPORT_PASSING,
+    replacedScore,
+    scoreDelta,
+    performanceRatio: calculation.performanceRatio,
+    metrics,
+    eligibleMetricCount: calculation.eligibleMetricCount,
+    baselineName: baseline.name,
+    baselineSourceDate: baseline.sourceDataDate,
+    branchChanged: branch.branchChanged,
+    nativeBranchLabel: GLOBAL_BRANCH_LABELS[branch.nativeFamily],
+    evaluatedBranchLabel: GLOBAL_BRANCH_LABELS[branch.evaluatedFamily],
+    baselineDurationMultiplier,
+  }
+}
+
+function calculateSupportGlobalMetrics(
+  game: RecentGame,
+  context: RatingContext,
+  baseline: GlobalChampionBaseline,
+  baselines: ReadonlyMap<number, GlobalChampionBaseline>,
+  gameSeconds: number,
+  baselineSeconds: number,
+  branch: GlobalBranchSelection,
+  baselineDurationMultiplier: number,
+) {
+  const { comparisons, eligibleKeys, baselineWeights } = sameChampionGlobalComparisons(
+    game,
+    baseline,
+    gameSeconds,
+    baselineSeconds,
+    baselineDurationMultiplier,
+  )
+
+  if (branch.branchChanged) {
+    const supportBenchmark = cachedGlobalSupportBenchmark(baselines, context)
+    addChangedBranchComparisons(
+      comparisons,
+      eligibleKeys,
+      baselineWeights,
+      game,
+      baseline,
+      supportBenchmark,
+      gameSeconds,
+      baselineSeconds,
+      baselineDurationMultiplier,
+    )
+  }
+
+  const weights = supportGlobalMetricWeights(
+    comparisons,
+    eligibleKeys,
+    baselineWeights,
+  )
+  const potentialKeys = supportGlobalMetricKeys()
+  const metrics = GLOBAL_BENCHMARK_METRICS.flatMap<GlobalBenchmarkMetricResult>((definition) => {
+    const comparison = comparisons[definition.key]
+    const weight = weights[definition.key]
+    if (!comparison || weight <= 0) return []
+
+    return [{
+      key: definition.key,
+      label: definition.label,
+      ledger: comparison.ledger,
+      referenceLabel: comparison.referenceLabel,
+      actualPerMinute: comparison.actualPerMinute,
+      unadjustedBaselinePerMinute: comparison.unadjustedBaselinePerMinute,
+      baselinePerMinute: comparison.baselinePerMinute,
+      unadjustedRoleBaselinePerMinute: comparison.unadjustedRoleBaselinePerMinute,
+      roleBaselinePerMinute: comparison.roleBaselinePerMinute,
+      ratio: comparison.ratio,
+      weight,
+      perMinuteDigits: definition.perMinuteDigits,
+    }]
+  })
+  const totalWeight = globalMetricKeys().reduce((sum, key) => sum + weights[key], 0)
+  const measuredPerformance = globalMetricKeys().reduce((sum, key) => {
+    const comparison = comparisons[key]
+    return sum + weights[key] * (comparison?.scoringRatio ?? 1)
+  }, 0)
+
+  return {
+    metrics,
+    eligibleMetricCount: [...eligibleKeys].filter((key) => potentialKeys.has(key)).length,
+    performanceRatio: measuredPerformance + Math.max(1 - totalWeight, 0),
+  }
+}
+
+function sameChampionGlobalComparisons(
+  game: RecentGame,
+  baseline: GlobalChampionBaseline,
+  gameSeconds: number,
+  baselineSeconds: number,
+  baselineDurationMultiplier: number,
+) {
+  const comparisons: Partial<Record<GlobalBenchmarkMetricKey, GlobalMetricComparison>> = {}
+  const eligibleKeys = new Set<GlobalBenchmarkMetricKey>()
+  const baselineWeights: Partial<Record<GlobalBenchmarkMetricKey, number>> = {}
+
+  for (const definition of GLOBAL_BENCHMARK_METRICS) {
+    const baselineValue = Number(baseline[definition.baselineField] || 0)
+    if (baselineValue < definition.minimumBaselineValue) continue
+    eligibleKeys.add(definition.key)
+    baselineWeights[definition.key] = baselineValue * 60 / baselineSeconds
+    const actualValue = definition.actualValue(game)
+    if (actualValue === undefined || !Number.isFinite(actualValue) || actualValue < 0) continue
+
+    const actualPerMinute = actualValue * 60 / gameSeconds
+    const unadjustedBaselinePerMinute = baselineValue * 60 / baselineSeconds
+    const baselinePerMinute = unadjustedBaselinePerMinute * baselineDurationMultiplier
+    const metricRatio = baselinePerMinute > 0 ? actualPerMinute / baselinePerMinute : 0
+    const metricEffect = globalRatioEffect(metricRatio)
+    comparisons[definition.key] = {
+      ledger: "branch",
+      referenceLabel: `${baseline.name}全服平均`,
+      actualPerMinute,
+      unadjustedBaselinePerMinute,
+      baselinePerMinute,
+      ratio: metricRatio,
+      allocationEffect: metricEffect,
+      scoringRatio: metricRatio,
+    }
+  }
+
+  return { comparisons, eligibleKeys, baselineWeights }
+}
+
+function addChangedBranchComparisons(
+  comparisons: Partial<Record<GlobalBenchmarkMetricKey, GlobalMetricComparison>>,
+  eligibleKeys: Set<GlobalBenchmarkMetricKey>,
+  baselineWeights: Partial<Record<GlobalBenchmarkMetricKey, number>>,
+  game: RecentGame,
+  baseline: GlobalChampionBaseline,
+  supportBenchmark: GlobalSupportBenchmark | undefined,
+  gameSeconds: number,
+  baselineSeconds: number,
+  baselineDurationMultiplier: number,
+) {
+  if (!supportBenchmark) return
+
+  for (const definition of GLOBAL_BENCHMARK_METRICS) {
+    if (comparisons[definition.key]) continue
+    const baselineValue = Number(baseline[definition.baselineField] || 0)
+    if (baselineValue >= definition.minimumBaselineValue) continue
+
+    const unadjustedRoleBaselinePerMinute = supportBenchmark.metrics[definition.key]
+    if (!unadjustedRoleBaselinePerMinute || unadjustedRoleBaselinePerMinute <= 0) continue
+
+    const actualValue = definition.actualValue(game)
+    if (actualValue === undefined || !Number.isFinite(actualValue) || actualValue < 0) continue
+
+    const actualPerMinute = actualValue * 60 / gameSeconds
+    const unadjustedBaselinePerMinute = baselineValue * 60 / baselineSeconds
+    const baselinePerMinute = unadjustedBaselinePerMinute * baselineDurationMultiplier
+    const roleBaselinePerMinute = unadjustedRoleBaselinePerMinute
+      * baselineDurationMultiplier
+    const addedRoleWorkload = clamp(
+      (actualPerMinute - baselinePerMinute) / roleBaselinePerMinute,
+      0,
+      GLOBAL_SCORE_FULL_PERFORMANCE_RATIO,
+    )
+    if (addedRoleWorkload <= 0) continue
+
+    eligibleKeys.add(definition.key)
+    baselineWeights[definition.key] = unadjustedRoleBaselinePerMinute
+    comparisons[definition.key] = {
+      ledger: "addedBranch",
+      referenceLabel: `${supportBenchmark.label}英雄池基准`,
+      actualPerMinute,
+      unadjustedBaselinePerMinute,
+      baselinePerMinute,
+      unadjustedRoleBaselinePerMinute,
+      roleBaselinePerMinute,
+      ratio: addedRoleWorkload,
+      allocationEffect: globalRatioEffect(addedRoleWorkload),
+      scoringRatio: addedRoleWorkload,
+    }
+  }
+}
+
+function emptyGlobalMetricWeights() {
+  return Object.fromEntries(
+    globalMetricKeys().map((key) => [key, 0]),
+  ) as Record<GlobalBenchmarkMetricKey, number>
+}
+
+function globalMetricRoute(
+  keys: GlobalBenchmarkMetricKey[],
+  comparisons: Partial<Record<GlobalBenchmarkMetricKey, GlobalMetricComparison>>,
+  eligibleKeys: ReadonlySet<GlobalBenchmarkMetricKey>,
+  baselineWeights?: Partial<Record<GlobalBenchmarkMetricKey, number>>,
+): GlobalMetricRoute {
+  // 同一路线内优先按英雄全服基准的固有构成分权，缺失字段保留为中性。
+  const routeKeys = keys.filter((key) => eligibleKeys.has(key))
+  const weights = emptyGlobalMetricWeights()
+  if (!routeKeys.length) return { eligible: false, measured: false, effect: 0, weights }
+
+  const effects = routeKeys.map((key) => comparisons[key]?.allocationEffect || 0)
+  const strengths = baselineWeights
+    ? routeKeys.map((key) => Math.max(baselineWeights[key] || 0, 0))
+    : effects.map((effect) => Math.max(effect + 1, 0))
+  const strengthTotal = strengths.reduce((sum, value) => sum + value, 0)
+  routeKeys.forEach((key, index) => {
+    weights[key] = strengthTotal > 0
+      ? strengths[index] / strengthTotal
+      : 1 / routeKeys.length
+  })
+
+  return {
+    eligible: true,
+    measured: routeKeys.some((key) => Boolean(comparisons[key])),
+    effect: routeKeys.reduce(
+      (sum, key) => sum + weights[key] * (comparisons[key]?.allocationEffect || 0),
+      0,
+    ),
+    weights,
+  }
+}
+
+function combineGlobalRoutes(routes: GlobalMetricRoute[]): GlobalMetricRoute {
+  const eligibleRoutes = routes.filter((route) => route.eligible)
+  const weights = emptyGlobalMetricWeights()
+  if (!eligibleRoutes.length) return { eligible: false, measured: false, effect: 0, weights }
+
+  const strengths = eligibleRoutes.map((route) => Math.max(route.effect + 1, 0))
+  const strengthTotal = strengths.reduce((sum, value) => sum + value, 0)
+  const routeWeights = eligibleRoutes.map((_, index) => (
+    strengthTotal > 0 ? strengths[index] / strengthTotal : 1 / eligibleRoutes.length
+  ))
+
+  eligibleRoutes.forEach((route, index) => {
+    for (const key of globalMetricKeys()) {
+      weights[key] += route.weights[key] * routeWeights[index]
+    }
+  })
+
+  return {
+    eligible: true,
+    measured: eligibleRoutes.some((route) => route.measured),
+    effect: eligibleRoutes.reduce(
+      (sum, route, index) => sum + route.effect * routeWeights[index],
+      0,
+    ),
+    weights,
+  }
+}
+
+function addGlobalRouteWeight(
+  weights: Record<GlobalBenchmarkMetricKey, number>,
+  route: GlobalMetricRoute,
+  routeWeight: number,
+) {
+  if (!route.eligible || routeWeight <= 0) return
+  for (const key of globalMetricKeys()) {
+    weights[key] += route.weights[key] * routeWeight
+  }
+}
+
+function optionalGlobalRouteWeight(
+  baseRoute: GlobalMetricRoute,
+  optionalRoute: GlobalMetricRoute,
+  maxWeight: number,
+  advantageRange: number,
+) {
+  if (!optionalRoute.measured || optionalRoute.effect <= baseRoute.effect) return 0
+  const qualityGate = clamp01((optionalRoute.effect + 1) / 2)
+  const advantageGate = clamp01(
+    (optionalRoute.effect - baseRoute.effect) / advantageRange,
+  )
+  return maxWeight * qualityGate * advantageGate
+}
+
+function dynamicGlobalRouteWeights(
+  baseRoute: GlobalMetricRoute,
+  optionalRoutes: Array<{
+    route: GlobalMetricRoute
+    maxWeight: number
+    advantageRange: number
+  }>,
+  maxOptionalWeight = 1,
+) {
+  const weights = emptyGlobalMetricWeights()
+  const desiredWeights = optionalRoutes.map((entry) => optionalGlobalRouteWeight(
+    baseRoute,
+    entry.route,
+    entry.maxWeight,
+    entry.advantageRange,
+  ))
+  const desiredTotal = desiredWeights.reduce((sum, value) => sum + value, 0)
+  const scale = desiredTotal > maxOptionalWeight ? maxOptionalWeight / desiredTotal : 1
+  const optionalTotal = desiredTotal * scale
+
+  addGlobalRouteWeight(weights, baseRoute, 1 - optionalTotal)
+  optionalRoutes.forEach((entry, index) => {
+    addGlobalRouteWeight(weights, entry.route, desiredWeights[index] * scale)
+  })
+  return weights
+}
+
+function supportGlobalMetricWeights(
+  comparisons: Partial<Record<GlobalBenchmarkMetricKey, GlobalMetricComparison>>,
+  eligibleKeys: ReadonlySet<GlobalBenchmarkMetricKey>,
+  baselineWeights: Partial<Record<GlobalBenchmarkMetricKey, number>>,
+) {
+  // 全服数据只进入辅助分支，并在可观测的辅助职责之间动态分配。
+  const damage = globalMetricRoute(["damageToChampions"], comparisons, eligibleKeys)
+  const durability = globalMetricRoute(
+    ["damageTaken", "selfMitigatedDamage"],
+    comparisons,
+    eligibleKeys,
+    baselineWeights,
+  )
+  const protection = globalMetricRoute(
+    ["allyHealing", "allyShielding"],
+    comparisons,
+    eligibleKeys,
+    baselineWeights,
+  )
+  const control = globalMetricRoute(
+    ["crowdControlDurationSeconds"],
+    comparisons,
+    eligibleKeys,
+  )
+
+  const supportWork = combineGlobalRoutes([protection, durability])
+  return dynamicGlobalRouteWeights(
+    supportWork,
+    [
+      { route: damage, maxWeight: 0.35, advantageRange: 0.8 },
+      { route: control, maxWeight: 0.35, advantageRange: 0.8 },
+    ],
+    0.35,
+  )
+}
+
+function supportGlobalMetricKeys() {
+  return new Set<GlobalBenchmarkMetricKey>(globalMetricKeys())
+}
+
+function cachedGlobalSupportBenchmark(
+  baselines: ReadonlyMap<number, GlobalChampionBaseline>,
+  context: RatingContext,
+) {
+  const cacheKey = baselines as object
+  let contextCache = globalSupportBenchmarkCache.get(cacheKey)
+  if (!contextCache) {
+    contextCache = new WeakMap()
+    globalSupportBenchmarkCache.set(cacheKey, contextCache)
+  }
+
+  const cached = contextCache.get(context)
+  if (cached) return cached
+
+  const benchmark = buildGlobalSupportBenchmark(baselines, context)
+  contextCache.set(context, benchmark)
+  return benchmark
+}
+
 function calculateOutputRatingUncached(game: RecentGame, context: RatingContext): OutputRating {
   const metrics = outputRatingMetrics(game)
   const role = analyzePlayerRole(game, context)
@@ -230,7 +1041,7 @@ function calculateOutputRatingUncached(game: RecentGame, context: RatingContext)
   const originalScore = clamp(rawTotal, 0, 100)
   const calibrated = calibratedMetrics(game, metrics, context)
   const maxKdaWeight = calibrated.context.active
-    ? stompKdaWeight(game.gameDuration, family)
+    ? stompKdaWeight(calibrated.context, family)
     : 0
   const originalCandidate = originalRatingCandidate(rawParts, originalScore)
   const selectedCandidate = calibrated.context.active
@@ -282,6 +1093,9 @@ function calculateOutputRatingUncached(game: RecentGame, context: RatingContext)
     towerGateActive: calibrated.context.towerGateActive,
     winnerTowerKills: calibrated.context.winnerTowerKills,
     loserTowerKills: calibrated.context.loserTowerKills,
+    loserFirstTowerTimeSeconds: calibrated.context.loserFirstTowerTimeSeconds,
+    loserFirstTowerTimeRatio: calibrated.context.loserFirstTowerTimeRatio,
+    towerKdaWeight: calibrated.context.towerKdaWeight,
     maxKdaWeight,
     kdaWeight: selectedCandidate.kdaWeight,
     kdaPoints: selectedCandidate.parts.kda || 0,
@@ -428,13 +1242,9 @@ function stompKdaWeightCandidates(maxKdaWeight: number) {
   return weights
 }
 
-function stompKdaWeight(gameDurationSeconds: number, family: RatingFamily) {
+function stompKdaWeight(context: StompMatchContext, family: RatingFamily) {
   if (family === "frontline" || family === "support") return 0
-
-  const minutes = Number(gameDurationSeconds || 0) / 60
-  if (!Number.isFinite(minutes) || minutes <= 0) return 0
-  if (minutes <= 12) return 35
-  return mix(35, 0, (minutes - 12) / 4)
+  return context.towerKdaWeight
 }
 
 function stompKdaQuality(metrics: OutputRatingMetrics) {
@@ -553,6 +1363,9 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
         | "towerGateActive"
         | "winnerTowerKills"
         | "loserTowerKills"
+        | "loserFirstTowerTimeSeconds"
+        | "loserFirstTowerTimeRatio"
+        | "towerKdaWeight"
       >
     > = {},
   ): StompMatchContext => ({
@@ -570,6 +1383,9 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
     towerGateActive: diagnostics.towerGateActive ?? false,
     winnerTowerKills: diagnostics.winnerTowerKills ?? 0,
     loserTowerKills: diagnostics.loserTowerKills ?? 0,
+    loserFirstTowerTimeSeconds: diagnostics.loserFirstTowerTimeSeconds,
+    loserFirstTowerTimeRatio: diagnostics.loserFirstTowerTimeRatio ?? 0,
+    towerKdaWeight: diagnostics.towerKdaWeight ?? 0,
     participantScale: 1,
     teamKillStrength: 1,
   })
@@ -616,6 +1432,22 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
   const loserDeaths = game.win ? opponentDeaths : teamDeaths
   const winnerTowerKills = game.win ? teamTowerKills : opponentTowerKills
   const loserTowerKills = game.win ? opponentTowerKills : teamTowerKills
+  const rawLoserFirstTowerTimeSeconds = Number(game.loserFirstTowerTimeSeconds)
+  const gameDurationSeconds = Number(game.gameDuration || 0)
+  const loserFirstTowerTimeSeconds =
+    Number.isFinite(rawLoserFirstTowerTimeSeconds) &&
+    rawLoserFirstTowerTimeSeconds > 0 &&
+    rawLoserFirstTowerTimeSeconds <= gameDurationSeconds
+      ? rawLoserFirstTowerTimeSeconds
+      : undefined
+  const loserFirstTowerTimeRatio = loserFirstTowerTimeSeconds
+    ? clamp01(loserFirstTowerTimeSeconds / gameDurationSeconds)
+    : 0
+  const towerKdaWeight = loserTowerKills === 0
+    ? 35
+    : loserTowerKills === 1 && loserFirstTowerTimeSeconds
+      ? 35 * clamp01((loserFirstTowerTimeRatio - 0.75) / 0.25)
+      : 0
   const damageRatio = winnerDamage / Math.max(loserDamage, 1)
   const damageGap = damageRatio - 1
   const composition = stompCompositionCounts(game, ratingContext)
@@ -637,10 +1469,7 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
     killLead >= 6 &&
     winnerKillDeathRatio >= 1.3
   const damageGateActive = damageRatio >= damageThresholdRatio
-  const towerGateActive =
-    gameMinutes <= 13 &&
-    winnerTowerKills >= 2 &&
-    loserTowerKills === 0
+  const towerGateActive = towerKdaWeight > 0
   const imbalance = Math.max(combatGap, damageGap, 0) * 0.78 + goldGap * 0.22
   const diagnostics = {
     winnerKillDeathRatio,
@@ -652,11 +1481,17 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
     towerGateActive,
     winnerTowerKills,
     loserTowerKills,
+    loserFirstTowerTimeSeconds,
+    loserFirstTowerTimeRatio,
+    towerKdaWeight,
   }
 
+  if (loserTowerKills >= 2) {
+    return inactive("败方已推掉至少2座防御塔，不属于碾压局", imbalance, diagnostics)
+  }
   if (gameMinutes > 16) return inactive("对局时长超过16分钟", imbalance, diagnostics)
   if (!killDeathGateActive && !damageGateActive && !towerGateActive) {
-    return inactive("K/D、伤害差和推塔差均未达到门槛", imbalance, diagnostics)
+    return inactive("K/D、伤害差和推塔时间均未达到门槛", imbalance, diagnostics)
   }
 
   const durationFactor = gameMinutes <= 12
@@ -684,9 +1519,12 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
     killDeathGateActive ? "K/D差" : "",
     damageGateActive ? "伤害差" : "",
   ].filter(Boolean)
+  const towerGateReason = loserTowerKills === 0
+    ? "败方零塔门控"
+    : "败方首塔偏晚门控"
   const reason = calibrationGates.length
-    ? `已触发${calibrationGates.join("、")}校准${towerGateActive ? "，同时命中推塔门控" : ""}`
-    : "推塔门控命中，仅启用K/D评分"
+    ? `已触发${calibrationGates.join("、")}校准${towerGateActive ? `，同时命中${towerGateReason}` : ""}`
+    : `${towerGateReason}命中，仅启用K/D评分`
 
   return {
     active: true,
@@ -703,6 +1541,9 @@ function stompMatchContext(game: RecentGame, ratingContext: RatingContext): Stom
     towerGateActive,
     winnerTowerKills,
     loserTowerKills,
+    loserFirstTowerTimeSeconds,
+    loserFirstTowerTimeRatio,
+    towerKdaWeight,
     participantScale: gamePlayerCount / teamPlayerCount,
     teamKillStrength: clamp(Math.sqrt((teamKills + 2) / (opponentKills + 2)), 0.65, 1.25),
   }
@@ -1362,26 +2203,27 @@ const RATING_PART_LABELS: Record<string, string> = {
   roleFit: "定位匹配",
   healing: "治疗",
   protection: "保护",
+  globalBaseline: "全服得分",
   kda: "碾压KDA",
   matchContext: "碾压校准",
 }
 
 function ratingPartLines(parts: OutputRatingParts) {
-  const entries = Object.entries(parts).filter(([, value]) => Math.abs(value) >= 0.005)
+  const entries = Object.entries(parts).filter(
+    ([key, value]) => key === "globalBaseline" || Math.abs(value) >= 0.005,
+  )
   if (!entries.length) return ["评分小项 暂无"]
 
   const total = entries.reduce((sum, [, value]) => sum + value, 0)
   return [
     `评分小项 合计 ${fixed(total, 1)}`,
-    ...entries.map(([key, value]) => `${RATING_PART_LABELS[key] || key} ${fixed(value, 1)}`),
+    ...entries.map(([key, value]) => key === "globalBaseline"
+      ? `全服得分 ${fixed(value, 1)}/${GLOBAL_SCORE_SUPPORT_MAX}分`
+      : `${RATING_PART_LABELS[key] || key} ${fixed(value, 1)}`),
   ]
 }
 
-export function outputRatingTitle(
-  game: RecentGame,
-  context: RatingContext = DEFAULT_RATING_CONTEXT,
-) {
-  const rating = calculateOutputRating(game, context)
+function outputRatingDetailLines(game: RecentGame, rating: OutputRating) {
   const m = rating.metrics
   return [
     `得分 ${rating.score} · ${scoreEvaluationLabel(rating.score)} · ${rating.label}`,
@@ -1405,5 +2247,53 @@ export function outputRatingTitle(
     `控制占比 ${Math.round(m.immobilizationShare * 100)}%`,
     `控杀占比 ${Math.round(m.immobilizeKillShare * 100)}%`,
     `控制转化 ${Math.round(m.immobilizeKillConversion * 100)}%`,
-  ].join("\n")
+    ...matchContextDetailLines(rating.contextAdjustment),
+  ]
+}
+
+function matchContextDetailLines(adjustment: MatchContextAdjustment) {
+  if (!adjustment.active) return []
+
+  const towerProgress = adjustment.loserTowerKills === 0
+    ? "败方未推塔"
+    : adjustment.loserFirstTowerTimeSeconds
+      ? `败方首塔 ${fixed(adjustment.loserFirstTowerTimeSeconds / 60, 1)} 分钟`
+        + ` · 对局进度 ${Math.round(adjustment.loserFirstTowerTimeRatio * 100)}%`
+      : `败方推塔 ${adjustment.loserTowerKills} 座 · 首塔时间缺失`
+
+  return [
+    `碾压校准 ${adjustment.reason}`,
+    towerProgress,
+    `KDA可借权上限 ${fixed(adjustment.maxKdaWeight, 1)}分`
+      + ` · 实际采用 ${fixed(adjustment.kdaWeight, 1)}分`,
+  ]
+}
+
+export function outputRatingTitle(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+) {
+  return outputRatingDetailLines(game, calculateOutputRating(game, context)).join("\n")
+}
+
+export function globalRatingTitle(
+  game: RecentGame,
+  context: RatingContext = DEFAULT_RATING_CONTEXT,
+  baselines?: ReadonlyMap<number, GlobalChampionBaseline>,
+  _datasetVersion = "",
+) {
+  const rating = calculateGlobalRating(game, context, baselines)
+  const officialRating = officialRatingFromGlobal(game, rating)
+  if (!rating.available) {
+    const fallbackLines = outputRatingDetailLines(game, officialRating)
+    if (ratingFamily(rating.baseRating.role.role) !== "support") {
+      return fallbackLines.join("\n")
+    }
+    return [
+      ...fallbackLines,
+      "全服得分 暂不可用",
+    ].join("\n")
+  }
+
+  return outputRatingDetailLines(game, officialRating).join("\n")
 }

@@ -3,6 +3,7 @@
 //! 该数据集与软件版本更新完全独立：应用每天首次启动时仅请求一次远端清单，只有
 //! 数据版本、哈希或本地文件状态发生变化时才下载新的快照。
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,84 @@ const STORAGE_DIRECTORY_NAME: &str = "global-baselines";
 const LOCAL_MANIFEST_FILE_NAME: &str = "manifest.json";
 const LOCAL_DATASET_FILE_NAME: &str = "current.json";
 const CHECK_STATE_FILE_NAME: &str = "check-state.json";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalBaselineSource {
+    name: String,
+    mode: String,
+    index_url: String,
+    source_data_date: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalChampionBaseline {
+    id: u32,
+    slug: String,
+    name: String,
+    /// ARAMKit 当前快照中的扩展英雄均值。旧快照没有这些字段时仍可读取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    average_kda: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    average_kills: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    average_deaths: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    average_assists: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    participation_rate_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    multikills: Option<f64>,
+    damage_to_champions: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    physical_damage_to_champions: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    magic_damage_to_champions: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    true_damage_to_champions: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    damage_share_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turret_damage: Option<f64>,
+    damage_taken: f64,
+    self_mitigated_damage: f64,
+    ally_healing: f64,
+    ally_shielding: f64,
+    crowd_control_duration_seconds: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gold_earned: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cs: Option<f64>,
+    game_duration_seconds: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    damage_gold_conversion_rate_percent: Option<f64>,
+    #[serde(default)]
+    relative_to_global_average_percent: HashMap<String, f64>,
+    source_data_date: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalBaselineDataset {
+    schema_version: u32,
+    dataset_version: String,
+    generated_at: String,
+    source: GlobalBaselineSource,
+    #[serde(default)]
+    metric_descriptions: HashMap<String, String>,
+    #[serde(default)]
+    global_averages: HashMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    global_average_estimation: Option<serde_json::Value>,
+    expected_champion_count: u32,
+    champion_count: u32,
+    unavailable_champion_count: u32,
+    #[serde(default)]
+    unavailable_champions: Vec<serde_json::Value>,
+    partial: bool,
+    champions: Vec<GlobalChampionBaseline>,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +162,88 @@ pub(crate) fn start_daily_update_check() {
             }
         }
     });
+}
+
+pub(crate) fn load_current_dataset() -> Result<GlobalBaselineDataset, String> {
+    let storage_directory = storage_directory()?;
+    if !local_dataset_is_valid(&storage_directory) {
+        return Err("本地全服基线数据不存在或校验失败".to_string());
+    }
+
+    let dataset =
+        read_json::<GlobalBaselineDataset>(&storage_directory.join(LOCAL_DATASET_FILE_NAME))?;
+    validate_scoring_dataset(&dataset)?;
+    Ok(dataset)
+}
+
+fn validate_scoring_dataset(dataset: &GlobalBaselineDataset) -> Result<(), String> {
+    if dataset.schema_version != SCHEMA_VERSION
+        || dataset.partial
+        || dataset.champion_count == 0
+        || dataset.champions.len() != dataset.champion_count as usize
+        || dataset.unavailable_champions.len() != dataset.unavailable_champion_count as usize
+        || dataset.champion_count + dataset.unavailable_champion_count
+            != dataset.expected_champion_count
+    {
+        return Err("本地全服基线数据结构无效".to_string());
+    }
+
+    let mut champion_ids = std::collections::HashSet::new();
+    for champion in &dataset.champions {
+        let required_values = [
+            champion.damage_to_champions,
+            champion.damage_taken,
+            champion.self_mitigated_damage,
+            champion.ally_healing,
+            champion.ally_shielding,
+            champion.crowd_control_duration_seconds,
+            champion.game_duration_seconds,
+        ];
+        if champion.id == 0
+            || !champion_ids.insert(champion.id)
+            || champion.game_duration_seconds <= 0.0
+            || required_values
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(format!("英雄 {} 的全服基线数据无效", champion.id));
+        }
+
+        let optional_values = [
+            champion.average_kda,
+            champion.average_kills,
+            champion.average_deaths,
+            champion.average_assists,
+            champion.participation_rate_percent,
+            champion.multikills,
+            champion.physical_damage_to_champions,
+            champion.magic_damage_to_champions,
+            champion.true_damage_to_champions,
+            champion.damage_share_percent,
+            champion.turret_damage,
+            champion.gold_earned,
+            champion.cs,
+            champion.damage_gold_conversion_rate_percent,
+        ];
+        if optional_values.iter().flatten().any(|value| !value.is_finite() || *value < 0.0)
+            || champion
+                .relative_to_global_average_percent
+                .values()
+                .any(|value| !value.is_finite())
+        {
+            return Err(format!("英雄 {} 的扩展全服基线数据无效", champion.id));
+        }
+    }
+
+    if dataset
+        .global_averages
+        .values()
+        .any(|value| !value.is_finite())
+    {
+        return Err("全服人均基准数据无效".to_string());
+    }
+
+    Ok(())
 }
 
 async fn refresh_if_due() -> Result<RefreshResult, String> {
@@ -417,6 +578,56 @@ fn local_date_key() -> String {
 mod tests {
     use super::*;
 
+    fn valid_scoring_dataset() -> GlobalBaselineDataset {
+        GlobalBaselineDataset {
+            schema_version: SCHEMA_VERSION,
+            dataset_version: "dataset-1".to_string(),
+            generated_at: "2026-08-29T00:00:00Z".to_string(),
+            source: GlobalBaselineSource {
+                name: "test".to_string(),
+                mode: "hex-aram".to_string(),
+                index_url: "https://example.com".to_string(),
+                source_data_date: "2026-08-28".to_string(),
+            },
+            metric_descriptions: HashMap::new(),
+            global_averages: HashMap::new(),
+            global_average_estimation: None,
+            expected_champion_count: 1,
+            champion_count: 1,
+            unavailable_champion_count: 0,
+            unavailable_champions: Vec::new(),
+            partial: false,
+            champions: vec![GlobalChampionBaseline {
+                id: 1,
+                slug: "annie".to_string(),
+                name: "黑暗之女".to_string(),
+                average_kda: None,
+                average_kills: None,
+                average_deaths: None,
+                average_assists: None,
+                participation_rate_percent: None,
+                multikills: None,
+                damage_to_champions: 36_912.0,
+                physical_damage_to_champions: None,
+                magic_damage_to_champions: None,
+                true_damage_to_champions: None,
+                damage_share_percent: None,
+                turret_damage: None,
+                damage_taken: 27_053.0,
+                self_mitigated_damage: 18_415.0,
+                ally_healing: 18.0,
+                ally_shielding: 4_495.0,
+                crowd_control_duration_seconds: 43.9,
+                gold_earned: None,
+                cs: None,
+                game_duration_seconds: 1_032.0,
+                damage_gold_conversion_rate_percent: None,
+                relative_to_global_average_percent: HashMap::new(),
+                source_data_date: "2026-08-28".to_string(),
+            }],
+        }
+    }
+
     fn valid_manifest() -> RemoteManifest {
         RemoteManifest {
             schema_version: SCHEMA_VERSION,
@@ -495,6 +706,22 @@ mod tests {
 
         manifest.champion_count = 171;
         assert!(validate_dataset_bytes(&bytes, &manifest).is_err());
+    }
+
+    #[test]
+    fn validates_scoring_dataset_values_and_unique_champions() {
+        let dataset = valid_scoring_dataset();
+        assert!(validate_scoring_dataset(&dataset).is_ok());
+
+        let mut duplicate = dataset.clone();
+        duplicate.expected_champion_count = 2;
+        duplicate.champion_count = 2;
+        duplicate.champions.push(duplicate.champions[0].clone());
+        assert!(validate_scoring_dataset(&duplicate).is_err());
+
+        let mut invalid_duration = dataset;
+        invalid_duration.champions[0].game_duration_seconds = 0.0;
+        assert!(validate_scoring_dataset(&invalid_duration).is_err());
     }
 
     #[test]

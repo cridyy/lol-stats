@@ -5,6 +5,7 @@ pub mod error;
 pub mod global_baselines;
 pub mod hex_winrate;
 pub mod lcu;
+pub mod local_api;
 pub mod models;
 pub mod quick_bench_swap;
 pub mod sgp;

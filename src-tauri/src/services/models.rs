@@ -298,6 +298,8 @@ pub struct ParticipantStats {
     pub assists: u32,
     #[serde(default)]
     pub turret_kills: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_turret_killed_time: Option<f64>,
     #[serde(default)]
     pub gold_earned: u32,
     #[serde(default)]
@@ -313,7 +315,11 @@ pub struct ParticipantStats {
     #[serde(default)]
     pub total_heal: u32,
     #[serde(default)]
+    pub total_heals_on_teammates: Option<u32>,
+    #[serde(default)]
     pub total_damage_shielded_on_teammates: u32,
+    #[serde(default)]
+    pub time_ccing_others: Option<u32>,
     #[serde(default)]
     pub enemy_champion_immobilizations: u32,
     #[serde(default)]
@@ -530,6 +536,9 @@ pub struct RecentGame {
     pub win: bool,
     #[serde(default)]
     pub team_id: u32,
+    /// 海克斯等多小队模式使用的统计小队编号。普通模式通常为 0。
+    #[serde(default)]
+    pub player_subteam_id: u32,
     #[serde(default)]
     pub spell1_id: u32,
     #[serde(default)]
@@ -567,6 +576,9 @@ pub struct RecentGame {
     pub team_tower_kills: u32,
     #[serde(default)]
     pub game_tower_kills: u32,
+    /// 败方推掉首座防御塔的对局秒数。败方零塔或旧数据缺字段时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loser_first_tower_time_seconds: Option<f64>,
     #[serde(default)]
     pub team_player_count: u32,
     #[serde(default)]
@@ -583,6 +595,12 @@ pub struct RecentGame {
     /// 评分用的全场阵容证据，用于从本队阵容推导对方阵容。
     #[serde(default)]
     pub game_composition: Vec<RatingCompositionEntry>,
+    /// 本局所有参与者的可评分快照，仅在历史战绩转换时填充。
+    ///
+    /// 该字段让本机接口可以在不再次请求每一局详情的情况下计算“队友平均分”、
+    /// 队内排名和对手对比。参与者快照内部不会继续嵌套本字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub match_participants: Vec<RecentGameParticipantRecord>,
     /// 基于近期历史同队关系推断出的开黑队友（不含当前玩家）。
     #[serde(default)]
     pub premade_teammate_puuids: Vec<String>,
@@ -617,6 +635,8 @@ pub struct RecentGame {
     pub team_total_damage_taken: u32,
     #[serde(default)]
     pub total_heal: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_heals_on_teammates: Option<u32>,
     #[serde(default)]
     pub total_damage_shielded_on_teammates: u32,
     #[serde(default)]
@@ -633,6 +653,8 @@ pub struct RecentGame {
     pub immobilize_and_kill_with_ally: u32,
     #[serde(default)]
     pub team_immobilize_and_kill_with_ally: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_ccing_others: Option<u32>,
     pub game_creation: i64,
     pub game_duration: i64,
 }
@@ -646,6 +668,29 @@ pub struct RecentGameParticipantSummary {
     pub summoner_name: String,
     #[serde(default)]
     pub champion_id: u32,
+}
+
+/// 单局参与者的身份与完整评分输入。
+///
+/// 使用 `flatten` 保持与 `RecentGame` 相同的字段命名，前端可以直接把 `record`
+/// 当作一局评分输入，而不需要复制一套 Rust/TypeScript 字段映射。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentGameParticipantRecord {
+    #[serde(default)]
+    pub participant_id: u32,
+    #[serde(default)]
+    pub puuid: String,
+    #[serde(default)]
+    pub game_name: String,
+    #[serde(default)]
+    pub tag_line: String,
+    #[serde(default)]
+    pub summoner_name: String,
+    #[serde(default)]
+    pub is_owner: bool,
+    #[serde(flatten)]
+    pub record: RecentGame,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -143,6 +143,7 @@ export interface RecentGame {
   gameMode: string
   win: boolean
   teamId: number
+  playerSubteamId?: number
   spell1Id: number
   spell2Id: number
   itemIds: number[]
@@ -163,11 +164,14 @@ export interface RecentGame {
   gameDeaths?: number
   teamTowerKills: number
   gameTowerKills: number
+  loserFirstTowerTimeSeconds?: number
   teamPlayerCount?: number
   gamePlayerCount?: number
   teamPuuids: string[]
   teamComposition?: RatingCompositionEntry[]
   gameComposition?: RatingCompositionEntry[]
+  /** 本局所有参与者的可评分快照；旧缓存可能没有该字段。 */
+  matchParticipants?: RecentGameParticipantRecord[]
   premadeTeammatePuuids?: string[]
   allyPlayers?: RecentGameParticipantSummary[]
   enemyPlayers?: RecentGameParticipantSummary[]
@@ -184,6 +188,7 @@ export interface RecentGame {
   teamDamageSelfMitigated: number
   teamTotalDamageTaken: number
   totalHeal: number
+  totalHealsOnTeammates?: number
   totalDamageShieldedOnTeammates: number
   teamTotalHeal: number
   teamGoldEarned: number
@@ -192,8 +197,112 @@ export interface RecentGame {
   teamEnemyChampionImmobilizations: number
   immobilizeAndKillWithAlly: number
   teamImmobilizeAndKillWithAlly: number
+  timeCCingOthers?: number
   gameCreation: number
   gameDuration: number
+}
+
+/** 同局玩家的身份与完整评分输入，字段与 RecentGame 保持一致。 */
+export interface RecentGameParticipantRecord extends RecentGame {
+  participantId: number
+  puuid: string
+  gameName: string
+  tagLine: string
+  summonerName: string
+  isOwner: boolean
+}
+
+export interface GlobalBaselineSource {
+  name: string
+  mode: string
+  indexUrl: string
+  sourceDataDate: string
+}
+
+/** 当前全服基准快照支持的全部指标。 */
+export type GlobalBaselineMetricKey =
+  | "averageKda"
+  | "averageKills"
+  | "averageDeaths"
+  | "averageAssists"
+  | "participationRatePercent"
+  | "multikills"
+  | "damageToChampions"
+  | "physicalDamageToChampions"
+  | "magicDamageToChampions"
+  | "trueDamageToChampions"
+  | "damageSharePercent"
+  | "turretDamage"
+  | "damageTaken"
+  | "selfMitigatedDamage"
+  | "allyHealing"
+  | "allyShielding"
+  | "crowdControlDurationSeconds"
+  | "goldEarned"
+  | "cs"
+  | "gameDurationSeconds"
+  | "damageGoldConversionRatePercent"
+
+export type GlobalBaselineMetricValues = Partial<
+  Record<GlobalBaselineMetricKey, number>
+>
+
+export interface GlobalAverageEstimation {
+  method?: string
+  formula?: {
+    relativePercent?: string
+    percentagePointDifference?: string
+  }
+  percentagePointMetrics?: readonly GlobalBaselineMetricKey[]
+  candidateCounts?: Partial<Record<GlobalBaselineMetricKey, number>>
+  excludedCandidateCounts?: Partial<Record<GlobalBaselineMetricKey, number>>
+  incompleteMetrics?: readonly GlobalBaselineMetricKey[]
+}
+
+export interface GlobalChampionBaseline {
+  id: number
+  slug: string
+  name: string
+  /** 英雄全服平均的 21 项原始数据；旧快照可能没有这些扩展字段。 */
+  averageKda?: number
+  averageKills?: number
+  averageDeaths?: number
+  averageAssists?: number
+  participationRatePercent?: number
+  multikills?: number
+  damageToChampions: number
+  physicalDamageToChampions?: number
+  magicDamageToChampions?: number
+  trueDamageToChampions?: number
+  damageSharePercent?: number
+  turretDamage?: number
+  damageTaken: number
+  selfMitigatedDamage: number
+  allyHealing: number
+  allyShielding: number
+  crowdControlDurationSeconds: number
+  goldEarned?: number
+  cs?: number
+  gameDurationSeconds: number
+  damageGoldConversionRatePercent?: number
+  relativeToGlobalAveragePercent?: GlobalBaselineMetricValues
+  sourceDataDate: string
+}
+
+export interface GlobalBaselineDataset {
+  schemaVersion: number
+  datasetVersion: string
+  generatedAt: string
+  source: GlobalBaselineSource
+  metricDescriptions?: Partial<Record<GlobalBaselineMetricKey, string>>
+  /** 根据英雄“较平均”字段反算后的全服人均，通常包含 21 项。 */
+  globalAverages?: GlobalBaselineMetricValues
+  globalAverageEstimation?: GlobalAverageEstimation
+  expectedChampionCount: number
+  championCount: number
+  unavailableChampionCount: number
+  partial: boolean
+  champions: readonly GlobalChampionBaseline[]
 }
 
 export interface MatchDetailResponse {

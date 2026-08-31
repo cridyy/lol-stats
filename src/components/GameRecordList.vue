@@ -5,7 +5,11 @@ import { loadMatchDetail } from "../api"
 import { copyElementAsPng } from "../imageShare"
 import { matchTeamSummary } from "../matchTeamSummary"
 import { notifyKey } from "../notifications"
-import { calculateOutputRating, outputRatingTitle } from "../scoring"
+import {
+  calculateOfficialRating,
+  globalRatingTitle,
+} from "../scoring"
+import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
@@ -244,11 +248,28 @@ function detailStatLeader(game: RecentGame, kind: "damage" | "gold" | "mitigatio
 }
 
 function outputRating(game: RecentGame) {
-  return calculateOutputRating(game, ratingContext.value)
+  return calculateOfficialRating(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+  )
+}
+
+function displayedRatingLevel(game: RecentGame) {
+  return outputRating(game).level
+}
+
+function scoreText(game: RecentGame) {
+  return `${outputRating(game).score}分`
 }
 
 function outputRatingHint(game: RecentGame) {
-  return outputRatingTitle(game, ratingContext.value)
+  return globalRatingTitle(
+    game,
+    ratingContext.value,
+    globalBaselinesByChampionId.value,
+    globalBaselineDataset.value?.datasetVersion,
+  )
 }
 
 async function copyMatchAnalysisImage() {
@@ -429,10 +450,10 @@ async function openMatchDetail(game: RecentGame) {
       </div>
 
       <div
-        :class="['score-cell', `score-${outputRating(game).level}`]"
+        :class="['score-cell', `score-${displayedRatingLevel(game)}`]"
         :title="outputRatingHint(game)"
       >
-        <strong>{{ outputRating(game).score }}分</strong>
+        <strong>{{ scoreText(game) }}</strong>
         <span>{{ outputRating(game).role.label }} · {{ outputRating(game).label }}</span>
       </div>
 
@@ -602,10 +623,10 @@ async function openMatchDetail(game: RecentGame) {
                 </div>
 
                 <div
-                  :class="['score-cell detail-score-cell', `score-${outputRating(player).level}`]"
+                  :class="['score-cell detail-score-cell', `score-${displayedRatingLevel(player)}`]"
                   :title="outputRatingHint(player)"
                 >
-                  <strong>{{ outputRating(player).score }}分</strong>
+                  <strong>{{ scoreText(player) }}</strong>
                   <span>{{ outputRating(player).role.label }} · {{ outputRating(player).label }}</span>
                 </div>
               </article>

@@ -1,10 +1,10 @@
 import {
-  calculateOutputRating,
+  calculateOfficialRating,
   scoreEvaluationLabel,
   type OutputRating,
 } from "./scoring"
 import type { PlayerRole, RatingContext } from "./roleClassifier"
-import type { RecentGame } from "./types"
+import type { GlobalChampionBaseline, RecentGame } from "./types"
 
 export type AbilityKey = "carry" | "frontline" | "support"
 export type ChampionLabelBand = "excellent" | "normal" | "low" | "disaster" | "empty"
@@ -67,6 +67,7 @@ export interface ChampionProfile {
 export interface ProfileAggregationOptions {
   timeWeighted?: boolean
   now?: number
+  globalBaselines?: ReadonlyMap<number, GlobalChampionBaseline>
 }
 
 interface RatedGame {
@@ -99,7 +100,7 @@ export function buildPlayerProfile(
   options: ProfileAggregationOptions = {},
 ): PlayerProfile {
   // 画像只聚合调用方已经加载好的对局，不在前端额外触发战绩请求。
-  const ratedGames = rateGames(games, context)
+  const ratedGames = rateGames(games, context, options.globalBaselines)
   const aggregation = createProfileAggregation(ratedGames, options)
   const abilities = {
     carry: buildAbilityProfile("carry", ratedGames, options),
@@ -141,7 +142,7 @@ export function buildChampionProfiles(
   options: ProfileAggregationOptions = {},
 ): ChampionProfile[] {
   const byChampion = new Map<number, RatedGame[]>()
-  for (const entry of rateGames(games, context)) {
+  for (const entry of rateGames(games, context, options.globalBaselines)) {
     const list = byChampion.get(entry.game.championId) || []
     list.push(entry)
     byChampion.set(entry.game.championId, list)
@@ -190,9 +191,13 @@ export function profileTierClass(score: number) {
   return "profile-tier-big-pit"
 }
 
-function rateGames(games: RecentGame[], context: RatingContext) {
+function rateGames(
+  games: RecentGame[],
+  context: RatingContext,
+  globalBaselines?: ReadonlyMap<number, GlobalChampionBaseline>,
+) {
   return games.map((game) => {
-    const rating = calculateOutputRating(game, context)
+    const rating = calculateOfficialRating(game, context, globalBaselines)
     return {
       game,
       rating,

@@ -15,7 +15,7 @@ use super::models::{
     ChampionStat, ClientAuth, Game, IdentityPlayer, MatchDetailPlayer, MatchDetailResponse,
     MatchDetailTeam, Participant, PlayerEloEstimateResponse, PlayerEloGameSample,
     PlayerEloParticipant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry, RecentGame,
-    RecentGameParticipantSummary, SummonerInfo,
+    RecentGameParticipantRecord, RecentGameParticipantSummary, SummonerInfo,
 };
 use super::sgp::{resolve_sgp_server_id, SgpClient};
 
@@ -34,7 +34,7 @@ const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const QUICK_PLAYER_CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const QUICK_PLAYER_CACHE_LIMIT: usize = 50;
 const QUICK_PLAYER_CACHE_GAME_LIMIT: usize = 100;
-const CACHE_SCHEMA_VERSION: i64 = 14;
+const CACHE_SCHEMA_VERSION: i64 = 17;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 const HISTORY_PREMADE_THRESHOLD: usize = 3;
 const PLAYER_ELO_SAMPLE_TARGET: usize = 10;
@@ -2103,7 +2103,9 @@ fn analyze_games(summoner: SummonerInfo, depth: usize, games: Vec<Game>) -> Play
         entry.team_total_heal += team_totals.total_heal as u64;
         entry.last_played_at = entry.last_played_at.max(game.game_creation);
 
-        recent_games.push(participant_to_recent_game(&game, participant));
+        let mut recent_game = participant_to_recent_game(&game, participant);
+        recent_game.match_participants = match_participant_records(&game, &summoner.puuid);
+        recent_games.push(recent_game);
     }
 
     infer_recent_game_premades(&summoner.puuid, &mut recent_games);
@@ -2222,6 +2224,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         game_mode: game.game_mode.clone(),
         win: participant.stats.win,
         team_id: participant.team_id,
+        player_subteam_id: participant.stats.player_subteam_id,
         spell1_id: participant.spell1_id,
         spell2_id: participant.spell2_id,
         item_ids: nonzero_values([
@@ -2264,6 +2267,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         game_deaths: game_totals.deaths,
         team_tower_kills: tower_kills_for_team(game, participant.team_id),
         game_tower_kills: game_tower_kills(game),
+        loser_first_tower_time_seconds: loser_first_tower_time_seconds(game),
         team_player_count,
         game_player_count: game.participants.len() as u32,
         team_puuids: team_puuids_for_participant(game, participant),
@@ -2278,6 +2282,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
             .iter()
             .map(rating_composition_entry)
             .collect(),
+        match_participants: Vec::new(),
         premade_teammate_puuids: Vec::new(),
         ally_players: related_players_for_participant(game, participant, true),
         enemy_players: related_players_for_participant(game, participant, false),
@@ -2294,6 +2299,7 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         team_damage_self_mitigated: team_totals.damage_self_mitigated,
         team_total_damage_taken: team_totals.total_damage_taken,
         total_heal: participant.stats.total_heal,
+        total_heals_on_teammates: participant.stats.total_heals_on_teammates,
         total_damage_shielded_on_teammates: participant.stats.total_damage_shielded_on_teammates,
         team_total_heal: team_totals.total_heal,
         team_gold_earned: team_totals.gold_earned,
@@ -2302,9 +2308,36 @@ fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentG
         team_enemy_champion_immobilizations: team_totals.enemy_champion_immobilizations,
         immobilize_and_kill_with_ally: participant.stats.immobilize_and_kill_with_ally,
         team_immobilize_and_kill_with_ally: team_totals.immobilize_and_kill_with_ally,
+        time_ccing_others: participant.stats.time_ccing_others,
         game_creation: game.game_creation,
         game_duration: game.game_duration,
     }
+}
+
+/// 为一局生成所有参与者的可评分快照。
+///
+/// 先用普通 `RecentGame` 转换函数生成统一评分输入，再附加身份信息；调用方把
+/// 这份快照挂到当前玩家的记录上。快照内部清空
+/// `match_participants`，避免递归序列化和缓存体积膨胀。
+fn match_participant_records(game: &Game, owner_puuid: &str) -> Vec<RecentGameParticipantRecord> {
+    game.participants
+        .iter()
+        .map(|participant| {
+            let identity = identity_for_participant(game, participant.participant_id);
+            let mut record = participant_to_recent_game(game, participant);
+            record.match_participants.clear();
+            RecentGameParticipantRecord {
+                participant_id: participant.participant_id,
+                puuid: identity.puuid.clone(),
+                game_name: identity.game_name.clone(),
+                tag_line: identity.tag_line.clone(),
+                summoner_name: identity.summoner_name.clone(),
+                is_owner: !owner_puuid.trim().is_empty()
+                    && identity.puuid.eq_ignore_ascii_case(owner_puuid),
+                record,
+            }
+        })
+        .collect()
 }
 
 fn rating_composition_entry(participant: &Participant) -> RatingCompositionEntry {
@@ -3373,6 +3406,15 @@ fn game_tower_kills(game: &Game) -> u32 {
     game.teams.iter().map(|team| team.tower_kills).sum()
 }
 
+fn loser_first_tower_time_seconds(game: &Game) -> Option<f64> {
+    game.participants
+        .iter()
+        .filter(|participant| !participant.stats.win)
+        .filter_map(|participant| participant.stats.first_turret_killed_time)
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .min_by(f64::total_cmp)
+}
+
 fn game_accolades_for_participant(
     game: &Game,
     participant: &Participant,
@@ -3590,6 +3632,7 @@ mod tests {
             game_mode: "ARAM".to_string(),
             win: true,
             team_id: 100,
+            player_subteam_id: 0,
             spell1_id: 0,
             spell2_id: 0,
             item_ids: Vec::new(),
@@ -3610,11 +3653,13 @@ mod tests {
             game_deaths: 0,
             team_tower_kills: 0,
             game_tower_kills: 0,
+            loser_first_tower_time_seconds: None,
             team_player_count: 5,
             game_player_count: 10,
             team_puuids: Vec::new(),
             team_composition: Vec::new(),
             game_composition: Vec::new(),
+            match_participants: Vec::new(),
             premade_teammate_puuids: Vec::new(),
             ally_players: Vec::new(),
             enemy_players: Vec::new(),
@@ -3631,6 +3676,7 @@ mod tests {
             team_damage_self_mitigated: 0,
             team_total_damage_taken: 0,
             total_heal: 0,
+            total_heals_on_teammates: None,
             total_damage_shielded_on_teammates: 0,
             team_total_heal: 0,
             team_gold_earned: 0,
@@ -3639,6 +3685,7 @@ mod tests {
             team_enemy_champion_immobilizations: 0,
             immobilize_and_kill_with_ally: 0,
             team_immobilize_and_kill_with_ally: 0,
+            time_ccing_others: None,
             game_creation: 0,
             game_duration: 1_200,
         }
@@ -3662,6 +3709,45 @@ mod tests {
             player_subteam_id,
             record: sample_recent_game(1, 266),
         }
+    }
+
+    #[test]
+    fn loser_first_tower_time_uses_earliest_losing_participant_value() {
+        let mut winner = Participant::default();
+        winner.stats.win = true;
+        winner.stats.first_turret_killed_time = Some(120.0);
+
+        let mut later_loser = Participant::default();
+        later_loser.stats.win = false;
+        later_loser.stats.first_turret_killed_time = Some(780.5);
+
+        let mut earlier_loser = Participant::default();
+        earlier_loser.stats.win = false;
+        earlier_loser.stats.first_turret_killed_time = Some(720.0);
+
+        let game = Game {
+            participants: vec![winner, later_loser, earlier_loser],
+            ..Default::default()
+        };
+
+        assert_eq!(loser_first_tower_time_seconds(&game), Some(720.0));
+    }
+
+    #[test]
+    fn loser_first_tower_time_ignores_missing_and_invalid_values() {
+        let mut missing = Participant::default();
+        missing.stats.win = false;
+
+        let mut invalid = Participant::default();
+        invalid.stats.win = false;
+        invalid.stats.first_turret_killed_time = Some(-1.0);
+
+        let game = Game {
+            participants: vec![missing, invalid],
+            ..Default::default()
+        };
+
+        assert_eq!(loser_first_tower_time_seconds(&game), None);
     }
 
     #[test]

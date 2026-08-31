@@ -17,6 +17,7 @@ import {
   type FunStatsResult,
 } from "../funStats"
 import { copyElementAsPng } from "../imageShare"
+import { globalBaselinesByChampionId } from "../globalBaselines"
 import { notifyKey } from "../notifications"
 import { getPlayerEloEstimateTask, startPlayerEloEstimateTask } from "../api"
 import type {
@@ -302,10 +303,14 @@ const ratingContext = computed(() => ({
   augments: combinedAugmentMap.value,
 }))
 const playerProfile = computed(() =>
-  buildPlayerProfile(props.stats?.recentGames || [], ratingContext.value),
+  buildPlayerProfile(props.stats?.recentGames || [], ratingContext.value, {
+    globalBaselines: globalBaselinesByChampionId.value,
+  }),
 )
 const championProfileMap = computed(() =>
-  buildChampionProfiles(props.stats?.recentGames || [], ratingContext.value).reduce<
+  buildChampionProfiles(props.stats?.recentGames || [], ratingContext.value, {
+    globalBaselines: globalBaselinesByChampionId.value,
+  }).reduce<
     Record<number, ReturnType<typeof buildChampionProfiles>[number]>
   >((acc, profile) => {
     acc[profile.championId] = profile

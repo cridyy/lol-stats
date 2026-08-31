@@ -6,6 +6,7 @@ import type {
   ConnectionStatus,
   FriendToolEntry,
   GameAssetBundle,
+  GlobalBaselineDataset,
   LiveGameResponse,
   MatchDetailResponse,
   PlayerEloEstimateResponse,
@@ -65,6 +66,10 @@ export function loadChampions() {
 
 export function loadGameAssets() {
   return invoke<GameAssetBundle>("load_game_assets")
+}
+
+export function loadGlobalBaselines() {
+  return invoke<GlobalBaselineDataset>("load_global_baselines")
 }
 
 export function loadCurrentRankedStats() {
@@ -163,6 +168,18 @@ export function searchPlayerWithProgress(
 
 export function cancelStatsLoad(requestId: string) {
   return invoke<void>("cancel_stats_load", { requestId })
+}
+
+export function setLocalApiFrontendReady(ready: boolean) {
+  return invoke<void>("set_local_api_frontend_ready", { ready })
+}
+
+export function completeLocalApiRequest(
+  requestId: string,
+  data?: unknown,
+  error?: string,
+) {
+  return invoke<void>("complete_local_api_request", { requestId, data, error })
 }
 
 export function copyPngToClipboard(bytes: number[]) {

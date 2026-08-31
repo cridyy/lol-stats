@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use futures::stream::{self, StreamExt};
 use reqwest::{Client, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
@@ -13,6 +14,8 @@ use super::models::{
 
 const USER_AGENT: &str = "LeagueOfLegendsClient/14.13.596.7996 (rcp-be-lol-match-history)";
 const MAX_RETRIES: usize = 3;
+const LOSER_FIRST_TOWER_DETAILS_CONCURRENCY: usize = 4;
+const STOMP_MAX_GAME_DURATION_SECONDS: i64 = 16 * 60;
 
 /// 国服 SGP（Service Gateway Proxy）深战绩客户端。
 ///
@@ -226,11 +229,13 @@ impl SgpClient {
 
         let history = parse_sgp_json::<SgpMatchHistoryResponse>(response, "SGP 深战绩").await?;
 
-        Ok(history
+        let games = history
             .games
             .into_iter()
             .filter_map(|game| game.json.map(sgp_game_json_to_lcu_game))
-            .collect())
+            .collect();
+
+        Ok(self.enrich_loser_first_tower_times(games).await)
     }
 
     async fn parse_game_summary_response(
@@ -257,7 +262,99 @@ impl SgpClient {
             )));
         };
 
-        Ok(sgp_game_json_to_lcu_game(summary))
+        let mut games = self
+            .enrich_loser_first_tower_times(vec![sgp_game_json_to_lcu_game(summary)])
+            .await;
+
+        games
+            .pop()
+            .ok_or_else(|| AppError::SgpUnavailable(format!("SGP 对局详情 {game_id} 转换结果为空")))
+    }
+
+    async fn enrich_loser_first_tower_times(&self, mut games: Vec<Game>) -> Vec<Game> {
+        let candidates = games
+            .iter()
+            .enumerate()
+            .filter_map(|(index, game)| {
+                loser_first_tower_details_candidate(game)
+                    .map(|winner_team_id| (index, game.game_id, winner_team_id, game.game_duration))
+            })
+            .collect::<Vec<_>>();
+
+        let resolved = stream::iter(candidates)
+            .map(
+                |(index, game_id, winner_team_id, game_duration)| async move {
+                    let time = self
+                        .game_details_loser_first_tower_time(game_id, winner_team_id, game_duration)
+                        .await
+                        .ok()
+                        .flatten();
+                    (index, time)
+                },
+            )
+            .buffer_unordered(LOSER_FIRST_TOWER_DETAILS_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        for (index, time) in resolved {
+            let Some(seconds) = time else {
+                continue;
+            };
+            let Some(game) = games.get_mut(index) else {
+                continue;
+            };
+
+            for participant in &mut game.participants {
+                if !participant.stats.win {
+                    participant.stats.first_turret_killed_time = Some(seconds);
+                }
+            }
+        }
+
+        games
+    }
+
+    async fn game_details_loser_first_tower_time(
+        &self,
+        game_id: u64,
+        winner_team_id: u32,
+        game_duration: i64,
+    ) -> AppResult<Option<f64>> {
+        let sub_id = self
+            .sgp_server_id
+            .strip_prefix("TENCENT_")
+            .unwrap_or(&self.sgp_server_id)
+            .to_ascii_uppercase();
+        let response = self
+            .http
+            .get(format!(
+                "{}/match-history-query/v1/products/lol/{}_{}/DETAILS",
+                self.base_url, sub_id, game_id
+            ))
+            .header("Authorization", format!("Bearer {}", self.access_token))
+            .header("User-Agent", USER_AGENT)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(AppError::SgpUnavailable(format!(
+                "SGP 对局时间线 {game_id} 返回 {}",
+                response.status()
+            )));
+        }
+
+        let details = parse_sgp_json::<SgpGameDetailsEnvelope>(response, "SGP 对局时间线").await?;
+        let Some(details) = details.json else {
+            return Err(AppError::SgpUnavailable(format!(
+                "SGP 对局时间线 {game_id} 缺少 json 数据"
+            )));
+        };
+
+        Ok(loser_first_tower_time_from_details(
+            &details,
+            winner_team_id,
+            game_duration,
+        ))
     }
 }
 
@@ -364,6 +461,38 @@ struct SgpGameEnvelope {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct SgpGameDetailsEnvelope {
+    #[serde(default)]
+    json: Option<SgpGameDetailsJson>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpGameDetailsJson {
+    #[serde(default)]
+    frames: Vec<SgpTimelineFrame>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SgpTimelineFrame {
+    #[serde(default)]
+    events: Vec<SgpTimelineEvent>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SgpTimelineEvent {
+    #[serde(default, rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    timestamp: f64,
+    #[serde(default)]
+    building_type: String,
+    #[serde(default)]
+    team_id: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SgpGameJson {
     #[serde(default)]
@@ -451,7 +580,11 @@ struct SgpParticipant {
     #[serde(default)]
     total_heal: u32,
     #[serde(default)]
+    total_heals_on_teammates: Option<u32>,
+    #[serde(default)]
     total_damage_shielded_on_teammates: u32,
+    #[serde(default)]
+    time_ccing_others: Option<u32>,
     #[serde(default)]
     vision_score: u32,
     #[serde(default)]
@@ -547,6 +680,92 @@ fn challenge_u32(challenges: &Value, key: &str) -> u32 {
         .unwrap_or_default()
 }
 
+fn challenge_f64(challenges: &Value, key: &str) -> Option<f64> {
+    let value = challenges.get(key)?;
+    let parsed = match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }?;
+
+    (parsed.is_finite() && parsed > 0.0).then_some(parsed)
+}
+
+fn loser_first_tower_details_candidate(game: &Game) -> Option<u32> {
+    if game.game_id == 0
+        || game.game_duration <= 0
+        || game.game_duration > STOMP_MAX_GAME_DURATION_SECONDS
+        || loser_first_tower_time_from_summary(game).is_some()
+    {
+        return None;
+    }
+
+    let loser_team_id = unique_outcome_team_id(game, false)?;
+    let winner_team_id = unique_outcome_team_id(game, true)?;
+    if loser_team_id == winner_team_id || tower_kills_for_team(game, loser_team_id) != 1 {
+        return None;
+    }
+
+    Some(winner_team_id)
+}
+
+fn unique_outcome_team_id(game: &Game, win: bool) -> Option<u32> {
+    let mut matching = game
+        .participants
+        .iter()
+        .filter(|participant| participant.stats.win == win)
+        .map(|participant| participant.team_id);
+    let team_id = matching.next()?;
+    (team_id != 0 && matching.all(|candidate| candidate == team_id)).then_some(team_id)
+}
+
+fn tower_kills_for_team(game: &Game, team_id: u32) -> u32 {
+    game.teams
+        .iter()
+        .find(|team| team.team_id == team_id)
+        .map(|team| team.tower_kills)
+        .unwrap_or_else(|| {
+            game.participants
+                .iter()
+                .filter(|participant| participant.team_id == team_id)
+                .map(|participant| participant.stats.turret_kills)
+                .sum()
+        })
+}
+
+fn loser_first_tower_time_from_summary(game: &Game) -> Option<f64> {
+    let duration = game.game_duration as f64;
+    game.participants
+        .iter()
+        .filter(|participant| !participant.stats.win)
+        .filter_map(|participant| participant.stats.first_turret_killed_time)
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0 && *seconds <= duration + 1.0)
+        .min_by(f64::total_cmp)
+        .map(|seconds| seconds.min(duration))
+}
+
+fn loser_first_tower_time_from_details(
+    details: &SgpGameDetailsJson,
+    winner_team_id: u32,
+    game_duration: i64,
+) -> Option<f64> {
+    let duration = game_duration as f64;
+    details
+        .frames
+        .iter()
+        .flat_map(|frame| &frame.events)
+        // BUILDING_KILL.teamId 是被摧毁建筑所属队伍；败方推塔时目标是胜方建筑。
+        .filter(|event| {
+            event.event_type == "BUILDING_KILL"
+                && event.building_type == "TOWER_BUILDING"
+                && event.team_id == winner_team_id
+        })
+        .map(|event| event.timestamp / 1000.0)
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0 && *seconds <= duration + 1.0)
+        .min_by(f64::total_cmp)
+        .map(|seconds| seconds.min(duration))
+}
+
 fn json_value_to_u32(value: &Value) -> Option<u32> {
     match value {
         Value::Number(number) => number
@@ -588,6 +807,8 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                 challenge_u32(&participant.challenges, "enemyChampionImmobilizations");
             let immobilize_and_kill_with_ally =
                 challenge_u32(&participant.challenges, "immobilizeAndKillWithAlly");
+            let first_turret_killed_time =
+                challenge_f64(&participant.challenges, "firstTurretKilledTime");
 
             Participant {
                 participant_id: participant.participant_id,
@@ -601,6 +822,7 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                     deaths: participant.deaths,
                     assists: participant.assists,
                     turret_kills: participant.turret_kills,
+                    first_turret_killed_time,
                     gold_earned: participant.gold_earned,
                     total_minions_killed: participant.total_minions_killed,
                     neutral_minions_killed: participant.neutral_minions_killed,
@@ -608,8 +830,10 @@ fn sgp_game_json_to_lcu_game(game: SgpGameJson) -> Game {
                     damage_self_mitigated: participant.damage_self_mitigated,
                     total_damage_taken: participant.total_damage_taken,
                     total_heal: participant.total_heal,
+                    total_heals_on_teammates: participant.total_heals_on_teammates,
                     total_damage_shielded_on_teammates: participant
                         .total_damage_shielded_on_teammates,
+                    time_ccing_others: participant.time_ccing_others,
                     enemy_champion_immobilizations,
                     immobilize_and_kill_with_ally,
                     vision_score: participant.vision_score,
@@ -825,4 +1049,132 @@ fn should_retry_status(status: StatusCode) -> bool {
 async fn wait_before_retry(attempt: usize) {
     let delay_ms = 500 * (attempt as u64 + 1);
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_one_tower_loss() -> Game {
+        let mut winner = Participant::default();
+        winner.team_id = 100;
+        winner.stats.win = true;
+        winner.stats.first_turret_killed_time = Some(300.0);
+
+        let mut loser = Participant::default();
+        loser.team_id = 200;
+        loser.stats.win = false;
+
+        Game {
+            game_id: 123,
+            game_duration: 15 * 60,
+            participants: vec![winner, loser],
+            teams: vec![
+                GameTeam {
+                    team_id: 100,
+                    tower_kills: 4,
+                },
+                GameTeam {
+                    team_id: 200,
+                    tower_kills: 1,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn challenge_f64_reads_numeric_and_string_seconds() {
+        assert_eq!(
+            challenge_f64(
+                &json!({ "firstTurretKilledTime": 721.25 }),
+                "firstTurretKilledTime"
+            ),
+            Some(721.25)
+        );
+        assert_eq!(
+            challenge_f64(
+                &json!({ "firstTurretKilledTime": "810.5" }),
+                "firstTurretKilledTime"
+            ),
+            Some(810.5)
+        );
+    }
+
+    #[test]
+    fn challenge_f64_rejects_missing_non_positive_and_invalid_values() {
+        assert_eq!(challenge_f64(&json!({}), "firstTurretKilledTime"), None);
+        assert_eq!(
+            challenge_f64(
+                &json!({ "firstTurretKilledTime": 0 }),
+                "firstTurretKilledTime"
+            ),
+            None
+        );
+        assert_eq!(
+            challenge_f64(
+                &json!({ "firstTurretKilledTime": "unknown" }),
+                "firstTurretKilledTime"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn details_fallback_ignores_winner_global_first_tower_value() {
+        let game = sample_one_tower_loss();
+
+        assert_eq!(loser_first_tower_details_candidate(&game), Some(100));
+    }
+
+    #[test]
+    fn details_fallback_skips_known_loser_time_and_two_tower_losses() {
+        let mut known = sample_one_tower_loss();
+        known.participants[1].stats.first_turret_killed_time = Some(810.0);
+        assert_eq!(loser_first_tower_details_candidate(&known), None);
+
+        let mut two_towers = sample_one_tower_loss();
+        two_towers.teams[1].tower_kills = 2;
+        assert_eq!(loser_first_tower_details_candidate(&two_towers), None);
+    }
+
+    #[test]
+    fn details_timeline_uses_first_tower_destroyed_by_losing_team() {
+        let details = SgpGameDetailsJson {
+            frames: vec![SgpTimelineFrame {
+                events: vec![
+                    SgpTimelineEvent {
+                        event_type: "BUILDING_KILL".to_string(),
+                        timestamp: 200_000.0,
+                        building_type: "TOWER_BUILDING".to_string(),
+                        team_id: 200,
+                    },
+                    SgpTimelineEvent {
+                        event_type: "BUILDING_KILL".to_string(),
+                        timestamp: 700_000.0,
+                        building_type: "INHIBITOR_BUILDING".to_string(),
+                        team_id: 100,
+                    },
+                    SgpTimelineEvent {
+                        event_type: "BUILDING_KILL".to_string(),
+                        timestamp: 850_500.0,
+                        building_type: "TOWER_BUILDING".to_string(),
+                        team_id: 100,
+                    },
+                    SgpTimelineEvent {
+                        event_type: "BUILDING_KILL".to_string(),
+                        timestamp: 880_000.0,
+                        building_type: "TOWER_BUILDING".to_string(),
+                        team_id: 100,
+                    },
+                ],
+            }],
+        };
+
+        assert_eq!(
+            loser_first_tower_time_from_details(&details, 100, 15 * 60),
+            Some(850.5)
+        );
+    }
 }

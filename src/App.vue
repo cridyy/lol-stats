@@ -24,6 +24,7 @@ import {
   appVersion,
   cancelStatsLoad,
   checkAppUpdate,
+  completeLocalApiRequest,
   connectionStatus,
   getChatStatus,
   loadCurrentRankedStats,
@@ -41,6 +42,7 @@ import {
   setChatAvailability,
   setHexWinrateCaptureMode,
   setHexWinrateRecognitionEnabled,
+  setLocalApiFrontendReady,
   setQuickBenchSwapEnabled,
 } from "./api"
 import {
@@ -55,6 +57,16 @@ import RecordView from "./components/RecordView.vue"
 import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
+import {
+  globalBaselineDataset,
+  globalBaselinesByChampionId,
+  initializeGlobalBaselines,
+} from "./globalBaselines"
+import {
+  buildLocalApiResponse,
+  localApiModeMatches,
+  type LocalApiRequestPayload,
+} from "./localApi"
 import {
   AUTO_ACCEPT_ENABLED_KEY,
   DARK_MODE_ENABLED_KEY,
@@ -166,6 +178,8 @@ const MAX_RECENT_DEPTH = 1000
 const DEFAULT_STATS_DEPTH = 500
 const MIN_STATS_DEPTH = 50
 const MAX_STATS_DEPTH = 1000
+const LOCAL_API_SCAN_MIN_DEPTH = 100
+const LOCAL_API_SCAN_STEP = 100
 const LIVE_STATS_DEPTH = 50
 const LIVE_AUTO_REFRESH_MS = 15000
 const GAMEFLOW_WATCH_MS = 1000
@@ -316,7 +330,9 @@ const progressOverlay = ref({
 })
 
 let unlistenProgress: UnlistenFn | null = null
+let unlistenLocalApi: UnlistenFn | null = null
 let liveRefreshTimer: number | null = null
+let globalBaselineRetryTimer: number | null = null
 let liveGameRenderSignature = ""
 let gameflowWatchTimer: number | null = null
 let chatStatusLockTimer: number | null = null
@@ -801,6 +817,16 @@ function copyRecentGame(game: RecentGame): RecentGame {
     teamPuuids: [...(game.teamPuuids || [])],
     teamComposition: [...(game.teamComposition || [])],
     gameComposition: [...(game.gameComposition || [])],
+    matchParticipants: (game.matchParticipants || []).map((participant) => ({
+      ...participant,
+      itemIds: [...(participant.itemIds || [])],
+      perkIds: [...(participant.perkIds || [])],
+      augmentIds: [...(participant.augmentIds || [])],
+      teamPuuids: [...(participant.teamPuuids || [])],
+      teamComposition: [...(participant.teamComposition || [])],
+      gameComposition: [...(participant.gameComposition || [])],
+      matchParticipants: [],
+    })),
     premadeTeammatePuuids: [...(game.premadeTeammatePuuids || [])],
   }
 }
@@ -1355,6 +1381,102 @@ async function ensureClientReady() {
   }
 }
 
+function localApiAssetMap(entries: GameAssetBundle["items"]) {
+  return entries.reduce<Record<number, GameAssetBundle["items"][number]>>((map, entry) => {
+    if (entry.id > 0) map[entry.id] = entry
+    return map
+  }, {})
+}
+
+function localApiRatingContext() {
+  return {
+    items: localApiAssetMap(gameAssets.value.items),
+    champions: championMap.value,
+    augments: localApiAssetMap([
+      ...gameAssets.value.perks,
+      ...gameAssets.value.augments,
+    ]),
+  }
+}
+
+async function loadLocalApiModeGames(request: LocalApiRequestPayload) {
+  const query = `${request.gameName}#${request.tagLine}`
+  let depth = request.mode === "all"
+    ? request.count
+    : Math.max(LOCAL_API_SCAN_MIN_DEPTH, request.count)
+  depth = Math.min(depth, MAX_RECENT_DEPTH)
+
+  let stats: PlayerStatsResponse | null = null
+  let games: RecentGame[] = []
+  // `depthLoaded` 是后端过滤掉无效短局/PVE 后的数量，不等于原始历史已经耗尽。
+  // 记录连续扫描结果。由于 `depthLoaded` 只统计有效对局，单次扫描不增长
+  // 可能只是中间遇到一段无效短局，因此连续两次不增长才判定没有更多可用历史。
+  let previousScannedGames: number | undefined
+  let noGrowthPasses = 0
+
+  while (true) {
+    // 本机接口用于分析指定数量的最新对局，不能命中可能只有部分历史的聚合缓存。
+    // 直接走一次增量拉取，并且不把接口的临时扫描结果覆盖到常规查询缓存。
+    stats = await searchPlayer(query, depth, request.server, true, false)
+    games = stats.recentGames.filter((game) => localApiModeMatches(game, request.mode))
+    const scannedGames = Math.max(stats.depthLoaded, stats.recentGames.length)
+    if (previousScannedGames !== undefined && scannedGames <= previousScannedGames) {
+      noGrowthPasses += 1
+    } else {
+      noGrowthPasses = 0
+    }
+    const exhausted = depth >= MAX_RECENT_DEPTH || noGrowthPasses >= 2
+
+    if (games.length >= request.count || exhausted) {
+      return {
+        stats,
+        games: games.slice(0, request.count),
+        scannedGames,
+        exhausted,
+      }
+    }
+    previousScannedGames = scannedGames
+
+    const estimatedDepth = games.length > 0
+      ? Math.ceil((request.count / games.length) * scannedGames * 1.15)
+      : depth + LOCAL_API_SCAN_STEP
+    const nextDepth = Math.min(
+      MAX_RECENT_DEPTH,
+      Math.max(depth + LOCAL_API_SCAN_STEP, estimatedDepth),
+    )
+
+    if (nextDepth <= depth) {
+      return {
+        stats,
+        games: games.slice(0, request.count),
+        scannedGames,
+        exhausted: true,
+      }
+    }
+    depth = nextDepth
+  }
+}
+
+async function handleLocalApiRequest(request: LocalApiRequestPayload) {
+  try {
+    await ensureClientReady()
+    await initializeGlobalBaselines()
+    const loaded = await loadLocalApiModeGames(request)
+    const response = buildLocalApiResponse(request, loaded.stats, loaded.games, {
+      champions: championMap.value,
+      ratingContext: localApiRatingContext(),
+      globalBaselines: globalBaselinesByChampionId.value,
+      globalBaselineDataset: globalBaselineDataset.value,
+      globalBaselineDatasetVersion: globalBaselineDataset.value?.datasetVersion,
+      scannedGames: loaded.scannedGames,
+      exhausted: loaded.exhausted,
+    })
+    await completeLocalApiRequest(request.requestId, response)
+  } catch (error) {
+    await completeLocalApiRequest(request.requestId, undefined, errorMessage(error)).catch(() => {})
+  }
+}
+
 async function loadCurrentRecent(forceRefresh = false, previousLoaded?: number) {
   if (currentRecentLoading.value) return false
   currentRecentLoading.value = true
@@ -1794,6 +1916,15 @@ function stopLiveAutoRefresh() {
   liveRefreshTimer = null
 }
 
+async function initializeGlobalBaselineData() {
+  if (await initializeGlobalBaselines()) return
+
+  globalBaselineRetryTimer = window.setTimeout(() => {
+    globalBaselineRetryTimer = null
+    void initializeGlobalBaselines()
+  }, 4_000)
+}
+
 function shouldAutoOpenLive(phase?: string | null) {
   return phase ? AUTO_LIVE_PHASES.has(phase) : false
 }
@@ -1953,7 +2084,13 @@ watch(activePage, (page, previousPage) => {
 })
 
 onMounted(async () => {
+  unlistenLocalApi = await listen<LocalApiRequestPayload>("local-api-request", (event) => {
+    void handleLocalApiRequest(event.payload)
+  })
+  await setLocalApiFrontendReady(true).catch(() => {})
+
   void initWindowSizeSettings()
+  void initializeGlobalBaselineData()
   await initAppVersionAndReleaseNotes()
   void setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value).catch((error) => {
     notifyError("海克斯截图模式初始化失败", error)
@@ -1978,9 +2115,15 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlistenProgress?.()
+  unlistenLocalApi?.()
+  void setLocalApiFrontendReady(false).catch(() => {})
   stopGameflowWatcher()
   stopChatStatusLockWatcher()
   stopLiveAutoRefresh()
+  if (globalBaselineRetryTimer !== null) {
+    window.clearTimeout(globalBaselineRetryTimer)
+    globalBaselineRetryTimer = null
+  }
   if (drillCachePruneTimer !== null) {
     window.clearInterval(drillCachePruneTimer)
     drillCachePruneTimer = null

@@ -20,12 +20,14 @@ const watchTargets = [
 
 const fullSteps = [
   { label: "前端全量构建", command: "npm run build" },
+  { label: "评分边界测试", command: "npm run test:scoring" },
   { label: "Rust 编译检查", command: "npm run check:backend" },
   { label: "Rust 单元测试", command: "npm run test:backend" },
 ]
 
 const watchSteps = [
   { label: "前端类型检查", command: "npm run check:frontend" },
+  { label: "评分边界测试", command: "npm run test:scoring" },
   { label: "Rust 编译检查", command: "npm run check:backend" },
   { label: "Rust 单元测试", command: "npm run test:backend" },
 ]

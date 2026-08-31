@@ -4,12 +4,14 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{async_runtime, AppHandle, Emitter};
+use tauri::{async_runtime, AppHandle, Emitter, State};
 use tokio::sync::Semaphore;
 
 use crate::services::client_discovery::discover_primary_client;
 use crate::services::error::{AppError, AppResult};
+use crate::services::global_baselines::{load_current_dataset, GlobalBaselineDataset};
 use crate::services::lcu::{LcuClient, RiotClient};
+use crate::services::local_api::LocalApiState;
 use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ChatMe, ClientAuth, ConnectionStatus, FriendToolEntry,
     GameAssetBundle, GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer,
@@ -174,6 +176,11 @@ fn store_player_elo_job(status: PlayerEloEstimateTaskStatus) {
 #[tauri::command]
 pub fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub fn load_global_baselines() -> Result<GlobalBaselineDataset, String> {
+    load_current_dataset()
 }
 
 #[tauri::command]
@@ -946,6 +953,21 @@ pub async fn search_player_with_progress(
 
     clear_cancelled_request(&request_id);
     result
+}
+
+#[tauri::command]
+pub fn set_local_api_frontend_ready(state: State<'_, LocalApiState>, ready: bool) {
+    state.set_frontend_ready(ready);
+}
+
+#[tauri::command]
+pub fn complete_local_api_request(
+    state: State<'_, LocalApiState>,
+    request_id: String,
+    data: Option<serde_json::Value>,
+    error: Option<String>,
+) {
+    state.complete_request(&request_id, data, error);
 }
 
 fn uses_transient_player_cache(cache_mode: Option<&str>) -> bool {
