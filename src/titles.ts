@@ -67,6 +67,10 @@ interface TitleFacts {
   game: RecentGame
   rating: OutputRating
   globalRating: GlobalRating
+  /** 当前英雄的全服基准；国服称号只在该基准存在时考虑。 */
+  championBaseline?: GlobalChampionBaseline
+  /** 用英雄短名生成动态英雄称号。 */
+  championName: string
   metrics: OutputRatingMetrics
   role: PlayerRole
   family: "carry" | "fighter" | "frontline" | "mage" | "support"
@@ -84,6 +88,8 @@ interface TitleFacts {
   winnerTowerKills: number
   loserTowerKills: number
   firstTowerTimeRatio: number
+  /** 直接按当前英雄基准计算的倍率，不受辅助评分分支改道影响。 */
+  championRatios: Partial<Record<GlobalBaselineMetricKey, number>>
   globalRatios: Partial<Record<GlobalBaselineMetricKey, number>>
   protectionRatio: number
   allyCarryCount: number
@@ -186,6 +192,21 @@ function titleRoleFamily(role: PlayerRole): TitleFacts["family"] {
   return "carry"
 }
 
+function isHexAramGame(game: RecentGame) {
+  const mode = String(game.gameMode || "").toUpperCase()
+  return game.queueId === 2400 || mode === "STRAWBERRY" || mode === "KIWI"
+}
+
+function championTitleName(
+  game: RecentGame,
+  context: RatingContext,
+  baseline: GlobalChampionBaseline | undefined,
+) {
+  const champion = context.champions?.[game.championId]
+  const name = String(champion?.name || baseline?.name || champion?.alias || "").trim()
+  return name || `英雄${game.championId}`
+}
+
 function globalMetricRatio(globalRating: GlobalRating, key: GlobalBaselineMetricKey) {
   const metric = globalRating.metrics.find((entry) => entry.key === key)
   return metric && finite(metric.ratio) ? metric.ratio : undefined
@@ -202,7 +223,15 @@ function durationMultiplier(seconds: number) {
 function genericBaselineRatio(
   game: RecentGame,
   baseline: GlobalChampionBaseline | undefined,
-  field: "damageToChampions" | "damageTaken" | "selfMitigatedDamage" | "allyHealing" | "allyShielding" | "crowdControlDurationSeconds",
+  field:
+    | "damageToChampions"
+    | "damageTaken"
+    | "selfMitigatedDamage"
+    | "allyHealing"
+    | "allyShielding"
+    | "crowdControlDurationSeconds"
+    | "goldEarned"
+    | "cs",
   actual: number | undefined,
 ) {
   if (!baseline || !finite(actual) || actual < 0) return undefined
@@ -212,6 +241,84 @@ function genericBaselineRatio(
   if (base <= 0 || baseMinutes <= 0) return undefined
   const expectedPerMinute = (base / baseMinutes) * durationMultiplier(numberOr(game.gameDuration))
   return expectedPerMinute > 0 ? (actual / minutes) / expectedPerMinute : undefined
+}
+
+function directBaselineRatio(actual: number | undefined, baseline: number | undefined) {
+  if (!finite(actual) || !finite(baseline) || actual < 0 || baseline <= 0) return undefined
+  return actual / baseline
+}
+
+/**
+ * 计算称号用的英雄全服倍率。这里故意和辅助正式评分分开：
+ * 辅助可能因为装备被改道到英雄池基准，但“国服”必须始终比较该英雄自身。
+ */
+function buildChampionRatios(
+  game: RecentGame,
+  baseline: GlobalChampionBaseline | undefined,
+  metrics: OutputRatingMetrics,
+) {
+  if (!baseline) return {} as Partial<Record<GlobalBaselineMetricKey, number>>
+
+  const ratios: Partial<Record<GlobalBaselineMetricKey, number>> = {
+    averageKda: directBaselineRatio(numberOr(game.kda), baseline.averageKda),
+    averageKills: directBaselineRatio(numberOr(game.kills), baseline.averageKills),
+    averageDeaths: directBaselineRatio(numberOr(game.deaths), baseline.averageDeaths),
+    averageAssists: directBaselineRatio(numberOr(game.assists), baseline.averageAssists),
+    participationRatePercent: directBaselineRatio(
+      metrics.killParticipation * 100,
+      baseline.participationRatePercent,
+    ),
+    damageSharePercent: directBaselineRatio(
+      metrics.damageShare * 100,
+      baseline.damageSharePercent,
+    ),
+    damageGoldConversionRatePercent: directBaselineRatio(
+      numberOr(game.goldEarned) > 0
+        ? numberOr(game.damageToChampions) / numberOr(game.goldEarned) * 100
+        : undefined,
+      baseline.damageGoldConversionRatePercent,
+    ),
+    damageToChampions: genericBaselineRatio(
+      game,
+      baseline,
+      "damageToChampions",
+      numberOr(game.damageToChampions),
+    ),
+    damageTaken: genericBaselineRatio(
+      game,
+      baseline,
+      "damageTaken",
+      numberOr(game.totalDamageTaken),
+    ),
+    selfMitigatedDamage: genericBaselineRatio(
+      game,
+      baseline,
+      "selfMitigatedDamage",
+      numberOr(game.damageSelfMitigated),
+    ),
+    allyHealing: genericBaselineRatio(
+      game,
+      baseline,
+      "allyHealing",
+      game.totalHealsOnTeammates,
+    ),
+    allyShielding: genericBaselineRatio(
+      game,
+      baseline,
+      "allyShielding",
+      numberOr(game.totalDamageShieldedOnTeammates),
+    ),
+    crowdControlDurationSeconds: genericBaselineRatio(
+      game,
+      baseline,
+      "crowdControlDurationSeconds",
+      game.timeCCingOthers,
+    ),
+    goldEarned: genericBaselineRatio(game, baseline, "goldEarned", numberOr(game.goldEarned)),
+    cs: genericBaselineRatio(game, baseline, "cs", numberOr(game.cs)),
+  }
+
+  return ratios
 }
 
 function sameParticipant(left: RecentGame | RecentGameParticipantRecord, right: RecentGame) {
@@ -308,13 +415,14 @@ function buildFacts(
   const metrics = rating.metrics
   const minutes = gameMinutes(game)
   const baseline = baselines?.get(game.championId)
+  const championRatios = buildChampionRatios(game, baseline, metrics)
   const genericRatios: Partial<Record<GlobalBaselineMetricKey, number>> = {
-    damageToChampions: genericBaselineRatio(game, baseline, "damageToChampions", numberOr(game.damageToChampions)),
-    damageTaken: genericBaselineRatio(game, baseline, "damageTaken", numberOr(game.totalDamageTaken)),
-    selfMitigatedDamage: genericBaselineRatio(game, baseline, "selfMitigatedDamage", numberOr(game.damageSelfMitigated)),
-    allyHealing: genericBaselineRatio(game, baseline, "allyHealing", game.totalHealsOnTeammates),
-    allyShielding: genericBaselineRatio(game, baseline, "allyShielding", numberOr(game.totalDamageShieldedOnTeammates)),
-    crowdControlDurationSeconds: genericBaselineRatio(game, baseline, "crowdControlDurationSeconds", game.timeCCingOthers),
+    damageToChampions: championRatios.damageToChampions,
+    damageTaken: championRatios.damageTaken,
+    selfMitigatedDamage: championRatios.selfMitigatedDamage,
+    allyHealing: championRatios.allyHealing,
+    allyShielding: championRatios.allyShielding,
+    crowdControlDurationSeconds: championRatios.crowdControlDurationSeconds,
   }
   for (const key of Object.keys(genericRatios) as GlobalBaselineMetricKey[]) {
     genericRatios[key] = globalMetricRatio(globalRating, key) ?? genericRatios[key]
@@ -330,6 +438,8 @@ function buildFacts(
     game,
     rating,
     globalRating,
+    championBaseline: baseline,
+    championName: championTitleName(game, context, baseline),
     metrics,
     role: rating.role.role,
     family: titleRoleFamily(rating.role.role),
@@ -347,6 +457,7 @@ function buildFacts(
     winnerTowerKills: numberOr(rating.contextAdjustment.winnerTowerKills),
     loserTowerKills: numberOr(rating.contextAdjustment.loserTowerKills),
     firstTowerTimeRatio: numberOr(rating.contextAdjustment.loserFirstTowerTimeRatio),
+    championRatios,
     globalRatios: genericRatios,
     protectionRatio: Math.max(healingRatio, shieldingRatio),
     allyCarryCount: composition.allyCarryCount,
@@ -360,6 +471,194 @@ function championAlias(facts: TitleFacts) {
 
 function hasMetric(facts: TitleFacts, key: GlobalBaselineMetricKey, minimum: number) {
   return atLeast(facts.globalRatios[key], minimum)
+}
+
+const NATIONAL_SCORE_MINIMUM = 90
+const NATIONAL_PRIMARY_RATIO = 1.4
+const NATIONAL_SECONDARY_RATIO = 1.2
+const NATIONAL_COMBINED_RATIO = 1.3
+
+/** 保留玩家已经约定的几个梗名，其余英雄统一使用“国服最强 + 短名”。 */
+const NATIONAL_TITLE_ALIASES: Readonly<Record<number, string>> = {
+  104: "国服刘备", // 男枪
+  86: "国服亚瑟", // 盖伦
+  64: "国服达摩", // 盲僧
+  350: "国服瑶", // 猫咪
+  16: "国服蔡文姬", // 索拉卡
+}
+
+const NATIONAL_METRIC_LABELS: Partial<Record<GlobalBaselineMetricKey, string>> = {
+  averageKda: "KDA",
+  averageKills: "击杀",
+  averageAssists: "助攻",
+  participationRatePercent: "参团率",
+  damageToChampions: "对英雄伤害",
+  damageSharePercent: "伤害占比",
+  damageTaken: "承受伤害",
+  selfMitigatedDamage: "自我减免",
+  allyHealing: "队友治疗",
+  allyShielding: "队友护盾",
+  crowdControlDurationSeconds: "控制时长",
+  goldEarned: "金币",
+  cs: "补刀",
+  damageGoldConversionRatePercent: "伤害经济转化率",
+}
+
+interface NationalRoute {
+  name: string
+  primaryKeys: GlobalBaselineMetricKey[]
+  secondaryKeys: GlobalBaselineMetricKey[]
+}
+
+interface NationalRouteEvidence {
+  route: NationalRoute
+  primaryKey: GlobalBaselineMetricKey
+  primaryRatio: number
+  secondaryKey: GlobalBaselineMetricKey
+  secondaryRatio: number
+  combinedRatio: number
+  validMetricCount: number
+}
+
+function dedupeMetricKeys(keys: GlobalBaselineMetricKey[]) {
+  return [...new Set(keys)]
+}
+
+function baselineMetricValue(
+  baseline: GlobalChampionBaseline | undefined,
+  key: GlobalBaselineMetricKey,
+) {
+  if (!baseline) return undefined
+  const values = baseline as unknown as Record<string, unknown>
+  const value = Number(values[key])
+  return Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function nationalMetricWeight(facts: TitleFacts, key: GlobalBaselineMetricKey) {
+  const base = baselineMetricValue(facts.championBaseline, key)
+  if (!base) return 1
+
+  // 治疗、护盾和控制的绝对均值差距很大；辅助路线按英雄自身的基准构成加权，
+  // 防止一个护盾型英雄因为治疗数字较小而被错误地判成治疗主导。
+  if (facts.family === "support" && [
+    "allyHealing",
+    "allyShielding",
+    "crowdControlDurationSeconds",
+  ].includes(key)) {
+    return base
+  }
+
+  return 1
+}
+
+function nationalRoutes(facts: TitleFacts): NationalRoute[] {
+  const outputRoute: NationalRoute = {
+    name: "输出路线",
+    primaryKeys: ["damageToChampions"],
+    secondaryKeys: [
+      "damageGoldConversionRatePercent",
+      "damageSharePercent",
+      "participationRatePercent",
+      "averageKda",
+    ],
+  }
+  const frontlineRoute: NationalRoute = {
+    name: "前排路线",
+    primaryKeys: ["damageTaken", "selfMitigatedDamage"],
+    secondaryKeys: [
+      "crowdControlDurationSeconds",
+      "participationRatePercent",
+      "damageToChampions",
+    ],
+  }
+
+  if (facts.role === "tank") return [frontlineRoute]
+  if (facts.role === "fighter" || facts.role === "bruiser" || facts.role === "fighterAssassin") {
+    return [outputRoute, frontlineRoute]
+  }
+  if (facts.role === "support") {
+    const healing = baselineMetricValue(facts.championBaseline, "allyHealing") || 0
+    const shielding = baselineMetricValue(facts.championBaseline, "allyShielding") || 0
+    const primary = healing >= shielding ? "allyHealing" : "allyShielding"
+    const other = primary === "allyHealing" ? "allyShielding" : "allyHealing"
+    return [{
+      name: primary === "allyHealing" ? "治疗路线" : "护盾路线",
+      primaryKeys: [primary],
+      secondaryKeys: [
+        other,
+        "crowdControlDurationSeconds",
+        "participationRatePercent",
+        // 只有英雄自身的保护/控制基准不足两项时，才允许用伤害作为补充证据。
+        "damageToChampions",
+      ],
+    }]
+  }
+  return [outputRoute]
+}
+
+function nationalRouteEvidence(
+  facts: TitleFacts,
+  route: NationalRoute,
+): NationalRouteEvidence | null {
+  const primaryKeys = dedupeMetricKeys(route.primaryKeys)
+  const secondaryKeys = dedupeMetricKeys(route.secondaryKeys)
+  const allKeys = dedupeMetricKeys([...primaryKeys, ...secondaryKeys])
+  const entries = allKeys.flatMap((key) => {
+    const value = facts.championRatios[key]
+    return finite(value) && value >= 0
+      ? [{ key, ratio: value, weight: nationalMetricWeight(facts, key) }]
+      : []
+  })
+  if (entries.length < 2) return null
+
+  const primaryEntries = entries.filter((entry) => primaryKeys.includes(entry.key))
+  if (!primaryEntries.length) return null
+  const primary = primaryEntries.reduce((best, entry) => entry.ratio > best.ratio ? entry : best)
+  const secondaryEntries = entries.filter((entry) => entry.key !== primary.key)
+  if (!secondaryEntries.length) return null
+  const secondary = secondaryEntries.reduce((best, entry) => entry.ratio > best.ratio ? entry : best)
+  const totalWeight = entries.reduce((sum, entry) => sum + entry.weight, 0)
+  const combinedRatio = totalWeight > 0
+    ? entries.reduce((sum, entry) => sum + entry.ratio * entry.weight, 0) / totalWeight
+    : 0
+
+  return {
+    route,
+    primaryKey: primary.key,
+    primaryRatio: primary.ratio,
+    secondaryKey: secondary.key,
+    secondaryRatio: secondary.ratio,
+    combinedRatio,
+    validMetricCount: entries.length,
+  }
+}
+
+function nationalTitleDetail(facts: TitleFacts): GameTitleDetail | null {
+  if (!isHexAramGame(facts.game) || facts.score < NATIONAL_SCORE_MINIMUM || !facts.championBaseline) {
+    return null
+  }
+
+  const candidates = nationalRoutes(facts)
+    .map((route) => nationalRouteEvidence(facts, route))
+    .filter((entry): entry is NationalRouteEvidence => Boolean(entry))
+    .filter((entry) => entry.validMetricCount >= 2
+      && entry.primaryRatio >= NATIONAL_PRIMARY_RATIO
+      && entry.secondaryRatio >= NATIONAL_SECONDARY_RATIO
+      && entry.combinedRatio >= NATIONAL_COMBINED_RATIO)
+    .sort((left, right) => right.combinedRatio - left.combinedRatio)
+  const evidence = candidates[0]
+  if (!evidence) return null
+
+  const specialName = NATIONAL_TITLE_ALIASES[facts.game.championId]
+  const name = specialName || `国服最强${facts.championName}`
+  const primaryLabel = NATIONAL_METRIC_LABELS[evidence.primaryKey] || evidence.primaryKey
+  const secondaryLabel = NATIONAL_METRIC_LABELS[evidence.secondaryKey] || evidence.secondaryKey
+  return {
+    name,
+    tier: "神话",
+    category: "英雄",
+    reason: `${evidence.route.name}，评分 ${Math.round(facts.score)}；${primaryLabel} ${Math.round(evidence.primaryRatio * 100)}%，${secondaryLabel} ${Math.round(evidence.secondaryRatio * 100)}%，相关指标综合 ${Math.round(evidence.combinedRatio * 100)}%（${evidence.validMetricCount} 项有效数据）`,
+  }
 }
 
 function rule(
@@ -380,32 +679,32 @@ function rule(
 
 /**
  * 规则故意分成“普通可见、强表现、极少数神话、负面调侃”四层。
- * 普通玩家的称号不依赖 95/100 分或 45 分队友均值这类极端条件；相对比较只在
- * 能识别完整十人数据时启用，旧缓存不会被缺失值误触发。
+ * 称号不改变评分，只描述这一局发生了什么；同一局可以同时命中多个称号。
+ * 国服称号不在这里为每个英雄复制一条规则，而是在 buildGameTitleSet 中根据
+ * 当前英雄和全服基准动态生成。
  */
 const TITLE_RULES: TitleRule[] = [
-  // 通用：先保证普通玩家也有可见的评价。
+  // 通用：低分调侃和普通发挥分开，避免把“玩得唐”误写成稳定表现。
   rule("显示器开了吗", "调侃", "通用", (f) => f.score <= 45 && f.weakSignals >= 2, "评分较低且至少两项核心表现偏弱"),
   rule("卧底找到了", "调侃", "对局", (f) => f.game.win && f.score <= 50 && f.weakSignals >= 2
     && (!f.matchAvailable || (atLeast(f.comparison?.teamScoreRank, 4) && atMost(f.comparison?.teamScoreGapToTeammates, -6))), "赢了但位于队伍后段"),
-  rule("少冰七分糖", "普通", "通用", (f) => f.score >= 68 && f.score <= 80 && f.weakSignals <= 1
-    && f.metrics.killParticipation >= 0.55 && f.metrics.killParticipation <= 0.82
-    && !f.gameDamageLeader && !f.teamDamageLeader, "表现稳定，既不离谱也不抢镜"),
-  rule("一般人机", "普通", "通用", (f) => f.score >= 55 && f.score <= 72 && f.weakSignals <= 1
+  rule("少冰七分糖", "调侃", "通用", (f) => f.score >= 40 && f.score < 60
+    && f.weakSignals >= 1, "评分处于拉跨区间，并出现至少一个明确的唐点"),
+  rule("一般人机", "普通", "通用", (f) => f.score >= 60 && f.score <= 79 && f.weakSignals <= 1
     && f.metrics.killParticipation >= 0.5 && f.metrics.killParticipation <= 0.8
     && !f.gameDamageLeader && !f.teamDamageLeader, "大多数指标处在正常区间"),
-  rule("小泯一把", "普通", "对局", (f) => f.game.win && f.score >= 50 && f.score <= 72
+  rule("小泯一把", "普通", "对局", (f) => f.game.win && f.score >= 60 && f.score <= 79
     && !f.gameDamageLeader && !f.teamDamageLeader
     // teamScoreRank 是 1 到 5，排名 3 以后才表示“没有成为队伍核心”。
     && (!f.matchAvailable || atLeast(f.comparison?.teamScoreRank, 3)), "赢下对局但没有成为队伍核心"),
-  rule("悲情英雄", "高光", "对局", (f) => !f.game.win && f.matchAvailable && f.score >= 65
+  rule("悲情英雄", "高光", "对局", (f) => !f.game.win && f.matchAvailable && f.score >= 80
     && (atMost(f.comparison?.teamScoreRank, 2) || atLeast(f.comparison?.teamScoreGapToTeammates, 8))
     && (atMost(f.comparison?.teammatesAverageScore, 62) || atLeast(f.comparison?.scoreGapToOpponents, 8)), "败方仍是队内前列，队友或对手差距明显"),
   rule("女武神", "高光", "对局", (f) => !f.game.win && f.matchAvailable
-    && f.score >= 68 && atMost(f.comparison?.teamScoreRank, 1)
+    && f.score >= 85 && atMost(f.comparison?.teamScoreRank, 1)
     && (atLeast(f.comparison?.teamScoreGapToTeammates, 5) || atLeast(f.comparison?.scoreGapToOpponents, 5)), "败方队内第一且个人表现明显高于队友"),
   rule("渡劫失败", "高光", "对局", (f) => !f.game.win && f.matchAvailable
-    && f.score >= 65
+    && f.score >= 82
     // 与“女武神”错开：这里强调队内第二、第三名也尽力了，但队友整体掉队。
     && atLeast(f.comparison?.teamScoreRank, 2)
     && atMost(f.comparison?.teamScoreRank, 3)
@@ -439,7 +738,7 @@ const TITLE_RULES: TitleRule[] = [
     && (f.comparison?.gameScoreLeader === true || f.gameDamageLeader)
     && (f.metrics.damageShare >= 0.3 || f.metrics.killParticipation >= 0.8), "获胜且成为全场核心"),
   rule("莫欺少年穷", "高光", "对局", (f) => f.game.win && f.matchAvailable
-    && f.score >= 75 && f.winnerTowerKills >= 2
+    && f.score >= 80 && f.winnerTowerKills >= 2
     && f.comparison?.teamScoreLeader === true
     // 有记录时要求首塔在对局前四分之一；败方零塔是同一含义的可靠兜底。
     && (f.loserTowerKills === 0
@@ -543,17 +842,8 @@ const TITLE_RULES: TitleRule[] = [
   rule("感觉不如血包", "调侃", "定位", (f) => isSupport(f.role) && f.score <= 72
     && f.metrics.healingShare < 0.3 && atMost(f.globalRatios.allyHealing, 0.8), "治疗贡献偏低"),
 
-  // 英雄专属称号：只要求“这个英雄打得不错”，不要求全服前百分位。
-  rule("国服刘备", "特征", "英雄", (f) => championAlias(f) === "104" && f.score >= 78
-    && f.metrics.damageShare >= 0.28 && f.metrics.effectiveDamageConversion >= 1.2, "男枪本局输出和伤转都不错"),
-  rule("国服亚瑟", "特征", "英雄", (f) => championAlias(f) === "86" && f.score >= 78
-    && f.metrics.damageShare >= 0.24 && f.metrics.mitigationShare >= 0.25, "盖伦同时能打能扛"),
-  rule("国服达摩", "特征", "英雄", (f) => championAlias(f) === "64" && f.score >= 78
-    && f.metrics.killParticipation >= 0.65 && f.metrics.damageShare >= 0.24, "李青高参团且有输出"),
-  rule("国服瑶", "特征", "英雄", (f) => championAlias(f) === "350" && f.score >= 70
-    && isSupport(f.role) && f.protectionRatio >= 1.0, "猫咪保护量达到合格线"),
-  rule("国服蔡文姬", "特征", "英雄", (f) => championAlias(f) === "16" && f.score >= 72
-    && isSupport(f.role) && hasMetric(f, "allyHealing", 0.95), "索拉卡治疗达到英雄常态"),
+  // 英雄专属称号统一由 nationalTitleDetail 动态生成。
+  // 这里保留索拉卡“妈！”这个不是国服门槛的专项称号。
   rule("妈！", "神话", "英雄", (f) => championAlias(f) === "16" && f.score >= 80
     && isSupport(f.role) && hasMetric(f, "allyHealing", 1.2) && f.metrics.healingShare >= 0.42, "索拉卡把队友血线拉回来了"),
 ]
@@ -614,6 +904,8 @@ export function buildGameTitleSet(
       category: candidate.category,
       reason: candidate.reason(facts),
     }))
+  const nationalTitle = nationalTitleDetail(facts)
+  if (nationalTitle) details.push(nationalTitle)
   const fallback = rating.label
   return {
     displayTitle: pickDisplayTitle(details, game, fallback),
@@ -624,5 +916,9 @@ export function buildGameTitleSet(
 }
 
 export function titleRuleNames() {
-  return TITLE_RULES.map((rule) => rule.name)
+  return [
+    ...TITLE_RULES.map((rule) => rule.name),
+    "国服最强{英雄}",
+    ...Object.values(NATIONAL_TITLE_ALIASES),
+  ]
 }

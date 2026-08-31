@@ -14,6 +14,7 @@ const bundle = await build({
     contents: [
       'export { calculateOfficialRating, calculateOutputRating, globalRatingTitle } from "./src/scoring.ts"',
       'export { buildChampionProfiles, buildPlayerProfile } from "./src/playerProfile.ts"',
+      'export { buildGameTitleSet } from "./src/titles.ts"',
     ].join("\n"),
     resolveDir: rootDir,
     sourcefile: "scoring-verification.ts",
@@ -34,6 +35,7 @@ const {
   buildPlayerProfile,
   calculateOfficialRating,
   calculateOutputRating,
+  buildGameTitleSet,
   globalRatingTitle,
 } = verificationModule.exports
 
@@ -161,6 +163,56 @@ assert.doesNotMatch(
 const outputBaseRating = calculateOutputRating(formalGame, outputContext)
 const outputOfficialRating = calculateOfficialRating(formalGame, outputContext, baselines)
 assert.strictEqual(outputOfficialRating, outputBaseRating)
+
+// 国服称号使用独立的英雄全服证据，不改变非辅助正式评分。
+const nationalBaseline = {
+  ...baseline,
+  name: "测试英雄称号",
+  averageKda: 3,
+  averageKills: 10,
+  averageDeaths: 10,
+  averageAssists: 20,
+  participationRatePercent: 65,
+  damageSharePercent: 20,
+  damageGoldConversionRatePercent: 200,
+  goldEarned: 16_000,
+  cs: 35,
+}
+const nationalBaselines = new Map([[1, nationalBaseline]])
+const nationalContext = {
+  champions: {
+    1: { name: "测试英雄", alias: "Test", roles: ["Marksman"] },
+  },
+}
+const nationalGame = sampleGame(2, 15 * 60, {
+  win: true,
+  kills: 30,
+  deaths: 2,
+  assists: 30,
+  teamKills: 40,
+  teamDeaths: 10,
+  kda: 30,
+  teamDamageLeader: true,
+  gameDamageLeader: true,
+  damageToChampions: 50_000,
+  teamDamageToChampions: 100_000,
+  goldEarned: 20_000,
+  teamGoldEarned: 100_000,
+  damageSelfMitigated: 2_000,
+  totalDamageTaken: 5_000,
+  teamDamageSelfMitigated: 10_000,
+  teamTotalDamageTaken: 50_000,
+  enemyChampionImmobilizations: 8,
+  teamEnemyChampionImmobilizations: 20,
+  gameDuration: 16 * 60,
+})
+const nationalRating = calculateOfficialRating(nationalGame, nationalContext, nationalBaselines)
+assert.ok(nationalRating.score >= 90)
+const nationalTitles = buildGameTitleSet(nationalGame, nationalRating, {
+  ratingContext: nationalContext,
+  globalBaselines: nationalBaselines,
+})
+assert.equal(nationalTitles.titles.includes("国服最强测试英雄"), true)
 
 const profileOptions = { timeWeighted: false, globalBaselines: baselines }
 const playerProfile = buildPlayerProfile([formalGame], supportContext, profileOptions)
