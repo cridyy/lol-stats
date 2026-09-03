@@ -19,18 +19,10 @@ mod overlay;
 mod wgc;
 
 use std::collections::HashMap;
-#[cfg(target_os = "windows")]
-use std::fs::{create_dir_all, OpenOptions};
-#[cfg(target_os = "windows")]
-use std::io::Write;
-#[cfg(target_os = "windows")]
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::LazyLock;
 use std::thread;
 use std::time::{Duration, Instant};
-#[cfg(target_os = "windows")]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
@@ -49,6 +41,10 @@ const OCR_INTERVAL: Duration = Duration::from_millis(100);
 const HIDDEN_FRAME_LIMIT: u32 = 4;
 const ACTIVE_PHASES: [&str; 3] = ["GameStart", "InProgress", "Reconnect"];
 #[cfg(target_os = "windows")]
+const CHAMPION_RANKINGS_RETRY_INITIAL: Duration = Duration::from_secs(5);
+#[cfg(target_os = "windows")]
+const CHAMPION_RANKINGS_RETRY_MAX: Duration = Duration::from_secs(60);
+#[cfg(target_os = "windows")]
 const IDENTITY_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 #[cfg(target_os = "windows")]
 const OCR_INVALID_RESULT_LIMIT: u8 = 2;
@@ -60,24 +56,12 @@ const CAPTURE_MODE_DXGI: u8 = 4;
 
 #[cfg(target_os = "windows")]
 fn runtime_log(message: impl AsRef<str>) {
-    let mut directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    directory.push("lol-stats");
-    if create_dir_all(&directory).is_err() {
-        return;
-    }
+    crate::services::runtime_log::hex(message);
+}
 
-    let path = directory.join("hex-winrate.log");
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let line = format!("[{timestamp}] {}", message.as_ref());
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{line}");
-    }
-    eprintln!("[hex-winrate] {line}");
+#[cfg(target_os = "windows")]
+fn runtime_log_detail(message: impl AsRef<str>) {
+    crate::services::runtime_log::hex_detail(message);
 }
 
 static CONTROLLER: LazyLock<Controller> = LazyLock::new(Controller::new);
@@ -188,8 +172,10 @@ async fn recognition_loop() {
     let mut last_gameflow_poll = Instant::now() - GAMEFLOW_POLL_INTERVAL;
     let mut session_info: Option<ActiveSession> = None;
     let mut champ_select_info: Option<ChampSelectState> = None;
-    let mut champion_rankings_task = Some(tokio::spawn(aramkit::load_champion_rankings_once()));
+    let mut champion_rankings_task = None;
     let mut champion_rankings = None;
+    let mut next_champion_rankings_retry = Instant::now();
+    let mut champion_rankings_retry_delay = CHAMPION_RANKINGS_RETRY_INITIAL;
     let mut selection_overlay_key = None::<SelectionOverlayKey>;
     let mut capture = capture::GameWindowCapture::new();
     let mut recognizer: Option<ocr::PpOcrRec> = None;
@@ -208,6 +194,15 @@ async fn recognition_loop() {
     let mut last_capture_mode = current_capture_mode();
 
     loop {
+        if champion_rankings.is_none()
+            && champion_rankings_task.is_none()
+            && CONTROLLER.enabled.load(Ordering::SeqCst)
+            && Instant::now() >= next_champion_rankings_retry
+        {
+            runtime_log("开始读取 AramKit 英雄总表");
+            champion_rankings_task = Some(tokio::spawn(aramkit::load_champion_rankings_once()));
+        }
+
         if champion_rankings_task
             .as_ref()
             .is_some_and(|task| task.is_finished())
@@ -219,13 +214,27 @@ async fn recognition_loop() {
                 Ok(Ok(table)) => {
                     runtime_log(format!("AramKit 英雄总表加载完成：{} 个英雄", table.len()));
                     champion_rankings = Some(table);
+                    champion_rankings_retry_delay = CHAMPION_RANKINGS_RETRY_INITIAL;
                 }
                 Ok(Err(error)) => {
-                    runtime_log(format!("AramKit 英雄总表读取失败：{error}"));
+                    runtime_log(format!(
+                        "AramKit 英雄总表读取失败，{} 秒后重试：{error}",
+                        champion_rankings_retry_delay.as_secs()
+                    ));
+                    next_champion_rankings_retry = Instant::now() + champion_rankings_retry_delay;
+                    champion_rankings_retry_delay = champion_rankings_retry_delay
+                        .saturating_mul(2)
+                        .min(CHAMPION_RANKINGS_RETRY_MAX);
                 }
                 Err(error) => {
-                    let message = format!("英雄总表任务异常终止：{error}");
-                    runtime_log(&message);
+                    runtime_log(format!(
+                        "英雄总表任务异常终止，{} 秒后重试：{error}",
+                        champion_rankings_retry_delay.as_secs()
+                    ));
+                    next_champion_rankings_retry = Instant::now() + champion_rankings_retry_delay;
+                    champion_rankings_retry_delay = champion_rankings_retry_delay
+                        .saturating_mul(2)
+                        .min(CHAMPION_RANKINGS_RETRY_MAX);
                 }
             }
         }
@@ -284,7 +293,7 @@ async fn recognition_loop() {
                                     .visible_cards()
                                     .map(|(ids, layout)| (selection_layout_name(layout), ids))
                                     .unwrap_or(("无", Vec::new()));
-                                runtime_log(format!(
+                                runtime_log_detail(format!(
                                     "进入选人胜率 session：game_id={} 阶段={} 候选={} 顶部={} 画面={}（原始候选顺序：{:?}，显示顺序：{:?}）",
                                     next.game_id,
                                     next.timer_phase,
@@ -490,7 +499,7 @@ async fn recognition_loop() {
                     cards_detected = Some(true);
                 }
             } else if cards_detected != Some(false) {
-                runtime_log("截图成功，但未检测到三张海克斯卡片");
+                runtime_log("三卡检测未命中（截图正常）");
                 cards_detected = Some(false);
             }
         }
@@ -532,7 +541,7 @@ async fn recognition_loop() {
                     crop_rect.bottom,
                 );
                 if card.last_ocr_crop != Some(crop_signature) {
-                    runtime_log(format!(
+                    runtime_log_detail(format!(
                         "OCR slot={} 裁剪：{}x{} -> {}x{}",
                         slot + 1,
                         default_title_rect.width(),
@@ -561,13 +570,13 @@ async fn recognition_loop() {
                     }
                 };
                 if card.last_ocr_text != text {
-                    runtime_log(format!("OCR slot={}：{}", slot + 1, text));
+                    runtime_log_detail(format!("OCR slot={}：{}", slot + 1, text));
                     card.last_ocr_text = text.clone();
                 }
 
                 let Some(resolution) = resolve_augment(&augment_names, &text, stats) else {
                     if card.record_invalid_result() {
-                        runtime_log(format!(
+                        runtime_log_detail(format!(
                             "OCR slot={} 未匹配海克斯，连续失败后重新等待三卡定位：{}",
                             slot + 1,
                             text

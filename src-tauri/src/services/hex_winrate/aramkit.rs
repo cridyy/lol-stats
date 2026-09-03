@@ -10,9 +10,9 @@ const CONFIG_URL: &str = "https://aramkit.com/zh-CN/champions";
 const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 static DATASET_CACHE: LazyLock<Mutex<Option<DatasetCache>>> = LazyLock::new(|| Mutex::new(None));
-// 总表只在当前进程第一次需要时加载一次。OnceCell 会把失败结果也缓存下来，
-// 避免选人阶段每轮轮询都重复请求 AramKit。
-static CHAMPION_RANKINGS_CACHE: tokio::sync::OnceCell<Result<ChampionWinrateTable, String>> =
+// 总表只在当前进程第一次成功加载后缓存。失败的初始化不会写入 OnceCell，
+// 由上层按退避策略重试；成功后整个进程只保留这一份数据。
+static CHAMPION_RANKINGS_CACHE: tokio::sync::OnceCell<ChampionWinrateTable> =
     tokio::sync::OnceCell::const_new();
 static ENDPOINT_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"aramKitDataEndpoint\s*:\s*"([^"]+)""#).expect("AramKit endpoint 正则应合法")
@@ -107,22 +107,13 @@ fn aramkit_client() -> Result<reqwest::Client, String> {
 
 /// 加载当前版本的全英雄胜率总表。
 ///
-/// 这个缓存只存在于进程内，不写入本地数据库；软件退出后自然失效。无论请求成功
-/// 还是失败，`OnceCell` 都只允许本次运行尝试一次，避免每次重新抽卡都请求总表。
+/// 这个缓存只存在于进程内，不写入本地数据库；软件退出后自然失效。只有成功结果
+/// 会写入 OnceCell，失败时由调用方负责稍后重试。
 pub(crate) async fn load_champion_rankings_once() -> Result<ChampionWinrateTable, String> {
     CHAMPION_RANKINGS_CACHE
-        .get_or_init(|| async {
-            let result = fetch_champion_rankings().await;
-            if let Ok(table) = &result {
-                eprintln!(
-                    "[hex-winrate] AramKit 英雄总表加载完成：{} 个英雄",
-                    table.len()
-                );
-            }
-            result
-        })
+        .get_or_try_init(|| async { fetch_champion_rankings().await })
         .await
-        .clone()
+        .cloned()
 }
 
 async fn fetch_champion_rankings() -> Result<ChampionWinrateTable, String> {

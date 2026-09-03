@@ -1040,7 +1040,9 @@ function calculateOutputRatingUncached(game: RecentGame, context: RatingContext)
   const rawTotal = Object.values(rawParts).reduce((sum, value) => sum + value, 0)
   const originalScore = clamp(rawTotal, 0, 100)
   const calibrated = calibratedMetrics(game, metrics, context)
-  const maxKdaWeight = calibrated.context.active
+  // 碾压 KDA 是胜方专属的奖励项。败方仍可使用全场占比校准和失败保护，
+  // 但不能通过 KDA 重分配改变评分小项。
+  const maxKdaWeight = calibrated.context.active && game.win
     ? stompKdaWeight(calibrated.context, family)
     : 0
   const originalCandidate = originalRatingCandidate(rawParts, originalScore)

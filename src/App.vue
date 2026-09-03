@@ -2095,9 +2095,7 @@ onMounted(async () => {
   })
   await setLocalApiFrontendReady(true).catch(() => {})
 
-  void initWindowSizeSettings()
-  void initializeGlobalBaselineData()
-  await initAppVersionAndReleaseNotes()
+  // 优先启动局内识别，避免更新检查或其他启动请求拖延英雄胜率总表加载。
   void setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value).catch((error) => {
     notifyError("海克斯截图模式初始化失败", error)
   })
@@ -2107,6 +2105,10 @@ onMounted(async () => {
   void setQuickBenchSwapEnabled(readBooleanSetting(QUICK_BENCH_SWAP_ENABLED_KEY)).catch((error) => {
     notifyError("快速交换备战英雄初始化失败", error)
   })
+
+  void initWindowSizeSettings()
+  void initializeGlobalBaselineData()
+  await initAppVersionAndReleaseNotes()
   startGameflowWatcher()
   if (chatStatusLockEnabled.value) startChatStatusLockWatcher()
   void checkForAppUpdate()

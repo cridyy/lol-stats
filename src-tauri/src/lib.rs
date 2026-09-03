@@ -10,6 +10,7 @@ pub fn run() {
         .manage(LocalApiState::default())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            services::runtime_log::start_session();
             services::global_baselines::start_daily_update_check();
             let local_api_state = app.state::<LocalApiState>().inner().clone();
             if let Err(error) = start_local_api_server(app.handle().clone(), local_api_state) {

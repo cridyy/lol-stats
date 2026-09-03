@@ -10,8 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
-use std::path::PathBuf;
-#[cfg(target_os = "windows")]
 use std::sync::Mutex;
 #[cfg(target_os = "windows")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,30 +73,7 @@ static CONTROLLER: LazyLock<QuickBenchSwapController> =
 
 #[cfg(target_os = "windows")]
 fn runtime_log(message: impl AsRef<str>) {
-    use std::fs::{create_dir_all, OpenOptions};
-    use std::io::Write;
-
-    let mut directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    directory.push("lol-stats");
-    if create_dir_all(&directory).is_err() {
-        return;
-    }
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let line = format!("[{timestamp}] {}", message.as_ref());
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("quick-bench-swap.log"))
-    {
-        let _ = writeln!(file, "{line}");
-    }
-    eprintln!("[quick-bench-swap] {line}");
+    crate::services::runtime_log::quick_bench(message);
 }
 
 struct QuickBenchSwapController {

@@ -164,7 +164,7 @@ score
 
 `score.parts` 是实际构成正式分的子项。辅助启用全服基准时，旧参团/人头质量/有效伤害小项被全服分替换，`parts.globalBaseline` 显示 `0-25` 的全服分；悬浮提示只突出这一行全服得分，不要求调用方展示全部全服中间计算。
 
-`score.matchContext` 是碾压局诊断：是否启用、K/D/伤害/推塔门控、败方首塔时间、KDA 借权、校准变化和败方抵抗保护。败方推两座塔时会明确记录为不属于碾压局。
+`score.matchContext` 是碾压局诊断：是否启用、K/D/伤害/推塔门控、败方首塔时间、胜方 KDA 借权、校准变化和败方抵抗保护。败方推两座塔时会明确记录为不属于碾压局；败方自身的 `maxKdaWeight` 与 `kdaWeight` 始终为 `0`。
 
 ### `match.participants` 和 `comparison`
 

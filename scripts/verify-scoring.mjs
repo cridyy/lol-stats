@@ -116,6 +116,33 @@ assert.equal(adjustment(1, 14 * 60).active, true)
 assert.equal(adjustment(1, 14 * 60).maxKdaWeight, 17.5)
 assert.equal(adjustment(1, 16 * 60).maxKdaWeight, 35)
 assert.equal(adjustment(1).active, false)
+
+// 碾压 KDA 只对胜方开放：败方仍可触发其他碾压校准，但不能获得 KDA 评分小项。
+const stompCarryContext = { champions: { 1: { roles: ["Marksman"] } } }
+const winnerStompRating = calculateOutputRating(
+  sampleGame(0, undefined, { gameId: 3 }),
+  stompCarryContext,
+)
+assert.equal(winnerStompRating.contextAdjustment.maxKdaWeight, 35)
+assert.ok(winnerStompRating.contextAdjustment.kdaWeight > 0)
+assert.ok(Object.hasOwn(winnerStompRating.parts, "kda"))
+
+const loserStompRating = calculateOutputRating(
+  sampleGame(0, undefined, {
+    gameId: 4,
+    win: false,
+    teamTowerKills: 0,
+    gameTowerKills: 2,
+  }),
+  stompCarryContext,
+)
+assert.equal(loserStompRating.contextAdjustment.active, true)
+assert.equal(loserStompRating.contextAdjustment.towerKdaWeight, 35)
+assert.equal(loserStompRating.contextAdjustment.maxKdaWeight, 0)
+assert.equal(loserStompRating.contextAdjustment.kdaWeight, 0)
+assert.equal(loserStompRating.contextAdjustment.kdaPoints, 0)
+assert.equal(Object.hasOwn(loserStompRating.parts, "kda"), false)
+
 const longZeroTowerAdjustment = adjustment(0, undefined, { gameDuration: 17 * 60 })
 assert.equal(longZeroTowerAdjustment.active, true)
 assert.equal(longZeroTowerAdjustment.loserTowerKills, 0)
