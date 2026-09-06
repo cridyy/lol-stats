@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { loadRankedStats } from "../api"
-import { gamePresentation } from "../gamePresentation"
-import { globalBaselineDataset, globalBaselinesByChampionId } from "../globalBaselines"
+import { globalBaselinesByChampionId } from "../globalBaselines"
 import {
   buildChampionProfiles,
   buildPlayerProfile,
@@ -11,20 +10,20 @@ import {
   type ChampionProfile,
   type PlayerProfile,
 } from "../playerProfile"
-import { globalRatingTitle } from "../scoring"
+import { calculateOfficialRating, type OutputRating } from "../scoring"
 import type {
   ChampionSummaryItem,
   GameAssetBundle,
   GameAssetEntry,
   LiveGameResponse,
   LivePlayer,
+  LivePremadeMarker,
   LiveTeam,
   RankedQueueEntry,
   RankedStatsResponse,
   RecentGame,
 } from "../types"
 import ChampionAvatar from "./ChampionAvatar.vue"
-import GameTitlePopover from "./GameTitlePopover.vue"
 import { championName, fixed, mitigationValue, percent, phaseName, riotId, teamMitigationValue } from "../utils"
 
 const LIVE_DISPLAY_DEPTH = 50
@@ -79,6 +78,7 @@ interface RecentSummary {
 interface LivePlayerView {
   player: LivePlayer
   games: RecentGame[]
+  ratingsByGameId: Map<number, OutputRating>
   summary: RecentSummary
   profile: PlayerProfile | null
   championProfile: ChampionProfile | null
@@ -324,6 +324,17 @@ function summarizeRecentGames(games: RecentGame[]): RecentSummary {
 
 function buildLivePlayerView(player: LivePlayer): LivePlayerView {
   const games = filterRecentGames(player)
+  const ratingsByGameId = new Map<number, OutputRating>()
+  for (const game of games) {
+    ratingsByGameId.set(
+      game.gameId,
+      calculateOfficialRating(
+        game,
+        ratingContext.value,
+        globalBaselinesByChampionId.value,
+      ),
+    )
+  }
   // 实时战绩只看短样本，不使用数据统计页的大样本时间衰减。
   const profile = player.stats
     ? buildPlayerProfile(games, ratingContext.value, {
@@ -345,6 +356,7 @@ function buildLivePlayerView(player: LivePlayer): LivePlayerView {
   return {
     player,
     games,
+    ratingsByGameId,
     summary: summarizeRecentGames(games),
     profile,
     championProfile,
@@ -422,38 +434,43 @@ function livePlayerRiotId(player: LivePlayer) {
   return player.summoner ? riotId(player.summoner) : player.puuid || "未知玩家"
 }
 
+function premadeClass(marker: LivePremadeMarker) {
+  return `premade-${marker.groupId.toLowerCase()}`
+}
+
+function premadeMembers(marker: LivePremadeMarker) {
+  const players = props.liveGame?.teams.flatMap((team) => team.players) || []
+  return marker.memberPuuids
+    .map((puuid) => players.find((player) => player.puuid.toLowerCase() === puuid.toLowerCase()))
+    .filter((player): player is LivePlayer => Boolean(player))
+    .map((player) => riotId(player.summoner))
+    .join("、")
+}
+
+function premadeTitle(marker: LivePremadeMarker) {
+  const members = premadeMembers(marker)
+  const source =
+    marker.source === "历史同队" && marker.togetherTimes
+      ? `${marker.source} ${marker.togetherTimes} 次以上`
+      : marker.source
+  return members ? `${marker.label} · ${source} · ${members}` : `${marker.label} · ${source}`
+}
+
 function openLivePlayer(player: LivePlayer) {
   if (!player.puuid || player.isPlaceholder) return
   emit("openPlayer", player)
 }
 
-function gameRating(game: RecentGame) {
-  return gamePresentation(
+function gameRating(playerView: LivePlayerView, game: RecentGame) {
+  return playerView.ratingsByGameId.get(game.gameId) || calculateOfficialRating(
     game,
     ratingContext.value,
     globalBaselinesByChampionId.value,
-  ).rating
-}
-
-function gameDisplayTitle(game: RecentGame) {
-  return gamePresentation(
-    game,
-    ratingContext.value,
-    globalBaselinesByChampionId.value,
-  ).titleSet.displayTitle
-}
-
-function gameRatingClass(game: RecentGame) {
-  return `score-${gameRating(game).level}`
-}
-
-function gameRatingTitle(game: RecentGame) {
-  return globalRatingTitle(
-    game,
-    ratingContext.value,
-    globalBaselinesByChampionId.value,
-    globalBaselineDataset.value?.datasetVersion,
   )
+}
+
+function gameRatingClass(playerView: LivePlayerView, game: RecentGame) {
+  return `score-${gameRating(playerView, game).level}`
 }
 
 </script>
@@ -553,6 +570,13 @@ function gameRatingTitle(game: RecentGame) {
                 >
                   {{ livePlayerRiotId(playerView.player) }}
                 </button>
+                <span
+                  v-if="playerView.player.premade"
+                  :class="['premade-tag', premadeClass(playerView.player.premade)]"
+                  :title="premadeTitle(playerView.player.premade)"
+                >
+                  {{ playerView.player.premade.label }}
+                </span>
               </div>
 
               <div class="rank-line" :title="rankTitleFor(playerView.player)">
@@ -606,24 +630,14 @@ function gameRatingTitle(game: RecentGame) {
                   v-for="game in playerView.games"
                   :key="game.gameId"
                   :class="{ win: game.win, loss: !game.win }"
-                  :title="`${championName(champions, game.championId)} · ${gameKda(game)} · ${gameRatingTitle(game)}`"
                 >
                   <ChampionAvatar :champion-id="game.championId" :champions="champions" :size="22" />
                   <div class="recent-kda">
                     <strong>{{ gameKda(game) }}</strong>
                   </div>
-                  <GameTitlePopover
-                    :game="game"
-                    :champions="champions"
-                    :rating-context="ratingContext"
-                    :global-baselines="globalBaselinesByChampionId"
-                    compact
-                  >
-                    <div :class="['score-cell', 'recent-score-cell', gameRatingClass(game)]">
-                      <strong>{{ gameRating(game).score }}分</strong>
-                      <span>{{ gameDisplayTitle(game) }}</span>
-                    </div>
-                  </GameTitlePopover>
+                  <div :class="['score-cell', 'recent-score-cell', gameRatingClass(playerView, game)]">
+                    <strong>{{ gameRating(playerView, game).score }}分</strong>
+                  </div>
                 </div>
               </div>
               <div class="recent-empty" v-else-if="playerView.player.stats">暂无数据</div>
@@ -871,6 +885,53 @@ h2 {
   outline-offset: 3px;
 }
 
+.premade-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #1d2730;
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 1.1;
+  white-space: nowrap;
+  box-shadow: 0 6px 14px rgba(20, 35, 45, 0.1);
+}
+
+.premade-a {
+  color: #24103d;
+  background: linear-gradient(135deg, #d8b4fe, #7e22ce);
+}
+
+.premade-b {
+  background: linear-gradient(135deg, #bfdbfe, #3b82f6);
+  color: #071827;
+}
+
+.premade-c {
+  background: linear-gradient(135deg, #bbf7d0, #22c55e);
+}
+
+.premade-d {
+  background: linear-gradient(135deg, #fecdd3, #fb7185);
+}
+
+.premade-e {
+  background: linear-gradient(135deg, #ddd6fe, #8b5cf6);
+  color: #120b24;
+}
+
+.premade-f,
+.premade-g,
+.premade-h,
+.premade-i,
+.premade-j,
+.premade-z {
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+}
+
 .rank-line {
   display: flex;
   min-width: 0;
@@ -1078,6 +1139,11 @@ h2 {
   content: "";
   transform: rotate(18deg);
   animation: live-score-shine 2.8s ease-in-out infinite;
+}
+
+/* 实时页会同时展示多名玩家的历史小条，避免为每条记录创建无限循环动画。 */
+.recent-score-cell.score-excellent::after {
+  display: none;
 }
 
 @keyframes live-score-shine {

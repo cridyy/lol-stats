@@ -39,6 +39,10 @@ function requestMoreIfVisible() {
   const sentinel = loadMoreSentinel.value
   if (!sentinel) return
 
+  // `v-show` 隐藏父页面时，哨兵仍然挂载，但没有可布局的客户端矩形。
+  // 这种状态不能被当作“已经滚动到底部”。
+  if (sentinel.getClientRects().length === 0) return
+
   const rect = sentinel.getBoundingClientRect()
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight
   if (rect.top <= viewportHeight + 180) {

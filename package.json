@@ -1,7 +1,7 @@
 {
   "name": "lol-stats",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "国服英雄联盟战绩统计工具",
   "type": "module",
   "scripts": {
@@ -11,6 +11,8 @@
     "check:backend": "cargo check --manifest-path .\\src-tauri\\Cargo.toml",
     "test:scoring": "node ./scripts/verify-scoring.mjs",
     "test:backend": "cargo test --manifest-path .\\src-tauri\\Cargo.toml",
+    "test:aramkit-proxy": "node --test ./scripts/verify-aramkit-proxy.mjs",
+    "test:hex-detection": "node --test ./scripts/verify-hex-detection.mjs",
     "build": "vue-tsc --noEmit && vite build",
     "verify": "node ./scripts/verify.mjs",
     "verify:watch": "node ./scripts/verify.mjs --watch",

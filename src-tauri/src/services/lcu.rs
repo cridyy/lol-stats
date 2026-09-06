@@ -26,6 +26,7 @@ fn basic_auth_header(token: &str) -> String {
 fn https_client() -> AppResult<Client> {
     // LCU/RC 使用本地自签名证书。只允许访问 127.0.0.1，证书校验在这里放宽。
     reqwest::Client::builder()
+        .use_rustls_tls()
         .danger_accept_invalid_certs(true)
         .no_proxy()
         .timeout(std::time::Duration::from_secs(14))

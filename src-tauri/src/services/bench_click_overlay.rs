@@ -125,7 +125,7 @@ fn click_overlay_thread() {
         let instance = match GetModuleHandleW(None) {
             Ok(instance) => instance,
             Err(error) => {
-                eprintln!("[quick-bench-swap] 无法创建透明备战区点击层：{error}");
+                tracing::error!(target: "lol_stats::quick_bench", %error, "无法创建透明备战区点击层");
                 CLICK_OVERLAY.hwnd.store(-1, Ordering::Release);
                 return;
             }
@@ -156,7 +156,7 @@ fn click_overlay_thread() {
         ) {
             Ok(hwnd) => hwnd,
             Err(error) => {
-                eprintln!("[quick-bench-swap] 创建透明备战区点击层失败：{error}");
+                tracing::error!(target: "lol_stats::quick_bench", %error, "创建透明备战区点击层失败");
                 CLICK_OVERLAY.hwnd.store(-1, Ordering::Release);
                 return;
             }

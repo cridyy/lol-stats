@@ -5,8 +5,10 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde::Deserialize;
 
+use super::proxy::{self, AramkitClient};
+
 // 英雄总表页包含当前数据版本和 CDN 入口，不依赖任何单英雄路由。
-const CONFIG_URL: &str = "https://aramkit.com/zh-CN/champions";
+pub(super) const CONFIG_URL: &str = "https://aramkit.com/zh-CN/champions";
 const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 static DATASET_CACHE: LazyLock<Mutex<Option<DatasetCache>>> = LazyLock::new(|| Mutex::new(None));
@@ -22,10 +24,32 @@ static DATA_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 #[derive(Clone)]
-struct DatasetCache {
+pub(super) struct DatasetCache {
     endpoint: String,
     data_path: String,
     fetched_at: Instant,
+}
+
+impl DatasetCache {
+    pub(super) fn version(&self) -> &str {
+        &self.data_path
+    }
+
+    pub(super) fn rankings_url(&self) -> String {
+        format!(
+            "{}/{}/stats/all/champion-rankings.json",
+            self.endpoint.trim_end_matches('/'),
+            self.data_path.trim_matches('/')
+        )
+    }
+
+    pub(super) fn champion_url(&self, champion_id: u32) -> String {
+        format!(
+            "{}/{}/stats/all/champion-details/{champion_id}.json",
+            self.endpoint.trim_end_matches('/'),
+            self.data_path.trim_matches('/')
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -97,14 +121,6 @@ struct ChampionRankingRow {
     win_rate: f64,
 }
 
-fn aramkit_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .user_agent("lol-stats hex-winrate-overlay")
-        .build()
-        .map_err(|error| format!("创建 AramKit 请求失败：{error}"))
-}
-
 /// 加载当前版本的全英雄胜率总表。
 ///
 /// 这个缓存只存在于进程内，不写入本地数据库；软件退出后自然失效。只有成功结果
@@ -117,30 +133,21 @@ pub(crate) async fn load_champion_rankings_once() -> Result<ChampionWinrateTable
 }
 
 async fn fetch_champion_rankings() -> Result<ChampionWinrateTable, String> {
-    let client = aramkit_client()?;
+    let client = proxy::client()?;
     let dataset = load_dataset(&client).await?;
-    let url = format!(
-        "{}/{}/stats/all/champion-rankings.json",
-        dataset.endpoint.trim_end_matches('/'),
-        dataset.data_path.trim_matches('/')
-    );
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| format!("读取 AramKit 英雄总表失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("AramKit 英雄总表返回 HTTP {}", response.status()));
-    }
+    fetch_champion_rankings_from_dataset(&client, &dataset).await
+}
 
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("读取 AramKit 英雄总表内容失败：{error}"))?;
+async fn fetch_champion_rankings_from_dataset(
+    client: &AramkitClient,
+    dataset: &DatasetCache,
+) -> Result<ChampionWinrateTable, String> {
+    let url = dataset.rankings_url();
+    let body = client.get_text(&url, "读取 AramKit 英雄总表").await?;
     parse_champion_rankings(&body)
 }
 
-fn parse_champion_rankings(body: &str) -> Result<ChampionWinrateTable, String> {
+pub(super) fn parse_champion_rankings(body: &str) -> Result<ChampionWinrateTable, String> {
     let payload = serde_json::from_str::<ChampionRankingsResponse>(body)
         .map_err(|error| format!("解析 AramKit 英雄总表失败：{error}"))?;
     let win_rates = payload
@@ -170,27 +177,24 @@ fn parse_champion_rankings(body: &str) -> Result<ChampionWinrateTable, String> {
 pub(crate) async fn load_champion_augments(
     champion_id: u32,
 ) -> Result<ChampionAugmentStats, String> {
-    let client = aramkit_client()?;
+    let client = proxy::client()?;
     let dataset = load_dataset(&client).await?;
-    let url = format!(
-        "{}/{}/stats/all/champion-details/{}.json",
-        dataset.endpoint.trim_end_matches('/'),
-        dataset.data_path.trim_matches('/'),
-        champion_id
-    );
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|error| format!("读取 AramKit 英雄数据失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("AramKit 英雄数据返回 HTTP {}", response.status()));
-    }
+    let url = dataset.champion_url(champion_id);
+    let payload = client
+        .get_json::<ChampionDetailsResponse>(&url, "读取 AramKit 英雄数据")
+        .await?;
+    champion_augment_stats(payload)
+}
 
-    let payload = response
-        .json::<ChampionDetailsResponse>()
-        .await
+pub(super) fn parse_champion_augments(body: &str) -> Result<ChampionAugmentStats, String> {
+    let payload = serde_json::from_str::<ChampionDetailsResponse>(body)
         .map_err(|error| format!("解析 AramKit 英雄数据失败：{error}"))?;
+    champion_augment_stats(payload)
+}
+
+fn champion_augment_stats(
+    payload: ChampionDetailsResponse,
+) -> Result<ChampionAugmentStats, String> {
     if payload.champion.stats.win_rate <= 0.0 {
         return Err("AramKit 返回的英雄基础胜率无效".to_string());
     }
@@ -209,7 +213,7 @@ pub(crate) async fn load_champion_augments(
     })
 }
 
-async fn load_dataset(client: &reqwest::Client) -> Result<DatasetCache, String> {
+async fn load_dataset(client: &AramkitClient) -> Result<DatasetCache, String> {
     if let Some(cached) = DATASET_CACHE
         .lock()
         .ok()
@@ -219,30 +223,25 @@ async fn load_dataset(client: &reqwest::Client) -> Result<DatasetCache, String> 
         return Ok(cached);
     }
 
-    let response = client
-        .get(CONFIG_URL)
-        .send()
-        .await
-        .map_err(|error| format!("读取 AramKit 数据版本失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("AramKit 数据版本返回 HTTP {}", response.status()));
-    }
-
-    let page = response
-        .text()
-        .await
-        .map_err(|error| format!("读取 AramKit 数据版本内容失败：{error}"))?;
-    let (endpoint, data_path) = parse_dataset_config(&page)?;
-
-    let dataset = DatasetCache {
-        endpoint,
-        data_path,
-        fetched_at: Instant::now(),
-    };
+    let dataset = fetch_dataset(client).await?;
     if let Ok(mut cache) = DATASET_CACHE.lock() {
         *cache = Some(dataset.clone());
     }
     Ok(dataset)
+}
+
+async fn fetch_dataset(client: &AramkitClient) -> Result<DatasetCache, String> {
+    let page = client.get_text(CONFIG_URL, "读取 AramKit 数据版本").await?;
+    parse_dataset(&page)
+}
+
+pub(super) fn parse_dataset(page: &str) -> Result<DatasetCache, String> {
+    let (endpoint, data_path) = parse_dataset_config(page)?;
+    Ok(DatasetCache {
+        endpoint,
+        data_path,
+        fetched_at: Instant::now(),
+    })
 }
 
 fn parse_dataset_config(page: &str) -> Result<(String, String), String> {

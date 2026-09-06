@@ -845,7 +845,7 @@ async fn execute_swap_request(
     match result {
         Ok(()) => runtime_log(format!("兜底交换英雄 {champion_id} 成功")),
         Err(error) => {
-            runtime_log(format!("兜底交换英雄 {champion_id} 失败：{error}"));
+            tracing::warn!(target: "lol_stats::quick_bench", champion_id, %error, "兜底交换英雄失败");
             if error.contains("连接") || error.contains("request") {
                 *lcu = None;
             }
@@ -855,6 +855,9 @@ async fn execute_swap_request(
 
 #[cfg(target_os = "windows")]
 fn report_observed_click_diagnostics(reported_raw_click: &mut (u64, u32)) {
+    if !crate::services::runtime_log::detailed_enabled() {
+        return;
+    }
     let raw_left_down_count = CONTROLLER.raw_left_down_count.load(Ordering::Acquire);
     let decision = CONTROLLER.last_click_decision.load(Ordering::Acquire);
     if raw_left_down_count == reported_raw_click.0 && decision == reported_raw_click.1 {
@@ -875,10 +878,10 @@ fn report_observed_click_diagnostics(reported_raw_click: &mut (u64, u32)) {
     let target_pid = CONTROLLER.last_click_target_pid.load(Ordering::Acquire);
     let expected_hwnd = CONTROLLER.click_snapshot_hwnd.load(Ordering::Acquire);
     let expected_pid = CONTROLLER.click_snapshot_ux_pid.load(Ordering::Acquire);
-    runtime_log(format!(
+    tracing::debug!(target: "lol_stats::quick_bench",
         "低级鼠标钩子收到点击 #{raw_left_down_count}：屏幕坐标=({screen_x}, {screen_y})；{}；前台窗口=0x{foreground_hwnd:x}/PID {foreground_pid}；坐标命中窗口=0x{target_hwnd:x}/PID {target_pid}；客户端窗口=0x{expected_hwnd:x}/PID {expected_pid}",
         click_decision_text(decision),
-    ));
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -1116,10 +1119,10 @@ unsafe fn handle_raw_mouse_input(lparam: isize) {
         size_of::<RAWINPUTHEADER>() as u32,
     );
     if read == u32::MAX || read < size {
-        runtime_log(format!(
+        tracing::warn!(target: "lol_stats::quick_bench",
             "读取 Raw Input 鼠标数据失败：{}",
             std::io::Error::last_os_error()
-        ));
+        );
         return;
     }
 
@@ -1134,10 +1137,10 @@ unsafe fn handle_raw_mouse_input(lparam: isize) {
 
     let mut point = POINT { x: 0, y: 0 };
     if GetCursorPos(&mut point) == 0 {
-        runtime_log(format!(
+        tracing::warn!(target: "lol_stats::quick_bench",
             "Raw Input 收到左键但读取鼠标坐标失败：{}",
             std::io::Error::last_os_error()
-        ));
+        );
         return;
     }
     // Raw Input 仅在低级钩子无法安装时作为后备；同样只生产点击记录。
@@ -1155,10 +1158,10 @@ fn poll_physical_left_button(was_down: &mut bool) {
         if unsafe { GetCursorPos(&mut point) } != 0 {
             CONTROLLER.record_hook_left_down(point.x, point.y);
         } else {
-            runtime_log(format!(
+            tracing::warn!(target: "lol_stats::quick_bench",
                 "读取物理鼠标坐标失败：{}",
                 std::io::Error::last_os_error()
-            ));
+            );
         }
     }
     *was_down = is_down;

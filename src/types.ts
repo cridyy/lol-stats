@@ -55,6 +55,23 @@ export interface AppUpdateInfo {
   releaseNotes: string[]
 }
 
+export interface AramkitProxySettings {
+  enabled: boolean
+  address: string
+  wtlsEnabled: boolean
+  timeoutSeconds: number
+}
+
+export interface AramkitConnectionTest {
+  outcome: "success" | "warning" | "error"
+  elapsedMs: number
+  championCount: number
+  augmentCount: number
+  baseWinRate: number | null
+  summary: string
+  report: string
+}
+
 export interface RankedStatsResponse {
   queueMap: RankedQueueMap
   unavailableReason?: string
@@ -330,6 +347,9 @@ export interface MatchDetailPlayer extends RecentGame {
   summonerName: string
   teamId: number
   playerSubteamId: number
+  premade?: LivePremadeMarker
+  summonerLevel?: number
+  rankedStats?: RankedStatsResponse
 }
 
 export interface OpenMatchPayload {

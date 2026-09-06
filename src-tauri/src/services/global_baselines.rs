@@ -149,16 +149,16 @@ pub(crate) fn start_daily_update_check() {
     tauri::async_runtime::spawn(async {
         match refresh_if_due().await {
             Ok(RefreshResult::SkippedToday) => {
-                eprintln!("[global-baselines] 今天已经检查过数据更新");
+                tracing::info!(target: "lol_stats::baselines", "今天已经检查过数据更新");
             }
             Ok(RefreshResult::Unchanged) => {
-                eprintln!("[global-baselines] 全服基线数据已是最新版本");
+                tracing::info!(target: "lol_stats::baselines", "全服基线数据已是最新版本");
             }
             Ok(RefreshResult::Updated) => {
-                eprintln!("[global-baselines] 全服基线数据已更新");
+                tracing::info!(target: "lol_stats::baselines", "全服基线数据已更新");
             }
             Err(error) => {
-                eprintln!("[global-baselines] 检查数据更新失败：{error}");
+                tracing::warn!(target: "lol_stats::baselines", %error, "检查数据更新失败");
             }
         }
     });
@@ -225,7 +225,10 @@ fn validate_scoring_dataset(dataset: &GlobalBaselineDataset) -> Result<(), Strin
             champion.cs,
             champion.damage_gold_conversion_rate_percent,
         ];
-        if optional_values.iter().flatten().any(|value| !value.is_finite() || *value < 0.0)
+        if optional_values
+            .iter()
+            .flatten()
+            .any(|value| !value.is_finite() || *value < 0.0)
             || champion
                 .relative_to_global_average_percent
                 .values()
@@ -265,7 +268,7 @@ async fn refresh_if_due() -> Result<RefreshResult, String> {
         last_checked_on: Some(today),
     };
     if let Err(error) = write_json_atomic(&state_path, &next_state) {
-        eprintln!("[global-baselines] 记录每日检查状态失败：{error}");
+        tracing::warn!(target: "lol_stats::baselines", %error, "记录每日检查状态失败");
     }
 
     result
@@ -273,6 +276,7 @@ async fn refresh_if_due() -> Result<RefreshResult, String> {
 
 async fn refresh_from_remote(storage_directory: &Path) -> Result<RefreshResult, String> {
     let client = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
         .user_agent(USER_AGENT)
         .build()

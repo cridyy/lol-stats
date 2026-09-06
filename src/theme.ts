@@ -75,6 +75,7 @@ html[data-theme="dark"] .app-shell :is(
   input,
   select,
   textarea,
+  .settings-mode-options,
   .signature-input,
   .filter-control,
   .ranking-switch select,
@@ -392,7 +393,6 @@ html[data-theme="dark"] .app-shell .toast-card.error {
 }
 
 html[data-theme="dark"] .app-shell :is(
-  .settings-modal,
   .release-notes-modal,
   .update-modal,
   .center-dialog
@@ -403,7 +403,6 @@ html[data-theme="dark"] .app-shell :is(
 }
 
 html[data-theme="dark"] .app-shell :is(
-  .settings-section,
   .update-notes,
   .release-notes-modal li,
   .center-dialog p,
@@ -413,9 +412,31 @@ html[data-theme="dark"] .app-shell :is(
   color: #d4d4d4 !important;
 }
 
+html[data-theme="dark"] .settings-entry.active {
+  color: #ffffff !important;
+  background: #4b4b4b !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-section {
+  color: #d4d4d4 !important;
+  border-color: #3b3b3b !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-page :is(
+  label > span,
+  .settings-detection-mode > span,
+  .settings-log-status,
+  .settings-section-title span
+) {
+  color: #b4b4b4 !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-page .settings-section-title strong {
+  color: #e8e8e8 !important;
+}
+
 html[data-theme="dark"] .app-shell :is(
   .progress-overlay,
-  .settings-overlay,
   .release-notes-overlay,
   .update-overlay,
   .center-overlay,
@@ -425,10 +446,43 @@ html[data-theme="dark"] .app-shell :is(
 }
 
 html[data-theme="dark"] .app-shell :is(
-  .settings-modal input[type="range"],
+  .settings-page input[type="range"],
   .role-bar-track
 ) {
   accent-color: #8b8b8b;
+}
+
+html[data-theme="dark"] .app-shell .settings-mode-options button {
+  color: #cfcfcf !important;
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-mode-options button[aria-pressed="true"] {
+  color: #ffffff !important;
+  background: #505050 !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-mode-options button:focus-visible {
+  outline-color: #bdbdbd !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-proxy-actions button:disabled,
+html[data-theme="dark"] .app-shell .settings-proxy-address input:disabled,
+html[data-theme="dark"] .app-shell .settings-proxy-timeout input:disabled {
+  color: #858585 !important;
+  background: #292929 !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-proxy-result.success {
+  color: #a8eabc !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-proxy-result.warning {
+  color: #e4c078 !important;
+}
+
+html[data-theme="dark"] .app-shell .settings-proxy-result.error {
+  color: #ff9696 !important;
 }
 
 html[data-theme="dark"] .app-shell :is(
@@ -484,7 +538,6 @@ html[data-theme="dark"] .app-shell :is(
   .data-filter-button,
   .square-picker-button,
   .icon-picker-grid button,
-  .settings-modal header button,
   .settings-actions button,
   .release-notes-secondary,
   .release-notes-primary,
@@ -532,7 +585,6 @@ html[data-theme="dark"] .app-shell :is(
   .data-filter-button,
   .square-picker-button,
   .icon-picker-grid button,
-  .settings-modal header button,
   .settings-actions button,
   .release-notes-secondary,
   .release-notes-primary,
@@ -607,7 +659,7 @@ html[data-theme="dark"] .app-shell .progress-ring :is(div, strong, span) {
 }
 
 html[data-theme="dark"] .app-shell :is(
-  .settings-modal input[type="checkbox"],
+  .settings-page input[type="checkbox"],
   .stats-toggle input,
   .queue-picker input
 ) {
@@ -1339,12 +1391,34 @@ html[data-theme="dark"] .app-shell .detail-row.lose {
   background: #332325 !important;
 }
 
-html[data-theme="dark"] .app-shell .detail-row.win .champion-cell > span:not(.player-ability-cell) {
+html[data-theme="dark"] .app-shell .detail-row.win .detail-player-name {
   color: #a8eabc !important;
 }
 
-html[data-theme="dark"] .app-shell .detail-row.lose .champion-cell > span:not(.player-ability-cell) {
+html[data-theme="dark"] .app-shell .detail-row.lose .detail-player-name {
   color: #ff9696 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-rank-tag {
+  border-color: #a98c43 !important;
+  color: #f5dda0 !important;
+  background: #4b3b1a !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-rank-tag.detail-rank-unranked {
+  border-color: #666666 !important;
+  color: #c3c3c3 !important;
+  background: #3b3b3b !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-level-tag {
+  border-color: #5b9b6c !important;
+  color: #b8e9c3 !important;
+  background: #1d3a27 !important;
+}
+
+html[data-theme="dark"] .app-shell .detail-rank-loading {
+  color: #aaaaaa !important;
 }
 
 html[data-theme="dark"] .app-shell .detail-row.win:hover {

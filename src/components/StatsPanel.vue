@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue"
-import { ArrowDown, ArrowUp, ChevronsUpDown, ClipboardCopy, Sparkles } from "lucide-vue-next"
+import { ArrowDown, ArrowUp, ChevronsUpDown, ClipboardCopy, ExternalLink, Sparkles } from "lucide-vue-next"
+import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   calculateAugmentStats,
   calculateEquipmentStats,
@@ -46,6 +47,7 @@ import { championName, fixed, mitigationValue, percent, teamMitigationValue } fr
 const DATA_FILTER_HINT_SEEN_KEY = "lol-stats.data-filter-hint-seen"
 const PLAYER_ELO_POLL_INTERVAL_MS = 1200
 const DETAIL_GAME_BATCH_SIZE = 20
+const HIDDEN_RATING_URL = "https://aramkit.com/zh-CN/rating"
 // 暂时隐藏角色 ELO 功能，但保留前后端计算、缓存和恢复入口。
 const ELO_FEATURE_ENABLED = false
 
@@ -1676,6 +1678,19 @@ async function waitForCaptureRender() {
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
+
+async function openHiddenRating() {
+  try {
+    await openUrl(HIDDEN_RATING_URL)
+  } catch (error) {
+    notify({
+      kind: "error",
+      title: "隐藏分页面打开失败",
+      message: errorMessage(error),
+      duration: 7000,
+    })
+  }
+}
 </script>
 
 <template>
@@ -1716,6 +1731,15 @@ function errorMessage(error: unknown) {
         <div class="stats-owner-heading">
           <span>当前角色</span>
           <strong>{{ statsOwnerLabel }}</strong>
+          <button
+            class="hidden-rating-button"
+            type="button"
+            title="在默认浏览器中打开 ARAMKit 隐藏分查询"
+            @click="openHiddenRating"
+          >
+            <ExternalLink :size="14" />
+            隐藏分查询
+          </button>
         </div>
         <div class="metric-grid">
           <div class="metric">
@@ -3286,6 +3310,8 @@ function errorMessage(error: unknown) {
 
 .stats-owner-heading {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 10px;
   margin-bottom: 14px;
@@ -3299,10 +3325,45 @@ function errorMessage(error: unknown) {
 }
 
 .stats-owner-heading strong {
+  min-width: 0;
+  overflow: hidden;
   color: #1d2f34;
   font-size: 22px;
   font-weight: 800;
   line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hidden-rating-button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  border: 1px solid #74449a;
+  border-radius: 7px;
+  padding: 6px 10px;
+  color: #fff8ff;
+  background: #4a205f;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.hidden-rating-button:hover {
+  border-color: #9b6abd;
+  color: #ffffff;
+  background: #602a7d;
+}
+
+.hidden-rating-button:focus-visible {
+  outline: 2px solid #9b6abd;
+  outline-offset: 2px;
 }
 
 .panel-heading {

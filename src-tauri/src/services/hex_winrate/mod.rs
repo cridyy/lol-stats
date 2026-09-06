@@ -1,4 +1,9 @@
 mod aramkit;
+mod diagnostics;
+mod proxy;
+
+pub(crate) use diagnostics::{test_connection as test_aramkit_connection, AramkitConnectionTest};
+pub(crate) use proxy::{configure as set_aramkit_proxy, AramkitProxySettings};
 #[cfg(target_os = "windows")]
 mod capture;
 #[cfg(target_os = "windows")]
@@ -54,13 +59,30 @@ const CAPTURE_MODE_WGC: u8 = 2;
 const CAPTURE_MODE_DESKTOP_DC: u8 = 3;
 const CAPTURE_MODE_DXGI: u8 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum DetectionMode {
+    HighPrecision = 0,
+    Compatibility = 1,
+}
+
+impl DetectionMode {
+    #[cfg(target_os = "windows")]
+    fn label(self) -> &'static str {
+        match self {
+            Self::HighPrecision => "高精度方案",
+            Self::Compatibility => "兼容方案",
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn runtime_log(message: impl AsRef<str>) {
     crate::services::runtime_log::hex(message);
 }
 
 #[cfg(target_os = "windows")]
-fn runtime_log_detail(message: impl AsRef<str>) {
+fn runtime_log_detail(message: impl FnOnce() -> String) {
     crate::services::runtime_log::hex_detail(message);
 }
 
@@ -71,6 +93,8 @@ struct Controller {
     enabled: AtomicBool,
     worker_started: AtomicBool,
     capture_mode: AtomicU8,
+    detection_mode: AtomicU8,
+    recognition_text_visible: AtomicBool,
 }
 
 impl Controller {
@@ -79,6 +103,8 @@ impl Controller {
             enabled: AtomicBool::new(false),
             worker_started: AtomicBool::new(false),
             capture_mode: AtomicU8::new(CAPTURE_MODE_DXGI),
+            detection_mode: AtomicU8::new(DetectionMode::HighPrecision as u8),
+            recognition_text_visible: AtomicBool::new(false),
         }
     }
 
@@ -108,6 +134,7 @@ impl Controller {
 /// 识别服务只在开关开启后启动；关闭时立即清空叠层，后台线程不再截图或发请求。
 pub(crate) fn set_enabled(enabled: bool) {
     CONTROLLER.enabled.store(enabled, Ordering::SeqCst);
+    tracing::info!(target: "lol_stats::hex", enabled, "海克斯胜率识别设置已更新");
     if enabled {
         CONTROLLER.ensure_worker();
     } else {
@@ -130,7 +157,36 @@ pub(crate) fn set_capture_mode(mode: &str) -> Result<(), String> {
         _ => return Err("不支持的海克斯截图模式，可选：dxgi、wgc、auto、desktop-dc".to_string()),
     };
     CONTROLLER.capture_mode.store(value, Ordering::SeqCst);
+    tracing::info!(target: "lol_stats::hex", mode, "截图来源已设置");
     Ok(())
+}
+
+pub(crate) fn set_detection_mode(mode: &str) -> Result<(), String> {
+    let mode = match mode.trim().to_ascii_lowercase().as_str() {
+        "high-precision" => DetectionMode::HighPrecision,
+        "compatibility" => DetectionMode::Compatibility,
+        _ => return Err("不支持的海克斯检测方案，可选：high-precision、compatibility".to_string()),
+    };
+    CONTROLLER
+        .detection_mode
+        .store(mode as u8, Ordering::SeqCst);
+    tracing::info!(target: "lol_stats::hex", ?mode, "检测方案已设置");
+    Ok(())
+}
+
+pub(crate) fn set_recognition_text_visible(visible: bool) {
+    CONTROLLER
+        .recognition_text_visible
+        .store(visible, Ordering::SeqCst);
+    crate::services::runtime_log::hex(format!("海克斯识别名称显示：{visible}"));
+}
+
+#[cfg(target_os = "windows")]
+fn current_detection_mode() -> DetectionMode {
+    match CONTROLLER.detection_mode.load(Ordering::SeqCst) {
+        value if value == DetectionMode::Compatibility as u8 => DetectionMode::Compatibility,
+        _ => DetectionMode::HighPrecision,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -157,7 +213,7 @@ fn run_windows_worker() {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            runtime_log(format!("创建识别运行时失败：{error}"));
+            tracing::error!(target: "lol_stats::hex", %error, "创建识别运行时失败");
             return;
         }
     };
@@ -172,7 +228,7 @@ async fn recognition_loop() {
     let mut last_gameflow_poll = Instant::now() - GAMEFLOW_POLL_INTERVAL;
     let mut session_info: Option<ActiveSession> = None;
     let mut champ_select_info: Option<ChampSelectState> = None;
-    let mut champion_rankings_task = None;
+    let mut champion_rankings_task: Option<tokio::task::JoinHandle<_>> = None;
     let mut champion_rankings = None;
     let mut next_champion_rankings_retry = Instant::now();
     let mut champion_rankings_retry_delay = CHAMPION_RANKINGS_RETRY_INITIAL;
@@ -192,8 +248,24 @@ async fn recognition_loop() {
     let mut overlay_visible: Option<bool> = None;
     let mut last_client_error = None::<String>;
     let mut last_capture_mode = current_capture_mode();
+    let mut last_detection_mode = current_detection_mode();
+    let mut proxy_changes = proxy::subscribe();
+    runtime_log(format!("海克斯检测方案：{}", last_detection_mode.label()));
 
     loop {
+        if proxy_changes.has_changed().unwrap_or(false) {
+            proxy_changes.borrow_and_update();
+            if let Some(task) = champion_rankings_task.take() {
+                task.abort();
+            }
+            next_champion_rankings_retry = Instant::now();
+            champion_rankings_retry_delay = CHAMPION_RANKINGS_RETRY_INITIAL;
+            if let Some(active) = session_info.as_mut() {
+                active.next_stats_retry = Instant::now();
+            }
+            runtime_log("AramKit 代理配置已更新，保留有效缓存并重试未完成的数据请求");
+        }
+
         if champion_rankings.is_none()
             && champion_rankings_task.is_none()
             && CONTROLLER.enabled.load(Ordering::SeqCst)
@@ -217,20 +289,20 @@ async fn recognition_loop() {
                     champion_rankings_retry_delay = CHAMPION_RANKINGS_RETRY_INITIAL;
                 }
                 Ok(Err(error)) => {
-                    runtime_log(format!(
+                    tracing::warn!(target: "lol_stats::aramkit",
                         "AramKit 英雄总表读取失败，{} 秒后重试：{error}",
                         champion_rankings_retry_delay.as_secs()
-                    ));
+                    );
                     next_champion_rankings_retry = Instant::now() + champion_rankings_retry_delay;
                     champion_rankings_retry_delay = champion_rankings_retry_delay
                         .saturating_mul(2)
                         .min(CHAMPION_RANKINGS_RETRY_MAX);
                 }
                 Err(error) => {
-                    runtime_log(format!(
+                    tracing::error!(target: "lol_stats::aramkit",
                         "英雄总表任务异常终止，{} 秒后重试：{error}",
                         champion_rankings_retry_delay.as_secs()
-                    ));
+                    );
                     next_champion_rankings_retry = Instant::now() + champion_rankings_retry_delay;
                     champion_rankings_retry_delay = champion_rankings_retry_delay
                         .saturating_mul(2)
@@ -293,7 +365,8 @@ async fn recognition_loop() {
                                     .visible_cards()
                                     .map(|(ids, layout)| (selection_layout_name(layout), ids))
                                     .unwrap_or(("无", Vec::new()));
-                                runtime_log_detail(format!(
+                                runtime_log_detail(|| {
+                                    format!(
                                     "进入选人胜率 session：game_id={} 阶段={} 候选={} 顶部={} 画面={}（原始候选顺序：{:?}，显示顺序：{:?}）",
                                     next.game_id,
                                     next.timer_phase,
@@ -302,7 +375,8 @@ async fn recognition_loop() {
                                     visible_layout,
                                     next.candidate_ids,
                                     visible_ids,
-                                ));
+                                )
+                                });
                             } else {
                                 runtime_log("当前没有可显示的选人英雄胜率 session");
                             }
@@ -316,7 +390,7 @@ async fn recognition_loop() {
                     // 客户端重启或短暂切换阶段时，保留线程并在下一轮重新发现连接。
                     let error_text = error.to_string();
                     if last_client_error.as_deref() != Some(error_text.as_str()) {
-                        runtime_log(format!("游戏阶段读取失败：{error_text}"));
+                        tracing::warn!(target: "lol_stats::hex", error = %error_text, "游戏阶段读取失败");
                         last_client_error = Some(error_text);
                     }
                     lcu = None;
@@ -392,7 +466,12 @@ async fn recognition_loop() {
         }
 
         if active.stats.is_none() && Instant::now() >= active.next_stats_retry {
-            match aramkit::load_champion_augments(active.champion_id).await {
+            let mut request_proxy_changes = proxy_changes.clone();
+            let result = tokio::select! {
+                result = aramkit::load_champion_augments(active.champion_id) => result,
+                _ = request_proxy_changes.changed() => continue,
+            };
+            match result {
                 Ok(stats) => {
                     runtime_log(format!(
                         "AramKit 数据加载完成：champion_id={} augments={} base_win_rate={:.4}",
@@ -404,7 +483,7 @@ async fn recognition_loop() {
                 }
                 Err(error) => {
                     // 网络波动时使用短退避，避免 100ms 截图循环触发重复请求。
-                    runtime_log(format!("AramKit 数据读取失败：{error}"));
+                    tracing::warn!(target: "lol_stats::aramkit", %error, "AramKit 数据读取失败");
                     active.next_stats_retry = Instant::now() + Duration::from_secs(5);
                 }
             }
@@ -416,18 +495,32 @@ async fn recognition_loop() {
         }
 
         let capture_mode = current_capture_mode();
-        if capture_mode != last_capture_mode {
+        let detection_mode = current_detection_mode();
+        let capture_mode_changed = capture_mode != last_capture_mode;
+        let detection_mode_changed = detection_mode != last_detection_mode;
+        if capture_mode_changed {
             runtime_log(format!(
                 "截图模式切换：{:?} -> {:?}",
                 last_capture_mode, capture_mode
             ));
             last_capture_mode = capture_mode;
+        }
+        if detection_mode_changed {
+            runtime_log(format!(
+                "海克斯检测方案切换：{} -> {}，重置卡片定位和 OCR 确认缓存",
+                last_detection_mode.label(),
+                detection_mode.label()
+            ));
+            last_detection_mode = detection_mode;
+        }
+        if capture_mode_changed || detection_mode_changed {
             cards = std::array::from_fn(|_| TrackedCard::default());
             last_frame_signature = None;
             capture_available = None;
             cards_detected = None;
             last_ocr = Instant::now() - OCR_INTERVAL;
             overlay::hide();
+            overlay_visible = Some(false);
         }
 
         let frame = match capture.capture(capture_mode) {
@@ -457,7 +550,7 @@ async fn recognition_loop() {
             }
             Err(error) => {
                 if capture_available != Some(false) {
-                    runtime_log(format!("截图失败：{error}"));
+                    tracing::warn!(target: "lol_stats::capture", %error, "截图失败");
                     capture_available = Some(false);
                 }
                 missed_frames = missed_frames.saturating_add(1);
@@ -484,24 +577,35 @@ async fn recognition_loop() {
             overlay_visible = Some(false);
         }
 
-        // 三卡检测只为尚未定位的槽位提供稳定的默认标题区域；已锁定卡片不再依赖
-        // 本帧三卡检测，避免中间卡特效导致左右卡片标签反复消失。
-        if cards.iter().any(|card| card.default_title_rect.is_none()) {
-            if let Some(detection) = detector::detect_cards(frame.bgra, frame.width, frame.height) {
-                for (slot, card) in cards.iter_mut().enumerate() {
-                    card.set_default_area(
-                        detection.title_rects[slot],
-                        detection.label_centers[slot],
-                    );
-                }
-                if cards_detected != Some(true) {
-                    runtime_log("三张海克斯卡片定位成功");
-                    cards_detected = Some(true);
-                }
-            } else if cards_detected != Some(false) {
-                runtime_log("三卡检测未命中（截图正常）");
-                cards_detected = Some(false);
+        // 每帧重新实测间距并更新区域，不锁定整局布局。检测短暂失败时，已确认
+        // 槽位仍由原有 OCR 连续失败机制退出，避免光效导致全部标签同时闪动。
+        if let Some(detection) =
+            detector::detect_cards(frame.bgra, frame.width, frame.height, detection_mode)
+        {
+            for (slot, card) in cards.iter_mut().enumerate() {
+                card.update_measured_area(
+                    detection.title_rects[slot],
+                    detection.label_centers[slot],
+                );
             }
+            if cards_detected != Some(true) {
+                let spacing =
+                    (detection.label_centers[2].0 - detection.label_centers[0].0) as f32 / 2.0;
+                let card = detection.card_rects[1];
+                runtime_log(format!(
+                    "三张海克斯卡片定位成功：{}，实测间距={spacing:.1}px，卡片区域={}x{}",
+                    detection_mode.label(),
+                    card.width(),
+                    card.height(),
+                ));
+                cards_detected = Some(true);
+            }
+        } else if cards_detected != Some(false) {
+            runtime_log(format!(
+                "三卡检测未命中（截图正常）：{}",
+                detection_mode.label()
+            ));
+            cards_detected = Some(false);
         }
 
         if last_ocr.elapsed() >= OCR_INTERVAL
@@ -511,7 +615,7 @@ async fn recognition_loop() {
                 match ocr::PpOcrRec::from_embedded_model() {
                     Ok(value) => recognizer = Some(value),
                     Err(error) => {
-                        runtime_log(format!("OCR 初始化失败：{error}"));
+                        tracing::error!(target: "lol_stats::ocr", %error, "OCR 初始化失败");
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue;
                     }
@@ -527,7 +631,7 @@ async fn recognition_loop() {
                 let Some(default_title_rect) = card.default_title_rect else {
                     continue;
                 };
-                // 紧裁切只服务于这一帧 OCR。缓存始终是三卡检测产出的默认大标题区，
+                // 紧裁切只服务于这一帧 OCR。定位区域始终是最新检测给出的默认大标题区，
                 // 不能被某次光效或短标题收紧后的临时区域污染。
                 let crop_rect =
                     tighten_title_rect(frame.bgra, frame.width, frame.height, default_title_rect)
@@ -541,14 +645,16 @@ async fn recognition_loop() {
                     crop_rect.bottom,
                 );
                 if card.last_ocr_crop != Some(crop_signature) {
-                    runtime_log_detail(format!(
-                        "OCR slot={} 裁剪：{}x{} -> {}x{}",
-                        slot + 1,
-                        default_title_rect.width(),
-                        default_title_rect.height(),
-                        crop_rect.width(),
-                        crop_rect.height(),
-                    ));
+                    runtime_log_detail(|| {
+                        format!(
+                            "OCR slot={} 裁剪：{}x{} -> {}x{}",
+                            slot + 1,
+                            default_title_rect.width(),
+                            default_title_rect.height(),
+                            crop_rect.width(),
+                            crop_rect.height(),
+                        )
+                    });
                     card.last_ocr_crop = Some(crop_signature);
                 }
 
@@ -557,7 +663,7 @@ async fn recognition_loop() {
                     Ok(text) => text,
                     Err(error) => {
                         if card.last_ocr_text != "<error>" {
-                            runtime_log(format!("OCR slot={} 失败：{error}", slot + 1));
+                            tracing::warn!(target: "lol_stats::ocr", slot = slot + 1, %error, "OCR 识别失败");
                             card.last_ocr_text = "<error>".to_string();
                         }
                         if card.record_invalid_result() {
@@ -570,35 +676,35 @@ async fn recognition_loop() {
                     }
                 };
                 if card.last_ocr_text != text {
-                    runtime_log_detail(format!("OCR slot={}：{}", slot + 1, text));
+                    runtime_log_detail(|| format!("OCR slot={}：{}", slot + 1, text));
                     card.last_ocr_text = text.clone();
                 }
 
                 let Some(resolution) = resolve_augment(&augment_names, &text, stats) else {
                     if card.record_invalid_result() {
-                        runtime_log_detail(format!(
-                            "OCR slot={} 未匹配海克斯，连续失败后重新等待三卡定位：{}",
-                            slot + 1,
-                            text
-                        ));
+                        runtime_log_detail(|| {
+                            format!(
+                                "OCR slot={} 未匹配海克斯，连续失败后重新等待三卡定位：{}",
+                                slot + 1,
+                                text
+                            )
+                        });
                     }
                     continue;
                 };
 
-                if card.accept_resolution(resolution) {
-                    let detail = card
-                        .resolution
-                        .as_ref()
-                        .map(|value| value.text.as_str())
-                        .unwrap_or_default();
-                    runtime_log(format!("OCR slot={} 已确认：{}", slot + 1, detail));
+                if card.accept_resolution(resolution, &text) {
+                    if let Some(resolution) = card.resolution.as_ref() {
+                        runtime_log(format_ocr_confirmation(slot + 1, &text, resolution, stats));
+                    }
                 }
             }
 
             last_ocr = Instant::now();
+            let show_recognition_text = CONTROLLER.recognition_text_visible.load(Ordering::SeqCst);
             let labels = cards
                 .iter()
-                .filter_map(TrackedCard::overlay_label)
+                .filter_map(|card| card.overlay_label(show_recognition_text))
                 .collect::<Vec<_>>();
             if labels.is_empty() {
                 overlay::hide();
@@ -978,6 +1084,7 @@ fn champ_select_overlay_labels(
             Some(overlay::OverlayLabel {
                 center_x: (width as f32 * x_ratio).round() as i32,
                 y: (height as f32 * y_ratio).round() as i32,
+                title: None,
                 text: format!("{:.1}%", win_rate * 100.0),
                 tone: if win_rate >= 0.5 {
                     overlay::OverlayLabelTone::Positive
@@ -1168,12 +1275,30 @@ struct CardResolution {
 }
 
 #[cfg(target_os = "windows")]
+fn format_ocr_confirmation(
+    slot: usize,
+    ocr_text: &str,
+    resolution: &CardResolution,
+    stats: &aramkit::ChampionAugmentStats,
+) -> String {
+    let data_status = match stats.augment_win_rates.get(&resolution.augment_id) {
+        Some(win_rate) => format!("命中，胜率={:.2}%", win_rate * 100.0),
+        None => "未命中，该英雄统计中没有此ID".to_string(),
+    };
+    format!(
+        "OCR slot={slot} 已确认：识别原文={ocr_text:?} 匹配ID={} 统计=[{data_status}] 显示={:?}",
+        resolution.augment_id, resolution.text
+    )
+}
+
+#[cfg(target_os = "windows")]
 #[derive(Default)]
 struct TrackedCard {
-    // 只缓存三卡检测给出的默认大标题区域。每帧 OCR 的紧裁切不写回这里。
+    // 每次定位成功都更新默认大标题区域；OCR 的紧裁切不写回这里。
     default_title_rect: Option<detector::Rect>,
     label_center: Option<(i32, i32)>,
     resolution: Option<CardResolution>,
+    confirmed_ocr_text: String,
     pending_resolution: Option<CardResolution>,
     pending_hits: u8,
     invalid_streak: u8,
@@ -1183,11 +1308,9 @@ struct TrackedCard {
 
 #[cfg(target_os = "windows")]
 impl TrackedCard {
-    fn set_default_area(&mut self, title_rect: detector::Rect, label_center: (i32, i32)) {
-        if self.default_title_rect.is_none() {
-            self.default_title_rect = Some(title_rect);
-            self.label_center = Some(label_center);
-        }
+    fn update_measured_area(&mut self, title_rect: detector::Rect, label_center: (i32, i32)) {
+        self.default_title_rect = Some(title_rect);
+        self.label_center = Some(label_center);
     }
 
     fn record_invalid_result(&mut self) -> bool {
@@ -1202,11 +1325,12 @@ impl TrackedCard {
         true
     }
 
-    fn accept_resolution(&mut self, candidate: CardResolution) -> bool {
+    fn accept_resolution(&mut self, candidate: CardResolution, ocr_text: &str) -> bool {
         self.invalid_streak = 0;
 
         let Some(current) = self.resolution.as_ref() else {
             self.resolution = Some(candidate);
+            self.confirmed_ocr_text = ocr_text.to_string();
             self.pending_resolution = None;
             self.pending_hits = 0;
             return true;
@@ -1216,6 +1340,7 @@ impl TrackedCard {
             let changed = current != &candidate;
             if changed {
                 self.resolution = Some(candidate);
+                self.confirmed_ocr_text = ocr_text.to_string();
             }
             self.pending_resolution = None;
             self.pending_hits = 0;
@@ -1234,16 +1359,24 @@ impl TrackedCard {
         }
 
         self.resolution = self.pending_resolution.take();
+        self.confirmed_ocr_text = ocr_text.to_string();
         self.pending_hits = 0;
         true
     }
 
-    fn overlay_label(&self) -> Option<overlay::OverlayLabel> {
+    fn overlay_label(&self, show_recognition_text: bool) -> Option<overlay::OverlayLabel> {
         let (center_x, y) = self.label_center?;
         let resolution = self.resolution.as_ref()?;
         Some(overlay::OverlayLabel {
             center_x,
             y,
+            title: self
+                .default_title_rect
+                .filter(|_| show_recognition_text && !self.confirmed_ocr_text.is_empty())
+                .map(|rect| overlay::OverlayTitle {
+                    text: self.confirmed_ocr_text.clone(),
+                    max_width: rect.width(),
+                }),
             text: resolution.text.clone(),
             tone: resolution.tone,
         })
@@ -1601,7 +1734,34 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn tracked_card_keeps_default_area_and_requires_two_failures_to_unlock() {
+    fn ocr_confirmation_log_includes_raw_text_id_and_stats_status() {
+        let stats = super::aramkit::ChampionAugmentStats {
+            base_win_rate: 0.5,
+            augment_win_rates: HashMap::from([(9002, 0.6)]),
+        };
+        let mut resolution = CardResolution {
+            augment_id: 9001,
+            text: "选取率过低".to_string(),
+            tone: super::overlay::OverlayLabelTone::Unavailable,
+        };
+        let log = super::format_ocr_confirmation(1, " 回力ｏＫ镖 ", &resolution, &stats);
+        assert!(log.contains("识别原文=\" 回力ｏＫ镖 \""));
+        assert!(log.contains("匹配ID=9001"));
+        assert!(log.contains("统计=[未命中，该英雄统计中没有此ID]"));
+        assert!(log.contains("显示=\"选取率过低\""));
+
+        resolution.augment_id = 9002;
+        resolution.text = "+10.0%".to_string();
+        resolution.tone = super::overlay::OverlayLabelTone::Positive;
+        let log = super::format_ocr_confirmation(2, "暴击飞弹", &resolution, &stats);
+        assert!(log.contains("识别原文=\"暴击飞弹\""));
+        assert!(log.contains("统计=[命中，胜率=60.00%]"));
+        assert!(log.contains("显示=\"+10.0%\""));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tracked_card_updates_measured_area_and_requires_two_failures_to_unlock() {
         use super::detector::Rect;
         use super::overlay::OverlayLabelTone;
 
@@ -1611,19 +1771,14 @@ mod tests {
             right: 300,
             bottom: 260,
         };
+        let updated_area = Rect {
+            left: 120,
+            top: 210,
+            right: 280,
+            bottom: 250,
+        };
         let mut card = TrackedCard::default();
-        card.set_default_area(first_area, (200, 430));
-        card.set_default_area(
-            Rect {
-                left: 120,
-                top: 210,
-                right: 280,
-                bottom: 250,
-            },
-            (200, 420),
-        );
-        assert_eq!(card.default_title_rect, Some(first_area));
-        assert_eq!(card.label_center, Some((200, 430)));
+        card.update_measured_area(first_area, (200, 430));
 
         let first = CardResolution {
             augment_id: 1,
@@ -1635,13 +1790,29 @@ mod tests {
             text: "-1.0%".to_string(),
             tone: OverlayLabelTone::Negative,
         };
-        assert!(card.accept_resolution(first));
-        assert!(!card.accept_resolution(replacement.clone()));
+        assert!(card.accept_resolution(first.clone(), "暴击飞弹"));
+        card.update_measured_area(updated_area, (200, 420));
+        assert_eq!(card.default_title_rect, Some(updated_area));
+        assert_eq!(card.label_center, Some((200, 420)));
+        assert!(!card.accept_resolution(first, " 暴击飞弹 "));
+        assert_eq!(card.confirmed_ocr_text, "暴击飞弹");
+        assert!(!card.accept_resolution(replacement.clone(), "灵巧"));
+        let label = card.overlay_label(true).unwrap();
+        assert_eq!(label.text, "+1.0%");
+        let title = label.title.unwrap();
+        assert_eq!(title.text, "暴击飞弹");
+        assert_eq!(title.max_width, updated_area.width());
+        let label_without_title = card.overlay_label(false).unwrap();
+        assert!(label_without_title.title.is_none());
+        assert_eq!(label_without_title.text, "+1.0%");
         assert_eq!(
             card.resolution.as_ref().map(|value| value.augment_id),
             Some(1)
         );
-        assert!(card.accept_resolution(replacement));
+        assert!(card.accept_resolution(replacement, "灵巧"));
+        let label = card.overlay_label(true).unwrap();
+        assert_eq!(label.title.unwrap().text, "灵巧");
+        assert_eq!(label.text, "-1.0%");
         assert_eq!(
             card.resolution.as_ref().map(|value| value.augment_id),
             Some(2)
@@ -1649,9 +1820,11 @@ mod tests {
 
         assert!(!card.record_invalid_result());
         assert!(card.resolution.is_some());
+        card.update_measured_area(updated_area, (200, 420));
         assert!(card.record_invalid_result());
         assert!(card.default_title_rect.is_none());
         assert!(card.resolution.is_none());
+        assert!(card.confirmed_ocr_text.is_empty());
     }
 
     #[cfg(target_os = "windows")]

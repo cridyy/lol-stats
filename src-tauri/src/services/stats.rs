@@ -17,6 +17,7 @@ use super::models::{
     PlayerEloParticipant, PlayerStatsResponse, PlayerSummary, RatingCompositionEntry, RecentGame,
     RecentGameParticipantRecord, RecentGameParticipantSummary, SummonerInfo,
 };
+use super::premade::{detect_premade_markers, PremadePlayerEvidence, PremadeTeamEvidence};
 use super::sgp::{resolve_sgp_server_id, SgpClient};
 
 /// LCU match-history 单页最多稳定返回 50 条。
@@ -25,6 +26,8 @@ use super::sgp::{resolve_sgp_server_id, SgpClient};
 /// “已经没有更多数据”，导致 500 局统计实际只加载第一页。
 const MAX_PAGE_SIZE: usize = 50;
 const SGP_PAGE_SIZE: usize = 50;
+const CURRENT_RECENT_PROBE_COUNT: usize = 3;
+const CURRENT_RECENT_FETCH_COUNT: usize = 20;
 const MAX_DEPTH: usize = 1000;
 const MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
 const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -34,6 +37,8 @@ const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const QUICK_PLAYER_CACHE_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const QUICK_PLAYER_CACHE_LIMIT: usize = 50;
 const QUICK_PLAYER_CACHE_GAME_LIMIT: usize = 100;
+const DETAIL_PREMADE_HISTORY_DEPTH: usize = 50;
+const DETAIL_PREMADE_QUERY_CONCURRENCY: usize = 4;
 const CACHE_SCHEMA_VERSION: i64 = 17;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
 const HISTORY_PREMADE_THRESHOLD: usize = 3;
@@ -251,6 +256,195 @@ pub async fn load_player_stats(
     .await
 }
 
+/// 刷新当前战绩的轻量路径。
+///
+/// 当前战绩通常只展示最近 20 局。刷新时先读取最近三局的 SUMMARY，和本地缓存中
+/// 的前三局比较；没有变化时直接复用已经聚合好的结果，避免再次请求 20/50 局并重复
+/// 计算。只有发现新增对局或摘要数据变化时，才拉取当前深度并更新缓存。
+pub async fn refresh_player_recent_stats(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    summoner: SummonerInfo,
+    depth: usize,
+) -> AppResult<PlayerStatsResponse> {
+    let depth = depth.clamp(1, MAX_DEPTH);
+    let key = stats_cache_key(auth, sgp_server_id, &summoner, depth);
+    let cached_games = read_db_cached_games(&key, depth).unwrap_or_default();
+    let cached_response = cached_stats_response(&key);
+
+    if !cached_games.is_empty() {
+        match load_current_recent_probe(lcu, auth, sgp_server_id, &summoner.puuid).await {
+            Ok(probe_games)
+                if probe_games.is_empty() || recent_probe_matches(&cached_games, &probe_games) =>
+            {
+                return Ok(cached_response.unwrap_or_else(|| {
+                    analyze_games(summoner.clone(), depth, cached_games.clone())
+                }));
+            }
+            Err(_) => {
+                // 探测失败时保留可用的旧结果，下一次刷新再重试，避免短暂网络波动
+                // 把当前战绩页面变成错误页。
+                return Ok(cached_response.unwrap_or_else(|| {
+                    analyze_games(summoner.clone(), depth, cached_games.clone())
+                }));
+            }
+            Ok(_) => {}
+        }
+    }
+
+    let games = match load_current_recent_games(lcu, auth, sgp_server_id, &key, depth).await {
+        Ok(games) => games,
+        Err(_) if !cached_games.is_empty() => {
+            return Ok(cached_response
+                .unwrap_or_else(|| analyze_games(summoner.clone(), depth, cached_games.clone())))
+        }
+        Err(error) => return Err(error),
+    };
+
+    let response = analyze_games(summoner, depth, games);
+    write_db_cached_stats(&key, &response);
+    store_cached_stats(key, &response);
+    Ok(response)
+}
+
+fn cached_stats_response(key: &StatsCacheKey) -> Option<PlayerStatsResponse> {
+    if let Some(cached) = get_cached_stats(key) {
+        return Some(cached);
+    }
+
+    // 当前路径已经先用远端最近摘要确认过没有变化，因此同一 schema 的旧聚合结果
+    // 仍然可以安全复用；普通统计入口仍继续遵守 DATABASE_CACHE_TTL。
+    let cached = read_db_cached_stats(key, false).or_else(|| read_db_cached_stats(key, true))?;
+    store_cached_stats(key.clone(), &cached);
+    Some(cached)
+}
+
+async fn load_current_recent_probe(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    puuid: &str,
+) -> AppResult<Vec<Game>> {
+    if let Some(auth) = auth {
+        let sgp = SgpClient::new(lcu, auth, sgp_server_id).await?;
+        return sgp
+            .match_history_light(puuid, 0, CURRENT_RECENT_PROBE_COUNT)
+            .await;
+    }
+
+    let page = lcu
+        .match_history(puuid, 0, CURRENT_RECENT_PROBE_COUNT - 1)
+        .await?;
+    Ok(page.games.games)
+}
+
+async fn load_current_recent_games(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    key: &StatsCacheKey,
+    depth: usize,
+) -> AppResult<Vec<Game>> {
+    let fetch_count = depth.min(CURRENT_RECENT_FETCH_COUNT).max(1);
+    let games = if let Some(auth) = auth {
+        let sgp = SgpClient::new(lcu, auth, sgp_server_id).await?;
+        sgp.match_history(&key.puuid, 0, fetch_count).await?
+    } else {
+        let page = lcu.match_history(&key.puuid, 0, fetch_count - 1).await?;
+        page.games.games
+    };
+
+    if games.is_empty() {
+        return Err(AppError::SgpUnavailable("未能读取到当前战绩".to_string()));
+    }
+
+    store_db_cached_games(key, &games);
+    Ok(read_db_cached_games(key, depth).unwrap_or(games))
+}
+
+fn recent_probe_matches(cached_games: &[Game], probe_games: &[Game]) -> bool {
+    let cached_signatures = recent_game_signatures(cached_games);
+    let probe_signatures = recent_game_signatures(probe_games);
+
+    !probe_signatures.is_empty()
+        && cached_signatures.len() >= probe_signatures.len()
+        && cached_signatures
+            .iter()
+            .zip(probe_signatures.iter())
+            .all(|(cached, probe)| cached == probe)
+}
+
+fn recent_game_signatures(games: &[Game]) -> Vec<String> {
+    let mut games = games.iter().collect::<Vec<_>>();
+    games.retain(|game| is_valid_current_recent_game(game));
+    games.sort_by(|left, right| {
+        right
+            .game_creation
+            .cmp(&left.game_creation)
+            .then_with(|| right.game_id.cmp(&left.game_id))
+    });
+
+    games
+        .into_iter()
+        .take(CURRENT_RECENT_PROBE_COUNT)
+        .map(recent_game_signature)
+        .collect()
+}
+
+fn recent_game_signature(game: &Game) -> String {
+    let mut participants = game
+        .participants
+        .iter()
+        .map(|participant| {
+            let stats = &participant.stats;
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                participant.participant_id,
+                participant.team_id,
+                participant.champion_id,
+                u8::from(stats.win),
+                stats.kills,
+                stats.deaths,
+                stats.assists,
+                stats.turret_kills,
+                stats.gold_earned,
+                stats.total_damage_dealt_to_champions,
+                stats.damage_self_mitigated,
+                stats.total_damage_taken,
+                stats.total_heal,
+                stats.total_damage_shielded_on_teammates,
+                stats.time_ccing_others.unwrap_or_default(),
+                stats.player_subteam_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    participants.sort();
+
+    let mut teams = game
+        .teams
+        .iter()
+        .map(|team| format!("{}:{}", team.team_id, team.tower_kills))
+        .collect::<Vec<_>>();
+    teams.sort();
+
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        game.game_id,
+        game.game_creation,
+        game.game_duration,
+        game.queue_id,
+        game.game_mode,
+        game.game_type,
+        teams.join(","),
+        participants.join(",")
+    )
+}
+
+fn is_valid_current_recent_game(game: &Game) -> bool {
+    !is_pve_queue(game.queue_id) && game.game_duration >= MIN_VALID_GAME_DURATION_SECONDS
+}
+
 pub async fn load_match_detail(
     lcu: &LcuClient,
     auth: Option<&ClientAuth>,
@@ -267,6 +461,22 @@ pub async fn load_match_detail(
 
     let game = lcu.match_history_game(game_id).await?;
     Ok(match_detail_from_game(game))
+}
+
+/// 读取对局详情，并为双方全部玩家补全与实时战绩一致的组队标记。
+///
+/// 组队证据是附加信息：任一玩家的历史战绩读取失败时，详情本身仍然正常返回，
+/// 只是不为缺少证据的玩家显示组队标签。
+pub async fn load_match_detail_with_premades(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    game_id: u64,
+) -> AppResult<MatchDetailResponse> {
+    let mut detail = load_match_detail(lcu, auth, sgp_server_id, game_id).await?;
+    enrich_match_detail_summoner_levels(lcu, auth, sgp_server_id, &mut detail).await;
+    enrich_match_detail_premades(lcu, auth, sgp_server_id, &mut detail).await;
+    Ok(detail)
 }
 
 pub async fn estimate_player_elo(
@@ -2168,6 +2378,8 @@ fn match_detail_from_game(game: Game) -> MatchDetailResponse {
                 summoner_name: identity.summoner_name,
                 team_id: participant.team_id,
                 player_subteam_id: participant.stats.player_subteam_id,
+                premade: None,
+                summoner_level: None,
                 record,
             });
     }
@@ -2199,6 +2411,216 @@ fn match_detail_from_game(game: Game) -> MatchDetailResponse {
         game_duration: game.game_duration,
         teams,
     }
+}
+
+async fn enrich_match_detail_summoner_levels(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    detail: &mut MatchDetailResponse,
+) {
+    let Some(auth) = auth else {
+        return;
+    };
+
+    let player_puuids = detail
+        .teams
+        .iter()
+        .flat_map(|team| team.players.iter())
+        .filter(|player| is_real_puuid(&player.puuid))
+        .map(|player| normalize_puuid(&player.puuid))
+        .collect::<HashSet<_>>();
+
+    if player_puuids.is_empty() {
+        return;
+    }
+
+    let puuids = player_puuids.into_iter().collect::<Vec<_>>();
+    let Ok(sgp) = SgpClient::new(lcu, auth, sgp_server_id).await else {
+        return;
+    };
+    let Ok(summoners) = sgp.summoners_by_puuids(&puuids).await else {
+        return;
+    };
+
+    let levels_by_puuid = summoners
+        .into_iter()
+        .filter_map(|summoner| {
+            let puuid = normalize_puuid(&summoner.puuid);
+            (!puuid.is_empty() && summoner.summoner_level > 0)
+                .then_some((puuid, summoner.summoner_level))
+        })
+        .collect::<HashMap<_, _>>();
+
+    for player in detail
+        .teams
+        .iter_mut()
+        .flat_map(|team| team.players.iter_mut())
+    {
+        player.summoner_level = levels_by_puuid
+            .get(&normalize_puuid(&player.puuid))
+            .copied();
+    }
+}
+
+async fn enrich_match_detail_premades(
+    lcu: &LcuClient,
+    auth: Option<&ClientAuth>,
+    sgp_server_id: Option<&str>,
+    detail: &mut MatchDetailResponse,
+) {
+    let mut seen = HashSet::<String>::new();
+    let player_seeds = detail
+        .teams
+        .iter()
+        .flat_map(|team| team.players.iter())
+        .filter_map(|player| {
+            if !is_real_puuid(&player.puuid) {
+                return None;
+            }
+
+            let puuid = normalize_puuid(&player.puuid);
+            seen.insert(puuid.clone())
+                .then_some((puuid, detail_player_summoner(player)))
+        })
+        .collect::<Vec<_>>();
+
+    if player_seeds.len() < 2 {
+        return;
+    }
+
+    let auth = auth.cloned();
+    let sgp_server_id = sgp_server_id.map(str::to_string);
+    let history_results = stream::iter(player_seeds.into_iter().map(|(puuid, summoner)| {
+        let lcu = lcu.clone();
+        let auth = auth.clone();
+        let sgp_server_id = sgp_server_id.clone();
+
+        async move {
+            let stats = load_player_stats(
+                &lcu,
+                auth.as_ref(),
+                sgp_server_id.as_deref(),
+                summoner,
+                DETAIL_PREMADE_HISTORY_DEPTH,
+            )
+            .await
+            .ok();
+            (puuid, stats)
+        }
+    }))
+    .buffered(DETAIL_PREMADE_QUERY_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    let histories = history_results
+        .into_iter()
+        .filter_map(|(puuid, stats)| stats.map(|stats| (puuid, stats.recent_games)))
+        .collect::<HashMap<_, _>>();
+    let queue_id = detail.queue_id;
+    let game_mode = detail.game_mode.clone();
+    let evidence = detail
+        .teams
+        .iter()
+        .map(|team| PremadeTeamEvidence {
+            players: team
+                .players
+                .iter()
+                .map(|player| {
+                    let puuid = normalize_puuid(&player.puuid);
+                    let recent_games = histories
+                        .get(&puuid)
+                        .map(|games| {
+                            games
+                                .iter()
+                                .filter(|game| {
+                                    detail_premade_history_matches(
+                                        game,
+                                        queue_id,
+                                        game_mode.as_str(),
+                                    )
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    PremadePlayerEvidence {
+                        puuid: player.puuid.clone(),
+                        explicit_group_id: None,
+                        recent_games,
+                    }
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    let markers = detect_premade_markers(&evidence);
+
+    for player in detail
+        .teams
+        .iter_mut()
+        .flat_map(|team| team.players.iter_mut())
+    {
+        player.premade = markers.get(&normalize_puuid(&player.puuid)).cloned();
+    }
+}
+
+fn detail_player_summoner(player: &MatchDetailPlayer) -> SummonerInfo {
+    let display_name = if !player.summoner_name.trim().is_empty() {
+        player.summoner_name.trim().to_string()
+    } else if !player.game_name.trim().is_empty() && !player.tag_line.trim().is_empty() {
+        format!("{}#{}", player.game_name.trim(), player.tag_line.trim())
+    } else {
+        player.game_name.trim().to_string()
+    };
+
+    SummonerInfo {
+        puuid: player.puuid.clone(),
+        game_name: player.game_name.clone(),
+        tag_line: player.tag_line.clone(),
+        display_name,
+        ..Default::default()
+    }
+}
+
+fn detail_premade_history_matches(
+    game: &RecentGame,
+    target_queue_id: u32,
+    target_game_mode: &str,
+) -> bool {
+    if game.game_duration < MIN_VALID_GAME_DURATION_SECONDS {
+        return false;
+    }
+
+    let target_is_hex_aram = target_queue_id == 2400
+        || matches!(
+            target_game_mode.to_ascii_uppercase().as_str(),
+            "STRAWBERRY" | "KIWI"
+        );
+    if target_is_hex_aram {
+        return is_hex_aram_game(game);
+    }
+
+    let target_is_aram = target_queue_id == 450 || target_game_mode.eq_ignore_ascii_case("ARAM");
+    if target_is_aram {
+        return !is_hex_aram_game(game)
+            && (game.queue_id == 450 || game.game_mode.eq_ignore_ascii_case("ARAM"));
+    }
+
+    if matches!(target_queue_id, 420 | 440) {
+        return matches!(game.queue_id, 420 | 440);
+    }
+
+    let target_is_match_or_ranked = matches!(target_queue_id, 400 | 420 | 430 | 440 | 490)
+        || (target_game_mode.eq_ignore_ascii_case("CLASSIC")
+            && !matches!(target_queue_id, 450 | 1700 | 1710 | 1711 | 1712 | 2400));
+    if target_is_match_or_ranked {
+        return matches!(game.queue_id, 400 | 420 | 430 | 440 | 490)
+            || (game.game_mode.eq_ignore_ascii_case("CLASSIC")
+                && !matches!(game.queue_id, 450 | 1700 | 1710 | 1711 | 1712 | 2400));
+    }
+
+    true
 }
 
 fn participant_to_recent_game(game: &Game, participant: &Participant) -> RecentGame {
@@ -3057,6 +3479,7 @@ fn build_external_elo_http_client(timeout: Duration) -> AppResult<reqwest::Clien
     );
 
     Ok(reqwest::Client::builder()
+        .use_rustls_tls()
         .default_headers(headers)
         .timeout(timeout)
         .connect_timeout(timeout)
@@ -3707,6 +4130,8 @@ mod tests {
             summoner_name: summoner_name.to_string(),
             team_id: 100,
             player_subteam_id,
+            premade: None,
+            summoner_level: None,
             record: sample_recent_game(1, 266),
         }
     }
@@ -3760,6 +4185,68 @@ mod tests {
     fn normalized_riot_id_with_fallback_uses_display_name_when_needed() {
         let value = normalized_riot_id_with_fallback("", "", Some("离于爱者无忧无怖#53258"));
         assert_eq!(value, "离于爱者无忧无怖#53258");
+    }
+
+    #[test]
+    fn recent_probe_matches_cached_games_when_latest_three_are_unchanged() {
+        let cached = vec![
+            Game {
+                game_id: 3,
+                game_creation: 300,
+                game_duration: 1_200,
+                queue_id: 2400,
+                ..Default::default()
+            },
+            Game {
+                game_id: 2,
+                game_creation: 200,
+                game_duration: 1_100,
+                queue_id: 2400,
+                ..Default::default()
+            },
+            Game {
+                game_id: 1,
+                game_creation: 100,
+                game_duration: 1_000,
+                queue_id: 2400,
+                ..Default::default()
+            },
+        ];
+
+        let probe = cached.clone();
+        assert!(recent_probe_matches(&cached, &probe));
+    }
+
+    #[test]
+    fn recent_probe_detects_a_newest_game() {
+        let cached = vec![
+            Game {
+                game_id: 2,
+                game_creation: 200,
+                game_duration: 1_100,
+                queue_id: 2400,
+                ..Default::default()
+            },
+            Game {
+                game_id: 1,
+                game_creation: 100,
+                game_duration: 1_000,
+                queue_id: 2400,
+                ..Default::default()
+            },
+        ];
+        let probe = vec![
+            Game {
+                game_id: 3,
+                game_creation: 300,
+                game_duration: 1_200,
+                queue_id: 2400,
+                ..Default::default()
+            },
+            cached[0].clone(),
+        ];
+
+        assert!(!recent_probe_matches(&cached, &probe));
     }
 
     #[test]

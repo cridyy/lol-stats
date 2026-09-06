@@ -1,6 +1,8 @@
-import { invoke } from "@tauri-apps/api/core"
+import { invokeLogged as invoke } from "./logging"
 import type {
   AppUpdateInfo,
+  AramkitConnectionTest,
+  AramkitProxySettings,
   ChampionSummaryItem,
   ChatStatus,
   ConnectionStatus,
@@ -88,6 +90,22 @@ export function setHexWinrateCaptureMode(mode: string) {
   return invoke<void>("set_hex_winrate_capture_mode", { mode })
 }
 
+export function setHexWinrateDetectionMode(mode: string) {
+  return invoke<void>("set_hex_winrate_detection_mode", { mode })
+}
+
+export function setHexWinrateRecognitionTextVisible(visible: boolean) {
+  return invoke<void>("set_hex_winrate_recognition_text_visible", { visible })
+}
+
+export function setAramkitProxy(settings: AramkitProxySettings) {
+  return invoke<AramkitProxySettings>("set_aramkit_proxy", { settings })
+}
+
+export function testAramkitConnection(settings: AramkitProxySettings) {
+  return invoke<AramkitConnectionTest>("test_aramkit_connection", { settings })
+}
+
 export function setQuickBenchSwapEnabled(enabled: boolean) {
   return invoke<void>("set_quick_bench_swap_enabled", { enabled })
 }
@@ -110,6 +128,10 @@ export function searchSummonerCandidates(query: string, sgpServerId?: string) {
 
 export function loadSelfStats(depth: number, forceRefresh = false, persistCache = true) {
   return invoke<PlayerStatsResponse>("load_self_stats", { depth, forceRefresh, persistCache })
+}
+
+export function refreshSelfRecentStats(depth: number) {
+  return invoke<PlayerStatsResponse>("refresh_self_recent_stats", { depth })
 }
 
 export function loadSelfStatsWithProgress(
@@ -188,6 +210,10 @@ export function copyPngToClipboard(bytes: number[]) {
 
 export function loadMatchDetail(gameId: number, sgpServerId?: string) {
   return invoke<MatchDetailResponse>("load_match_detail", { gameId, sgpServerId })
+}
+
+export function loadMatchDetailPremades(gameId: number, sgpServerId?: string) {
+  return invoke<MatchDetailResponse>("load_match_detail_premades", { gameId, sgpServerId })
 }
 
 export function loadPlayerEloEstimate(

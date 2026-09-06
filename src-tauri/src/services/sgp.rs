@@ -44,6 +44,7 @@ impl SgpClient {
             .await
             .unwrap_or_else(|_| access_token.clone());
         let http = Client::builder()
+            .use_rustls_tls()
             .danger_accept_invalid_certs(true)
             .no_proxy()
             .timeout(std::time::Duration::from_secs(14))
@@ -133,6 +134,31 @@ impl SgpClient {
         start_index: usize,
         count: usize,
     ) -> AppResult<Vec<Game>> {
+        self.match_history_internal(puuid, start_index, count, true)
+            .await
+    }
+
+    /// 读取摘要列表，但跳过逐局 DETAILS 补全。
+    ///
+    /// 当前战绩刷新只需要判断最近几局是否发生变化，不能因为探测请求又触发
+    /// 碾压局首塔时间的附加请求。
+    pub async fn match_history_light(
+        &self,
+        puuid: &str,
+        start_index: usize,
+        count: usize,
+    ) -> AppResult<Vec<Game>> {
+        self.match_history_internal(puuid, start_index, count, false)
+            .await
+    }
+
+    async fn match_history_internal(
+        &self,
+        puuid: &str,
+        start_index: usize,
+        count: usize,
+        enrich_details: bool,
+    ) -> AppResult<Vec<Game>> {
         let mut last_status = None;
         let mut last_error = None;
 
@@ -168,7 +194,9 @@ impl SgpClient {
                 continue;
             }
 
-            return self.parse_match_history_response(response, puuid).await;
+            return self
+                .parse_match_history_response(response, puuid, count, enrich_details)
+                .await;
         }
 
         if let Some(status) = last_status {
@@ -215,6 +243,8 @@ impl SgpClient {
         &self,
         response: reqwest::Response,
         puuid: &str,
+        count: usize,
+        enrich_details: bool,
     ) -> AppResult<Vec<Game>> {
         if response.status() == StatusCode::NOT_FOUND {
             return Err(AppError::PlayerNotFound(puuid.to_string()));
@@ -233,9 +263,14 @@ impl SgpClient {
             .games
             .into_iter()
             .filter_map(|game| game.json.map(sgp_game_json_to_lcu_game))
+            .take(count)
             .collect();
 
-        Ok(self.enrich_loser_first_tower_times(games).await)
+        if enrich_details {
+            Ok(self.enrich_loser_first_tower_times(games).await)
+        } else {
+            Ok(games)
+        }
     }
 
     async fn parse_game_summary_response(

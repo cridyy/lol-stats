@@ -169,7 +169,7 @@ pub fn start_local_api_server(app: AppHandle, state: LocalApiState) -> Result<()
                             .spawn(move || handle_connection(stream, app, state));
                     }
                     Err(error) => {
-                        eprintln!("[local-api] 接收连接失败：{error}");
+                        tracing::warn!(target: "lol_stats::local_api", %error, "接收连接失败");
                     }
                 }
             }

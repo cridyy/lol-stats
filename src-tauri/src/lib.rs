@@ -6,20 +6,27 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    if let Err(error) = services::runtime_log::start_session() {
+        eprintln!("日志系统初始化失败：{error}");
+    }
+    let app = tauri::Builder::default()
         .manage(LocalApiState::default())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            services::runtime_log::start_session();
             services::global_baselines::start_daily_update_check();
             let local_api_state = app.state::<LocalApiState>().inner().clone();
             if let Err(error) = start_local_api_server(app.handle().clone(), local_api_state) {
-                eprintln!("[local-api] {error}");
+                tracing::error!(target: "lol_stats::local_api", %error, "本地接口启动失败");
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
+            commands::runtime_log_status,
+            commands::set_detailed_logging,
+            commands::write_frontend_logs,
+            commands::open_log_directory,
+            commands::export_diagnostic_logs,
             commands::accept_ready_check,
             commands::cancel_stats_load,
             commands::check_app_update,
@@ -35,16 +42,22 @@ pub fn run() {
             commands::load_global_baselines,
             commands::set_hex_winrate_recognition_enabled,
             commands::set_hex_winrate_capture_mode,
+            commands::set_hex_winrate_detection_mode,
+            commands::set_hex_winrate_recognition_text_visible,
+            commands::set_aramkit_proxy,
+            commands::test_aramkit_connection,
             commands::set_quick_bench_swap_enabled,
             commands::load_ranked_stats,
             commands::load_lcu_asset,
             commands::load_lcu_assets,
             commands::load_self_stats,
+            commands::refresh_self_recent_stats,
             commands::load_self_stats_with_progress,
             commands::search_summoner_candidates,
             commands::search_player,
             commands::search_player_with_progress,
             commands::load_match_detail,
+            commands::load_match_detail_premades,
             commands::load_player_elo_estimate,
             commands::start_player_elo_estimate_task,
             commands::get_player_elo_estimate_task,
@@ -58,6 +71,11 @@ pub fn run() {
             commands::set_game_settings_locked,
             commands::send_alt_left_shortcut
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|_, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            services::runtime_log::shutdown();
+        }
+    });
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
+import { isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window"
@@ -7,10 +8,16 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  Download,
   FileText,
+  FolderOpen,
   LoaderCircle,
   Moon,
+  PlugZap,
   RefreshCw,
+  RotateCcw,
+  Save,
   Search,
   Settings,
   Sun,
@@ -34,16 +41,22 @@ import {
   loadGameAssets,
   loadLiveGame,
   loadMatchDetail,
+  loadMatchDetailPremades,
   loadSelfStats,
   loadSelfStatsWithProgress,
+  refreshSelfRecentStats,
   searchPlayer,
   searchPlayerWithProgress,
   searchSummonerCandidates,
+  setAramkitProxy,
   setChatAvailability,
   setHexWinrateCaptureMode,
+  setHexWinrateDetectionMode,
   setHexWinrateRecognitionEnabled,
+  setHexWinrateRecognitionTextVisible,
   setLocalApiFrontendReady,
   setQuickBenchSwapEnabled,
+  testAramkitConnection,
 } from "./api"
 import {
   chatStatusLockAvailability,
@@ -58,6 +71,16 @@ import ToastStack from "./components/ToastStack.vue"
 import ToolsPanel from "./components/ToolsPanel.vue"
 import { notifyKey, type AppToast, type ToastPayload } from "./notifications"
 import {
+  exportDiagnosticLogs,
+  flushFrontendLogs,
+  getRuntimeLogStatus,
+  logFrontend,
+  openLogDirectory,
+  reportFrontendError,
+  setDetailedLogging,
+  type RuntimeLogStatus,
+} from "./logging"
+import {
   globalBaselineDataset,
   globalBaselinesByChampionId,
   initializeGlobalBaselines,
@@ -71,13 +94,21 @@ import {
 import {
   AUTO_ACCEPT_ENABLED_KEY,
   DARK_MODE_ENABLED_KEY,
+  DEFAULT_ARAMKIT_PROXY_ADDRESS,
+  isAramkitTimeoutSeconds,
   type LiveHexWinrateCaptureMode,
+  type LiveHexWinrateDetectionMode,
   LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY,
+  LIVE_HEX_WINRATE_RECOGNITION_TEXT_VISIBLE_KEY,
   QUICK_BENCH_SWAP_ENABLED_KEY,
+  readAramkitProxySettings,
   readBooleanSetting,
   readLiveHexWinrateCaptureMode,
+  readLiveHexWinrateDetectionMode,
   writeBooleanSetting,
+  writeAramkitProxySettings,
   writeLiveHexWinrateCaptureMode,
+  writeLiveHexWinrateDetectionMode,
 } from "./toolSettings"
 import { applyTheme } from "./theme"
 import { championName, riotId } from "./utils"
@@ -99,7 +130,7 @@ import type {
   SummonerSearchCandidate,
 } from "./types"
 
-type PageKey = "current" | "live" | "search" | "details" | "tools"
+type PageKey = "current" | "live" | "search" | "details" | "tools" | "settings"
 type SearchServerOption = { id: string; label: string }
 type SearchHistoryItem = { query: string; sgpServerId: string }
 type OverviewDrillTab = {
@@ -112,6 +143,8 @@ type OverviewDrillTab = {
   sgpServerId?: string
   detail: MatchDetailResponse | null
   loading: boolean
+  premadeLoading: boolean
+  rankedLoading: boolean
   error: string
 }
 type PlayerDrillTab = {
@@ -153,6 +186,11 @@ type HiddenDrillCacheEntry = {
 type WindowStartupSize = {
   width: number
   height: number
+}
+type CurrentRecentLoadOptions = {
+  silent?: boolean
+  refreshPresentation?: boolean
+  refreshRanked?: boolean
 }
 type ReleaseNotesDialog = {
   version: string
@@ -210,6 +248,17 @@ const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.8.1": [
+    "这是 0.8.1 测试版，继续用于功能验证，暂未公开源代码。",
+    "优化当前战绩刷新：首次加载最多请求 20 局，刷新时先探测最近 3 局。",
+    "最近战绩没有变化时直接使用本地缓存；检测到新对局或数据变化后才同步 20 局，减少等待和重复请求。",
+    "如果遇到战绩未更新、显示异常或网络问题，请在反馈帖子中留言。",
+  ],
+  "0.8.0": [
+    "这是 0.8.0 测试版，当前用于功能验证，暂未公开源代码。",
+    "实时战绩页面新增海克斯胜率识别开关，默认开启，可显示选人阶段英雄胜率和局内海克斯收益率。",
+    "如果遇到显示、识别或数据问题，请在反馈帖子中留言。功能稳定后再公开源代码。",
+  ],
   "0.7.0": [
     "数据统计新增数据筛选入口，支持阵营、装备、经济区间、百分比穿透和核心担当分析。",
     "新增海克斯分析，可按英雄和位置筛选同色有效机会、登场率与胜率。",
@@ -265,11 +314,19 @@ const champions = ref<ChampionSummaryItem[]>([])
 const gameAssets = ref<GameAssetBundle>(emptyGameAssets())
 const activePage = ref<PageKey>("current")
 const workspaceRef = ref<HTMLElement | null>(null)
-const settingsOpen = ref(false)
 const darkModeEnabled = ref(readBooleanSetting(DARK_MODE_ENABLED_KEY))
 const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
+const windowSizeBusy = ref(false)
+const runtimeLogStatus = ref<RuntimeLogStatus | null>(null)
+const runtimeLogError = ref("")
+const detailedLoggingChanging = ref(false)
+const logDirectoryOpening = ref(false)
+const diagnosticExporting = ref(false)
+const runtimeLogBusy = computed(() =>
+  detailedLoggingChanging.value || logDirectoryOpening.value || diagnosticExporting.value,
+)
 const appCurrentVersion = ref("")
 const releaseNotesDialog = ref<ReleaseNotesDialog | null>(null)
 const updateDialog = ref<AppUpdateInfo | null>(null)
@@ -311,10 +368,33 @@ const liveLoading = ref(false)
 const liveRefreshing = ref(false)
 const liveError = ref("")
 const liveHexWinrateRecognitionEnabled = ref(
-  readBooleanSetting(LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY),
+  readBooleanSetting(LIVE_HEX_WINRATE_RECOGNITION_ENABLED_KEY, true),
 )
 const liveHexWinrateCaptureMode = ref<LiveHexWinrateCaptureMode>(
   readLiveHexWinrateCaptureMode(),
+)
+const liveHexWinrateDetectionMode = ref<LiveHexWinrateDetectionMode>(
+  readLiveHexWinrateDetectionMode(),
+)
+const liveHexWinrateDetectionModeChanging = ref(false)
+const liveHexWinrateRecognitionTextVisible = ref(
+  readBooleanSetting(LIVE_HEX_WINRATE_RECOGNITION_TEXT_VISIBLE_KEY),
+)
+const liveHexWinrateRecognitionTextChanging = ref(false)
+const savedAramkitProxy = ref(readAramkitProxySettings())
+const aramkitProxyDraft = ref({ ...savedAramkitProxy.value })
+const aramkitProxySaving = ref(false)
+const aramkitProxyTesting = ref(false)
+const aramkitProxyCopying = ref(false)
+const aramkitProxyReport = ref("")
+const aramkitProxyTestSeconds = ref(0)
+const aramkitProxyResult = ref<{ kind: "success" | "warning" | "error"; message: string } | null>(null)
+const aramkitProxyBusy = computed(() => aramkitProxySaving.value || aramkitProxyTesting.value)
+const aramkitProxyDirty = computed(() =>
+  aramkitProxyDraft.value.enabled !== savedAramkitProxy.value.enabled
+  || aramkitProxyDraft.value.address.trim() !== savedAramkitProxy.value.address
+  || aramkitProxyDraft.value.wtlsEnabled !== savedAramkitProxy.value.wtlsEnabled
+  || aramkitProxyDraft.value.timeoutSeconds !== savedAramkitProxy.value.timeoutSeconds,
 )
 const gameflowPhase = ref<string | null>(null)
 const drillTabs = ref<DrillTab[]>([])
@@ -332,10 +412,15 @@ const progressOverlay = ref({
 
 let unlistenProgress: UnlistenFn | null = null
 let unlistenLocalApi: UnlistenFn | null = null
+let detailedLoggingExpiryTimer: number | null = null
 let liveRefreshTimer: number | null = null
 let globalBaselineRetryTimer: number | null = null
 let liveGameRenderSignature = ""
 let gameflowWatchTimer: number | null = null
+let currentRecentAutoRefreshTimers: number[] = []
+let currentRecentAutoRefreshGeneration = 0
+let currentRecentRequestGeneration = 0
+let gameflowCheckInFlight = false
 let chatStatusLockTimer: number | null = null
 let chatStatusLockDebounceTimer: number | null = null
 let chatStatusLockInFlight = false
@@ -358,7 +443,10 @@ const pageScrollTop: Record<PageKey, number> = {
   search: 0,
   details: 0,
   tools: 0,
+  settings: 0,
 }
+
+let currentRecentStatsSignature = ""
 
 const championMap = computed(() => {
   return champions.value.reduce<Record<number, ChampionSummaryItem>>((acc, champion) => {
@@ -569,21 +657,34 @@ async function readCurrentLogicalWindowSize() {
 }
 
 async function initWindowSizeSettings() {
+  if (!isTauri()) return
+  windowSizeBusy.value = true
   try {
+    logFrontend("info", "window", `恢复启动尺寸 ${savedStartupSize.value.width}x${savedStartupSize.value.height}`)
     await setAppWindowSize(savedStartupSize.value)
-  } catch {
-    // 普通浏览器预览中没有 Tauri 窗口 API，忽略即可。
+  } catch (error) {
+    showToast({
+      kind: "error",
+      title: "启动尺寸恢复失败",
+      message: errorMessage(error),
+      duration: 7000,
+    })
+  } finally {
+    windowSizeBusy.value = false
   }
 }
 
 async function saveStartupWindowSize() {
+  if (windowSizeBusy.value) return
+  windowSizeBusy.value = true
   try {
     const nextSize = normalizeWindowSize(
       await readCurrentLogicalWindowSize(),
       savedStartupSize.value,
     )
-    savedStartupSize.value = nextSize
     localStorage.setItem(WINDOW_STARTUP_SIZE_KEY, JSON.stringify(nextSize))
+    savedStartupSize.value = nextSize
+    logFrontend("info", "window", `启动尺寸已保存 ${nextSize.width}x${nextSize.height}`)
     showToast({
       kind: "success",
       title: "当前大小已保存",
@@ -596,27 +697,39 @@ async function saveStartupWindowSize() {
       message: errorMessage(error),
       duration: 7000,
     })
+  } finally {
+    windowSizeBusy.value = false
   }
 }
 
 async function resetStartupWindowSize() {
-  savedStartupSize.value = { ...DEFAULT_WINDOW_SIZE }
-  localStorage.removeItem(WINDOW_STARTUP_SIZE_KEY)
-
+  if (windowSizeBusy.value) return
+  windowSizeBusy.value = true
+  let resetSaved = false
   try {
+    localStorage.removeItem(WINDOW_STARTUP_SIZE_KEY)
+    savedStartupSize.value = { ...DEFAULT_WINDOW_SIZE }
+    resetSaved = true
     await setAppWindowSize(DEFAULT_WINDOW_SIZE)
+    logFrontend("info", "window", "启动尺寸已重置")
     showToast({ kind: "success", title: "启动尺寸已重置", message: `${DEFAULT_WINDOW_SIZE.width} × ${DEFAULT_WINDOW_SIZE.height}` })
   } catch (error) {
     showToast({
-      kind: "info",
-      title: "启动尺寸已重置",
-      message: `当前窗口暂时未调整成功，下次启动生效：${errorMessage(error)}`,
+      kind: resetSaved ? "info" : "error",
+      title: resetSaved ? "启动尺寸已重置" : "启动尺寸重置失败",
+      message: resetSaved
+        ? `默认大小已保存，但当前窗口调整失败：${errorMessage(error)}`
+        : errorMessage(error),
       duration: 7000,
     })
+  } finally {
+    windowSizeBusy.value = false
   }
 }
 
 function showToast(toast: ToastPayload) {
+  if (toast.kind === "error") reportFrontendError("notification", toast.message || toast.title)
+  else if (toast.kind === "warning") logFrontend("warn", "notification", `${toast.title} ${toast.message || ""}`)
   const id = ++nextToastId
   toasts.value = [{ ...toast, id }, ...toasts.value].slice(0, 4)
   return id
@@ -1042,6 +1155,8 @@ function createOverviewTab(payload: Extract<DrillHistoryPayload, { type: "overvi
     sgpServerId: payload.sgpServerId,
     detail: null,
     loading: true,
+    premadeLoading: false,
+    rankedLoading: false,
     error: "",
   }
 
@@ -1111,7 +1226,13 @@ async function openOverviewTab(payload: OpenMatchPayload) {
 }
 
 async function loadOverviewTabDetail(id: string, gameId: number, sgpServerId?: string) {
-  updateOverviewTab(id, { detail: null, loading: true, error: "" })
+  updateOverviewTab(id, {
+    detail: null,
+    loading: true,
+    premadeLoading: false,
+    rankedLoading: false,
+    error: "",
+  })
 
   try {
     const detail = await withTimeout(
@@ -1119,10 +1240,177 @@ async function loadOverviewTabDetail(id: string, gameId: number, sgpServerId?: s
       20_000,
       "对局详情读取超时，请稍后重试",
     )
-    updateOverviewTab(id, { detail, loading: false, error: "" })
+    updateOverviewTab(id, {
+      detail,
+      loading: false,
+      premadeLoading: true,
+      rankedLoading: true,
+      error: "",
+    })
+    void loadOverviewTabPremades(id, gameId, sgpServerId)
+    void loadOverviewTabRanks(id, sgpServerId, detail)
   } catch (error) {
-    updateOverviewTab(id, { error: errorMessage(error), loading: false })
+    updateOverviewTab(id, {
+      error: errorMessage(error),
+      loading: false,
+      premadeLoading: false,
+      rankedLoading: false,
+    })
   }
+}
+
+async function loadOverviewTabPremades(
+  id: string,
+  gameId: number,
+  sgpServerId: string | undefined,
+) {
+  try {
+    const detailWithPremades = await withTimeout(
+      loadMatchDetailPremades(gameId, sgpServerId),
+      60_000,
+      "组队信息读取超时",
+    )
+    updateOverviewTabDetail(id, (detail) => mergePremadeMarkers(detail, detailWithPremades))
+    updateOverviewTab(id, { premadeLoading: false })
+  } catch {
+    // 组队识别只是附加信息，失败时保留已经展示的基础详情。
+    updateOverviewTab(id, { premadeLoading: false })
+  }
+}
+
+async function loadOverviewTabRanks(
+  id: string,
+  sgpServerId: string | undefined,
+  baseDetail: MatchDetailResponse,
+) {
+  const players = baseDetail.teams
+    .flatMap((team) => team.players)
+    .filter((player) => player.puuid.trim())
+
+  if (!players.length) {
+    updateOverviewTab(id, { rankedLoading: false })
+    return
+  }
+
+  let nextIndex = 0
+  const worker = async () => {
+    while (true) {
+      const player = players[nextIndex]
+      nextIndex += 1
+      if (!player) return
+
+      let ranked: RankedStatsResponse
+      try {
+        ranked = await withTimeout(
+          loadRankedStats(player.puuid, sgpServerId),
+          20_000,
+          "玩家段位读取超时",
+        )
+      } catch {
+        // 附加段位读取失败不影响详情主体，统一显示为不可读取的跨服状态。
+        ranked = unavailableRankedStats("不同服")
+      }
+
+      updateOverviewTabDetail(id, (detail) => mergePlayerRankedStats(detail, player.puuid, ranked))
+    }
+  }
+
+  const workerCount = Math.min(4, players.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  updateOverviewTab(id, { rankedLoading: false })
+}
+
+function unavailableRankedStats(reason: string): RankedStatsResponse {
+  const emptyQueue = {
+    queueType: "",
+    tier: "",
+    division: "",
+    highestTier: "",
+    highestDivision: "",
+    previousSeasonHighestTier: "",
+    previousSeasonHighestDivision: "",
+    previousSeasonEndTier: "",
+    previousSeasonEndDivision: "",
+    leaguePoints: 0,
+    wins: 0,
+    losses: 0,
+    isProvisional: false,
+  }
+
+  return {
+    queueMap: {
+      RANKED_SOLO_5x5: { ...emptyQueue },
+      RANKED_FLEX_SR: { ...emptyQueue },
+    },
+    unavailableReason: reason,
+  }
+}
+
+function mergePremadeMarkers(baseDetail: MatchDetailResponse, detailWithPremades: MatchDetailResponse) {
+  const metadataByPuuid = new Map(
+    detailWithPremades.teams
+      .flatMap((team) => team.players)
+      .map((player) => [
+        player.puuid.trim().toLowerCase(),
+        { premade: player.premade, summonerLevel: player.summonerLevel },
+      ] as const),
+  )
+  return {
+    ...baseDetail,
+    teams: baseDetail.teams.map((team) => ({
+      ...team,
+      players: team.players.map((player) => ({
+        ...player,
+        premade: metadataByPuuid.get(player.puuid.trim().toLowerCase())?.premade,
+        summonerLevel:
+          metadataByPuuid.get(player.puuid.trim().toLowerCase())?.summonerLevel ?? player.summonerLevel,
+      })),
+    })),
+  }
+}
+
+function mergePlayerRankedStats(
+  detail: MatchDetailResponse,
+  puuid: string,
+  rankedStats: RankedStatsResponse,
+) {
+  const targetPuuid = puuid.trim().toLowerCase()
+  return {
+    ...detail,
+    teams: detail.teams.map((team) => ({
+      ...team,
+      players: team.players.map((player) =>
+        player.puuid.trim().toLowerCase() === targetPuuid
+          ? { ...player, rankedStats }
+          : player,
+      ),
+    })),
+  }
+}
+
+function updateOverviewTabDetail(
+  id: string,
+  update: (detail: MatchDetailResponse) => MatchDetailResponse,
+) {
+  const index = drillTabs.value.findIndex((tab) => tab.id === id)
+  if (index >= 0) {
+    const tab = drillTabs.value[index]
+    if (tab.type === "overview" && tab.detail) {
+      drillTabs.value[index] = {
+        ...tab,
+        detail: update(tab.detail),
+      } as OverviewDrillTab
+      return
+    }
+  }
+
+  const cached = hiddenDrillTabCache.get(id)
+  if (!cached || cached.tab.type !== "overview" || !cached.tab.detail) return
+
+  cached.tab = {
+    ...cached.tab,
+    detail: update(cached.tab.detail),
+  } as OverviewDrillTab
 }
 
 function updateOverviewTab(id: string, patch: Partial<OverviewDrillTab>) {
@@ -1478,29 +1766,98 @@ async function handleLocalApiRequest(request: LocalApiRequestPayload) {
   }
 }
 
-async function loadCurrentRecent(forceRefresh = false, previousLoaded?: number) {
+async function loadCurrentRecent(
+  forceRefresh = false,
+  previousLoaded?: number,
+  options: CurrentRecentLoadOptions = {},
+) {
   if (currentRecentLoading.value) return false
-  if (forceRefresh) refreshGameTitleSelection()
+  const requestGeneration = ++currentRecentRequestGeneration
+  const silent = options.silent ?? false
+  const refreshPresentation = options.refreshPresentation ?? true
+  const refreshRanked = options.refreshRanked ?? true
+  if (forceRefresh && refreshPresentation) refreshGameTitleSelection()
+  const hadPreviousStats = Boolean(currentRecentStats.value)
+  const previousStatsDepth = currentRecentStats.value?.depthLoaded ?? 0
   currentRecentLoading.value = true
   currentError.value = ""
   try {
     await ensureClientReady()
-    if (forceRefresh) currentRankedStats.value = null
-    void loadCurrentRanked()
-    const stats = await loadSelfStats(currentRecentDepth.value, forceRefresh)
-    currentRecentStats.value = stats
+    if (forceRefresh && refreshRanked) currentRankedStats.value = null
+    if (refreshRanked || !currentRankedStats.value) void loadCurrentRanked()
+    const stats = forceRefresh || !currentRecentStats.value
+      ? await refreshSelfRecentStats(currentRecentDepth.value)
+      : await loadSelfStats(currentRecentDepth.value, false)
+    if (requestGeneration !== currentRecentRequestGeneration) return false
+
+    const nextSignature = buildCurrentRecentStatsSignature(stats)
+    const statsChanged = !currentRecentStats.value || nextSignature !== currentRecentStatsSignature
+    if (statsChanged) {
+      currentRecentStats.value = currentRecentStats.value
+        ? mergeCurrentRecentStats(currentRecentStats.value, stats)
+        : stats
+      currentRecentStatsSignature = nextSignature
+    }
     if (typeof previousLoaded === "number" && stats.depthLoaded <= previousLoaded) {
       currentRecentHasMore.value = false
-    } else if (stats.depthLoaded > previousLoaded! || forceRefresh) {
+    } else if (
+      !hadPreviousStats ||
+      (statsChanged && stats.depthLoaded > previousStatsDepth)
+    ) {
       currentRecentHasMore.value = currentRecentDepth.value < MAX_RECENT_DEPTH
     }
     return true
   } catch (error) {
-    currentError.value = errorMessage(error)
-    notifyError("当前战绩读取失败", error)
+    if (!silent) {
+      currentError.value = errorMessage(error)
+      notifyError("当前战绩读取失败", error)
+    }
     return false
   } finally {
     currentRecentLoading.value = false
+  }
+}
+
+function buildCurrentRecentStatsSignature(stats: PlayerStatsResponse) {
+  return JSON.stringify({
+    depthLoaded: stats.depthLoaded,
+    depthRequested: stats.depthRequested,
+    summary: stats.summary,
+    recentGames: stats.recentGames,
+  })
+}
+
+function currentRecentGameSignature(game: RecentGame) {
+  return JSON.stringify(game)
+}
+
+function mergeCurrentRecentStats(
+  previous: PlayerStatsResponse,
+  next: PlayerStatsResponse,
+): PlayerStatsResponse {
+  const previousGamesById = new Map(
+    previous.recentGames
+      .filter((game) => game.gameId !== 0)
+      .map((game) => [game.gameId, game] as const),
+  )
+  let allGamesReused = previous.recentGames.length === next.recentGames.length
+  const recentGames = next.recentGames.map((game, index) => {
+    const previousGame = previousGamesById.get(game.gameId)
+    if (
+      previousGame &&
+      currentRecentGameSignature(previousGame) === currentRecentGameSignature(game)
+    ) {
+      if (previous.recentGames[index] !== previousGame) allGamesReused = false
+      return previousGame
+    }
+
+    allGamesReused = false
+    return game
+  })
+
+  return {
+    ...next,
+    recentGames: allGamesReused ? previous.recentGames : recentGames,
   }
 }
 
@@ -1906,6 +2263,201 @@ function updateLiveHexWinrateCaptureMode() {
   })
 }
 
+async function updateLiveHexWinrateDetectionMode(mode: LiveHexWinrateDetectionMode) {
+  if (liveHexWinrateDetectionModeChanging.value || mode === liveHexWinrateDetectionMode.value) return
+  liveHexWinrateDetectionModeChanging.value = true
+  try {
+    await setHexWinrateDetectionMode(mode)
+    liveHexWinrateDetectionMode.value = mode
+    writeLiveHexWinrateDetectionMode(mode)
+  } catch (error) {
+    notifyError("海克斯检测方案切换失败", error)
+  } finally {
+    liveHexWinrateDetectionModeChanging.value = false
+  }
+}
+
+async function initializeHexWinrateRecognition() {
+  try {
+    // 先恢复本地代理，再启动识别，避免第一次请求使用错误的网络配置。
+    await setAramkitProxy(savedAramkitProxy.value)
+    await setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value)
+    await setHexWinrateDetectionMode(liveHexWinrateDetectionMode.value)
+    await setHexWinrateRecognitionTextVisible(liveHexWinrateRecognitionTextVisible.value)
+    await setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value)
+  } catch (error) {
+    notifyError("海克斯胜率识别初始化失败", error)
+  }
+}
+
+async function updateLiveHexWinrateRecognitionTextVisible() {
+  const visible = liveHexWinrateRecognitionTextVisible.value
+  liveHexWinrateRecognitionTextChanging.value = true
+  try {
+    await setHexWinrateRecognitionTextVisible(visible)
+    writeBooleanSetting(LIVE_HEX_WINRATE_RECOGNITION_TEXT_VISIBLE_KEY, visible)
+  } catch (error) {
+    liveHexWinrateRecognitionTextVisible.value = !visible
+    notifyError("海克斯识别结果显示切换失败", error)
+  } finally {
+    liveHexWinrateRecognitionTextChanging.value = false
+  }
+}
+
+function applyRuntimeLogStatus(status: RuntimeLogStatus) {
+  runtimeLogStatus.value = status
+  runtimeLogError.value = ""
+  if (detailedLoggingExpiryTimer !== null) window.clearTimeout(detailedLoggingExpiryTimer)
+  detailedLoggingExpiryTimer = null
+  if (status.detailedEnabled && status.detailedUntilMs) {
+    detailedLoggingExpiryTimer = window.setTimeout(() => {
+      detailedLoggingExpiryTimer = null
+      if (runtimeLogStatus.value) {
+        runtimeLogStatus.value = { ...runtimeLogStatus.value, detailedEnabled: false, detailedUntilMs: null }
+      }
+      void refreshRuntimeLogStatus()
+    }, Math.max(0, status.detailedUntilMs - Date.now()) + 100)
+  }
+}
+
+async function refreshRuntimeLogStatus() {
+  if (!isTauri()) return
+  try {
+    applyRuntimeLogStatus(await getRuntimeLogStatus())
+  } catch (error) {
+    runtimeLogError.value = errorMessage(error)
+  }
+}
+
+async function updateDetailedLogging(event: Event) {
+  if (runtimeLogBusy.value || !runtimeLogStatus.value) return
+  const input = event.target as HTMLInputElement
+  const enabled = input.checked
+  detailedLoggingChanging.value = true
+  try {
+    applyRuntimeLogStatus(await setDetailedLogging(enabled))
+  } catch (error) {
+    input.checked = runtimeLogStatus.value.detailedEnabled
+    notifyError("详细日志设置失败", error)
+  } finally {
+    detailedLoggingChanging.value = false
+  }
+}
+
+async function showLogDirectory() {
+  if (runtimeLogBusy.value) return
+  logDirectoryOpening.value = true
+  try {
+    await openLogDirectory()
+  } catch (error) {
+    notifyError("日志目录打开失败", error)
+  } finally {
+    logDirectoryOpening.value = false
+  }
+}
+
+async function exportLogs() {
+  if (runtimeLogBusy.value) return
+  diagnosticExporting.value = true
+  try {
+    const result = await exportDiagnosticLogs()
+    showToast({
+      kind: "success",
+      title: "诊断包已导出",
+      message: result.revealed ? "已在文件夹中选中诊断包" : result.path,
+      duration: 7000,
+    })
+    await refreshRuntimeLogStatus()
+  } catch (error) {
+    notifyError("诊断包导出失败", error)
+  } finally {
+    diagnosticExporting.value = false
+  }
+}
+
+function aramkitProxySettingsForRequest() {
+  const settings = { ...aramkitProxyDraft.value }
+  if (!isAramkitTimeoutSeconds(settings.timeoutSeconds)) {
+    throw new Error("超时时间请输入 1 到 120 之间的整数，单位为秒")
+  }
+  return settings
+}
+
+async function saveAramkitProxySettings() {
+  if (aramkitProxyBusy.value || !aramkitProxyDirty.value) return
+  aramkitProxySaving.value = true
+  aramkitProxyResult.value = null
+  try {
+    const settings = await setAramkitProxy(aramkitProxySettingsForRequest())
+    try {
+      writeAramkitProxySettings(settings)
+    } catch {
+      showToast({
+        kind: "warning",
+        title: "代理配置仅在本次运行生效",
+        message: "本地保存失败，下次启动仍会使用原配置，请重试保存。",
+      })
+      return
+    }
+    savedAramkitProxy.value = { ...settings }
+    aramkitProxyDraft.value = { ...settings }
+    showToast({ kind: "success", title: "ARAMKit 代理设置已保存" })
+    await setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
+      notifyError("代理设置已保存，但胜率识别启动失败", error)
+    })
+  } catch (error) {
+    aramkitProxyResult.value = { kind: "error", message: errorMessage(error) }
+  } finally {
+    aramkitProxySaving.value = false
+  }
+}
+
+async function testAramkitProxyConnection() {
+  if (aramkitProxyBusy.value) return
+  aramkitProxyTesting.value = true
+  aramkitProxyResult.value = null
+  aramkitProxyReport.value = ""
+  aramkitProxyTestSeconds.value = 0
+  const startedAt = Date.now()
+  const timer = window.setInterval(() => {
+    aramkitProxyTestSeconds.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 1000)
+  try {
+    const result = await testAramkitConnection(aramkitProxySettingsForRequest())
+    aramkitProxyReport.value = result.report
+    aramkitProxyResult.value = {
+      kind: result.outcome,
+      message: `${result.summary}\n耗时 ${(result.elapsedMs / 1000).toFixed(1)} 秒`,
+    }
+  } catch (error) {
+    const message = errorMessage(error)
+    aramkitProxyResult.value = { kind: "error", message }
+    aramkitProxyReport.value = [
+      "ARAMKit 连接诊断未完成",
+      `时间：${new Date(startedAt).toISOString()}`,
+      `软件版本：${appCurrentVersion.value || "未知"}`,
+      `耗时：${Date.now() - startedAt} ms`,
+      message,
+    ].join("\n")
+  } finally {
+    window.clearInterval(timer)
+    aramkitProxyTesting.value = false
+  }
+}
+
+async function copyAramkitProxyResult() {
+  if (!aramkitProxyReport.value || aramkitProxyBusy.value || aramkitProxyCopying.value) return
+  aramkitProxyCopying.value = true
+  try {
+    await copyTextToClipboard(aramkitProxyReport.value)
+    showToast({ kind: "success", title: "连接诊断结果已复制" })
+  } catch (error) {
+    notifyError("诊断结果复制失败", error)
+  } finally {
+    aramkitProxyCopying.value = false
+  }
+}
+
 function startLiveAutoRefresh() {
   if (liveRefreshTimer !== null) return
   void refreshLiveGame({ silent: Boolean(liveGame.value), switchPage: false })
@@ -1941,6 +2493,50 @@ function isChatStatusLockPaused(phase = gameflowPhase.value, availability = "") 
     CHAT_STATUS_LOCK_PAUSED_PHASES.has(phase) ||
     availability.trim().toLocaleLowerCase("en-US") === "spectating"
   )
+}
+
+function clearCurrentRecentAutoRefreshSchedule() {
+  currentRecentAutoRefreshGeneration += 1
+  for (const timer of currentRecentAutoRefreshTimers) {
+    window.clearTimeout(timer)
+  }
+  currentRecentAutoRefreshTimers = []
+}
+
+function scheduleCurrentRecentAutoRefresh(delays: number[]) {
+  clearCurrentRecentAutoRefreshSchedule()
+  const generation = currentRecentAutoRefreshGeneration
+
+  for (const delay of delays) {
+    const timer = window.setTimeout(() => {
+      currentRecentAutoRefreshTimers = currentRecentAutoRefreshTimers.filter(
+        (scheduledTimer) => scheduledTimer !== timer,
+      )
+      if (generation !== currentRecentAutoRefreshGeneration) return
+      if (!currentRecentStats.value && activePage.value !== "current") return
+
+      // 阶段刷新只走最近对局的轻量探测；失败时保留当前页面，不阻塞正常界面。
+      void loadCurrentRecent(true, undefined, {
+        silent: true,
+        refreshPresentation: false,
+        refreshRanked: false,
+      })
+    }, delay)
+    currentRecentAutoRefreshTimers.push(timer)
+  }
+}
+
+function scheduleCurrentRecentAutoRefreshForPhase(
+  phase: string | null,
+  previousPhase: string | null,
+) {
+  // 只有进入 EndOfGame 时请求一次，WaitingForStats 和 PreEndOfGame 不触发刷新。
+  if (phase === "EndOfGame" && previousPhase !== "EndOfGame") {
+    scheduleCurrentRecentAutoRefresh([0])
+    return
+  }
+
+  if (!phase) clearCurrentRecentAutoRefreshSchedule()
 }
 
 function scheduleChatStatusLockSync(delay = CHAT_STATUS_LOCK_DEBOUNCE_MS) {
@@ -2010,27 +2606,45 @@ function stopChatStatusLockWatcher() {
 }
 
 async function checkGameflowForAutoLive() {
-  const phase = await loadGameflowPhase().catch(() => null)
-  const phaseChanged = gameflowPhase.value !== phase
-  gameflowPhase.value = phase
-  if (phaseChanged) scheduleChatStatusLockSync()
-  void checkAutoAccept(phase)
-  const shouldOpen = shouldAutoOpenLive(phase)
+  if (gameflowCheckInFlight) return
+  gameflowCheckInFlight = true
 
-  if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
-    liveError.value = ""
+  try {
+    let phase: string | null
+    try {
+      phase = await loadGameflowPhase()
+    } catch {
+      // 阶段探测失败时保留上一次阶段，避免网络抖动取消待执行的刷新重试。
+      return
+    }
+    const previousPhase = gameflowPhase.value
+    const phaseChanged = previousPhase !== phase
+    gameflowPhase.value = phase
+    if (phaseChanged) {
+      logFrontend("info", "gameflow", `游戏阶段 ${previousPhase || "未连接"} -> ${phase || "未连接"}`)
+      scheduleChatStatusLockSync()
+      scheduleCurrentRecentAutoRefreshForPhase(phase, previousPhase)
+    }
+    void checkAutoAccept(phase)
+    const shouldOpen = shouldAutoOpenLive(phase)
+
+    if ((!phase || !LIVE_DATA_PHASES.has(phase)) && !liveGame.value) {
+      liveError.value = ""
+    }
+
+    if (!shouldOpen) {
+      autoLiveSessionActive = false
+      return
+    }
+
+    if (autoLiveSessionActive) return
+    autoLiveSessionActive = true
+
+    navigateToPage("live")
+    void refreshLiveGame({ silent: true, switchPage: false })
+  } finally {
+    gameflowCheckInFlight = false
   }
-
-  if (!shouldOpen) {
-    autoLiveSessionActive = false
-    return
-  }
-
-  if (autoLiveSessionActive) return
-  autoLiveSessionActive = true
-
-  navigateToPage("live")
-  void refreshLiveGame({ silent: true, switchPage: false })
 }
 
 async function checkAutoAccept(phase?: string | null) {
@@ -2064,9 +2678,11 @@ function startGameflowWatcher() {
 }
 
 function stopGameflowWatcher() {
-  if (gameflowWatchTimer === null) return
-  window.clearInterval(gameflowWatchTimer)
-  gameflowWatchTimer = null
+  if (gameflowWatchTimer !== null) {
+    window.clearInterval(gameflowWatchTimer)
+    gameflowWatchTimer = null
+  }
+  clearCurrentRecentAutoRefreshSchedule()
 }
 
 watch([chatStatusLockEnabled, chatStatusLockAvailability], () => {
@@ -2079,6 +2695,11 @@ watch([chatStatusLockEnabled, chatStatusLockAvailability], () => {
 })
 
 watch(activePage, (page, previousPage) => {
+  logFrontend("debug", "navigation", `页面 ${previousPage} -> ${page}`)
+  if (page === "settings") void refreshRuntimeLogStatus()
+  if (previousPage === "current" && page !== "current") {
+    currentRecentRequestGeneration += 1
+  }
   if (previousPage) savePageScroll(previousPage)
   void restorePageScroll(page)
 
@@ -2089,24 +2710,31 @@ watch(activePage, (page, previousPage) => {
   }
 })
 
+watch(
+  () => [
+    aramkitProxyDraft.value.enabled,
+    aramkitProxyDraft.value.address,
+    aramkitProxyDraft.value.wtlsEnabled,
+    aramkitProxyDraft.value.timeoutSeconds,
+  ],
+  () => { aramkitProxyResult.value = null },
+)
+
 onMounted(async () => {
+  void refreshRuntimeLogStatus()
+  // 窗口恢复独立于战绩与本地接口初始化，避免被无关请求中断。
+  void initWindowSizeSettings()
   unlistenLocalApi = await listen<LocalApiRequestPayload>("local-api-request", (event) => {
     void handleLocalApiRequest(event.payload)
   })
   await setLocalApiFrontendReady(true).catch(() => {})
 
   // 优先启动局内识别，避免更新检查或其他启动请求拖延英雄胜率总表加载。
-  void setHexWinrateCaptureMode(liveHexWinrateCaptureMode.value).catch((error) => {
-    notifyError("海克斯截图模式初始化失败", error)
-  })
-  void setHexWinrateRecognitionEnabled(liveHexWinrateRecognitionEnabled.value).catch((error) => {
-    notifyError("海克斯胜率识别初始化失败", error)
-  })
+  void initializeHexWinrateRecognition()
   void setQuickBenchSwapEnabled(readBooleanSetting(QUICK_BENCH_SWAP_ENABLED_KEY)).catch((error) => {
     notifyError("快速交换备战英雄初始化失败", error)
   })
 
-  void initWindowSizeSettings()
   void initializeGlobalBaselineData()
   await initAppVersionAndReleaseNotes()
   startGameflowWatcher()
@@ -2122,6 +2750,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (detailedLoggingExpiryTimer !== null) window.clearTimeout(detailedLoggingExpiryTimer)
+  void flushFrontendLogs()
   unlistenProgress?.()
   unlistenLocalApi?.()
   void setLocalApiFrontendReady(false).catch(() => {})
@@ -2172,7 +2802,13 @@ onUnmounted(() => {
           <Sun v-if="darkModeEnabled" :size="18" />
           <Moon v-else :size="18" />
         </button>
-        <button class="settings-entry" @click="settingsOpen = true">
+        <button
+          class="settings-entry"
+          :class="{ active: activePage === 'settings' }"
+          :aria-current="activePage === 'settings' ? 'page' : undefined"
+          aria-controls="settings-page"
+          @click="navigateToPage('settings')"
+        >
           <Settings :size="18" />
           设置
         </button>
@@ -2206,6 +2842,8 @@ onUnmounted(() => {
             :game="activeDrillTab.game"
             :match-detail="activeDrillTab.detail"
             :loading="activeDrillTab.loading"
+            :premade-loading="activeDrillTab.premadeLoading"
+            :ranked-loading="activeDrillTab.rankedLoading"
             :error="activeDrillTab.error"
             :champions="championMap"
             :game-assets="gameAssets"
@@ -2419,28 +3057,15 @@ onUnmounted(() => {
           </template>
         </RecordView>
       </section>
-    </section>
 
-    <div class="progress-overlay" v-if="progressOverlay.visible">
-      <div class="progress-modal">
-        <div class="progress-ring" :style="progressRingStyle">
-          <div>
-            <strong>{{ progressOverlay.loaded }}</strong>
-            <span>/{{ progressOverlay.total }}</span>
-          </div>
-        </div>
-        <button @click="cancelProgress">取消</button>
-      </div>
-    </div>
-
-    <div class="settings-overlay" v-if="settingsOpen" @click.self="settingsOpen = false">
-      <section class="settings-modal">
-        <header>
-          <div>
-            <span>软件设置</span>
-            <strong>界面与截图</strong>
-          </div>
-          <button @click="settingsOpen = false">关闭</button>
+      <section
+        id="settings-page"
+        class="settings-page"
+        v-show="activePage === 'settings'"
+        aria-labelledby="settings-page-title"
+      >
+        <header class="page-header">
+          <h2 id="settings-page-title">设置</h2>
         </header>
 
         <section class="settings-section">
@@ -2450,8 +3075,14 @@ onUnmounted(() => {
           </div>
 
           <div class="settings-actions">
-            <button @click="saveStartupWindowSize">保存当前大小</button>
-            <button @click="resetStartupWindowSize">重置</button>
+            <button :disabled="windowSizeBusy" @click="saveStartupWindowSize">
+              <Save :size="16" />
+              保存当前大小
+            </button>
+            <button :disabled="windowSizeBusy" @click="resetStartupWindowSize">
+              <RotateCcw :size="16" />
+              重置
+            </button>
           </div>
         </section>
 
@@ -2518,7 +3149,7 @@ onUnmounted(() => {
         <section class="settings-section">
           <div class="settings-section-title">
             <span>局内识别</span>
-            <strong>海克斯截图模式</strong>
+            <strong>海克斯识别</strong>
           </div>
 
           <label class="settings-select">
@@ -2530,8 +3161,188 @@ onUnmounted(() => {
               <option value="desktop-dc">桌面 DC（兼容模式，受前台遮挡影响）</option>
             </select>
           </label>
+
+          <div class="settings-detection-mode">
+            <span id="hex-detection-mode-label">检测方案</span>
+            <div class="settings-mode-options" role="group" aria-labelledby="hex-detection-mode-label">
+              <button
+                type="button"
+                :aria-pressed="liveHexWinrateDetectionMode === 'compatibility'"
+                :disabled="liveHexWinrateDetectionModeChanging"
+                @click="updateLiveHexWinrateDetectionMode('compatibility')"
+              >兼容方案</button>
+              <button
+                type="button"
+                :aria-pressed="liveHexWinrateDetectionMode === 'high-precision'"
+                :disabled="liveHexWinrateDetectionModeChanging"
+                @click="updateLiveHexWinrateDetectionMode('high-precision')"
+              >高精度方案</button>
+            </div>
+          </div>
+
+          <label class="settings-toggle">
+            <span>显示海克斯识别结果</span>
+            <input
+              v-model="liveHexWinrateRecognitionTextVisible"
+              type="checkbox"
+              :disabled="liveHexWinrateRecognitionTextChanging"
+              @change="updateLiveHexWinrateRecognitionTextVisible"
+            />
+          </label>
+        </section>
+
+        <section class="settings-section" aria-labelledby="runtime-log-title">
+          <div class="settings-section-title">
+            <span>运行诊断</span>
+            <strong id="runtime-log-title">日志</strong>
+          </div>
+          <label class="settings-toggle">
+            <span>详细日志（10 分钟）</span>
+            <input
+              type="checkbox"
+              :checked="runtimeLogStatus?.detailedEnabled ?? false"
+              :disabled="runtimeLogBusy || !runtimeLogStatus"
+              @change="updateDetailedLogging"
+            />
+          </label>
+          <div class="settings-actions">
+            <button
+              type="button"
+              :disabled="runtimeLogBusy || !runtimeLogStatus"
+              @click="showLogDirectory"
+            >
+              <LoaderCircle v-if="logDirectoryOpening" class="spin" :size="16" />
+              <FolderOpen v-else :size="16" />
+              打开日志目录
+            </button>
+            <button
+              type="button"
+              :disabled="runtimeLogBusy || !runtimeLogStatus"
+              @click="exportLogs"
+            >
+              <LoaderCircle v-if="diagnosticExporting" class="spin" :size="16" />
+              <Download v-else :size="16" />
+              {{ diagnosticExporting ? "导出中" : "导出诊断包" }}
+            </button>
+          </div>
+          <p v-if="runtimeLogError || runtimeLogStatus?.writeError" class="settings-proxy-result error" role="status">
+            {{ runtimeLogError || `上次日志写入异常：${runtimeLogStatus?.writeError}` }}
+          </p>
+          <p v-if="runtimeLogStatus?.droppedLines" class="settings-log-status" role="status">
+            日志队列繁忙，已丢弃 {{ runtimeLogStatus.droppedLines }} 条。
+          </p>
+        </section>
+
+        <section class="settings-section" aria-labelledby="aramkit-proxy-title">
+          <div class="settings-section-title">
+            <span>ARAMKit 胜率数据</span>
+            <strong id="aramkit-proxy-title">本地代理</strong>
+          </div>
+
+          <label class="settings-toggle">
+            <span>使用本地代理</span>
+            <input
+              v-model="aramkitProxyDraft.enabled"
+              type="checkbox"
+              :disabled="aramkitProxyBusy"
+            />
+          </label>
+
+          <label class="settings-proxy-address">
+            <span>HTTP 代理地址</span>
+            <input
+              v-model="aramkitProxyDraft.address"
+              type="url"
+              :placeholder="DEFAULT_ARAMKIT_PROXY_ADDRESS"
+              :disabled="!aramkitProxyDraft.enabled || aramkitProxyBusy"
+              autocomplete="off"
+              spellcheck="false"
+              @keydown.enter.prevent="saveAramkitProxySettings"
+            />
+          </label>
+
+          <label class="settings-toggle">
+            <span>启用 WTLS</span>
+            <input
+              v-model="aramkitProxyDraft.wtlsEnabled"
+              type="checkbox"
+              :disabled="aramkitProxyBusy"
+            />
+          </label>
+
+          <label class="settings-proxy-timeout">
+            <span>超时时间</span>
+            <span class="settings-input-unit">
+              <input
+                v-model.number="aramkitProxyDraft.timeoutSeconds"
+                type="number"
+                min="1"
+                max="120"
+                step="1"
+                aria-label="超时时间，单位秒"
+                :disabled="!aramkitProxyDraft.wtlsEnabled || aramkitProxyBusy"
+                @keydown.enter.prevent="saveAramkitProxySettings"
+              />
+              <span>s</span>
+            </span>
+          </label>
+
+          <div class="settings-actions settings-proxy-actions">
+            <button
+              type="button"
+              class="proxy-copy"
+              :disabled="aramkitProxyBusy || aramkitProxyCopying || !aramkitProxyReport"
+              @click="copyAramkitProxyResult"
+            >
+              <LoaderCircle v-if="aramkitProxyCopying" class="spin" :size="15" />
+              <Copy v-else :size="15" />
+              复制结果
+            </button>
+            <button
+              type="button"
+              class="proxy-test"
+              :disabled="aramkitProxyBusy"
+              @click="testAramkitProxyConnection"
+            >
+              <LoaderCircle v-if="aramkitProxyTesting" class="spin" :size="15" />
+              <PlugZap v-else :size="15" />
+              {{ aramkitProxyTesting ? "测试中" : "测试连接" }}
+            </button>
+            <button
+              type="button"
+              class="proxy-save"
+              :disabled="aramkitProxyBusy || !aramkitProxyDirty"
+              @click="saveAramkitProxySettings"
+            >
+              <LoaderCircle v-if="aramkitProxySaving" class="spin" :size="15" />
+              <Save v-else :size="15" />
+              保存
+            </button>
+          </div>
+          <p v-if="aramkitProxyTesting" class="settings-log-status" role="status">
+            连接诊断中 · {{ aramkitProxyTestSeconds }} 秒
+          </p>
+          <p
+            v-else-if="aramkitProxyResult"
+            :class="['settings-proxy-result', aramkitProxyResult.kind]"
+            role="status"
+          >
+            {{ aramkitProxyResult.message }}
+          </p>
         </section>
       </section>
+    </section>
+
+    <div class="progress-overlay" v-if="progressOverlay.visible">
+      <div class="progress-modal">
+        <div class="progress-ring" :style="progressRingStyle">
+          <div>
+            <strong>{{ progressOverlay.loaded }}</strong>
+            <span>/{{ progressOverlay.total }}</span>
+          </div>
+        </div>
+        <button @click="cancelProgress">取消</button>
+      </div>
     </div>
 
     <div class="release-notes-overlay" v-if="releaseNotesDialog">
@@ -2754,7 +3565,8 @@ button:disabled {
   padding: 0 8px 2px;
 }
 
-.side-nav button.active {
+.side-nav button.active,
+.settings-entry.active {
   color: #12312b;
   background: #dfecea;
 }
@@ -3259,61 +4071,45 @@ button:disabled {
   padding: 10px 18px;
 }
 
-.settings-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1300;
-  display: grid;
-  place-items: center;
-  background: rgba(20, 35, 38, 0.32);
-  backdrop-filter: blur(8px);
-}
-
-.settings-modal {
+.settings-page {
   display: flex;
-  width: 460px;
+  width: 100%;
+  max-width: 960px;
+  min-width: 0;
+  box-sizing: border-box;
   flex-direction: column;
-  gap: 14px;
-  border: 1px solid #d6e5e1;
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 24px 70px rgba(18, 42, 46, 0.24);
-  padding: 16px;
+  gap: 20px;
+  padding-bottom: 24px;
 }
 
-.settings-modal header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+.settings-page > .page-header {
+  margin-bottom: 0;
 }
 
-.settings-modal header div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.settings-modal header span,
-.settings-modal label span,
 .settings-section-title span {
   color: #718087;
   font-size: 12px;
   font-weight: 800;
 }
 
-.settings-modal header strong,
+.settings-page label > span,
+.settings-detection-mode > span {
+  color: #52656b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .settings-section-title strong {
   color: #1f2a2e;
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid #edf3f1;
-  padding-top: 12px;
+  gap: 12px;
+  border-top: 1px solid #dce7e4;
+  padding-top: 18px;
 }
 
 .settings-section-title {
@@ -3322,31 +4118,17 @@ button:disabled {
   gap: 3px;
 }
 
-.settings-section-title strong {
-  font-size: 15px;
-}
-
-.settings-modal header button {
-  border-radius: 8px;
-  color: #315f58;
-  background: #edf5f3;
-  cursor: pointer;
-  padding: 8px 10px;
-  font-weight: 800;
-}
-
-.settings-modal label {
+.settings-page label,
+.settings-detection-mode {
   display: flex;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  border: 1px solid #dce7e4;
-  border-radius: 8px;
-  background: #f7fbfa;
-  padding: 10px 12px;
+  padding: 8px 0;
 }
 
-.settings-modal input {
+.settings-page input {
   width: 92px;
   border: 1px solid #cddfdc;
   border-radius: 7px;
@@ -3357,8 +4139,10 @@ button:disabled {
   font-weight: 800;
 }
 
-.settings-modal select {
-  min-width: 190px;
+.settings-page select {
+  width: 360px;
+  max-width: 100%;
+  min-width: 0;
   border: 1px solid #cddfdc;
   border-radius: 7px;
   outline: 0;
@@ -3368,19 +4152,64 @@ button:disabled {
   font-weight: 800;
 }
 
-.settings-modal .settings-select {
+.settings-page .settings-select {
   align-items: center;
+  flex-wrap: wrap;
 }
 
-.settings-modal input[type="checkbox"] {
+.settings-detection-mode {
+  flex-wrap: wrap;
+}
+
+.settings-mode-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  min-width: 220px;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid #cddfdc;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.settings-mode-options button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  color: #526863;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-mode-options button[aria-pressed="true"] {
+  color: #ffffff;
+  background: #1f6f62;
+}
+
+.settings-mode-options button:focus-visible {
+  outline: 2px solid #1f6f62;
+  outline-offset: 1px;
+}
+
+.settings-mode-options button:disabled {
+  cursor: wait;
+}
+
+.settings-page input[type="checkbox"] {
   width: 18px;
   height: 18px;
   accent-color: #1f5f56;
   cursor: pointer;
 }
 
-.settings-modal .settings-range {
+.settings-page .settings-range {
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .settings-range > span {
@@ -3394,8 +4223,9 @@ button:disabled {
   font-size: 13px;
 }
 
-.settings-modal .settings-range input[type="range"] {
-  width: 230px;
+.settings-page .settings-range input[type="range"] {
+  width: 360px;
+  max-width: 100%;
   height: 20px;
   padding: 0;
   border: 0;
@@ -3407,10 +4237,16 @@ button:disabled {
 .settings-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .settings-actions button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border-radius: 8px;
   color: #ffffff;
   background: #1f6f62;
@@ -3428,6 +4264,81 @@ button:disabled {
   color: #849399;
   background: #edf1f0;
   cursor: not-allowed;
+}
+
+.settings-log-status {
+  margin: 0;
+  color: #707070;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.settings-page .settings-proxy-address {
+  flex-wrap: wrap;
+}
+
+.settings-page .settings-proxy-address input {
+  width: 360px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-weight: 500;
+}
+
+.settings-page .settings-proxy-address input:disabled,
+.settings-page .settings-proxy-timeout input:disabled {
+  color: #78858a;
+  background: #edf1f0;
+  cursor: not-allowed;
+}
+
+.settings-input-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-proxy-actions button {
+  display: inline-flex;
+  min-width: 100px;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.settings-proxy-actions .proxy-test:not(:disabled),
+.settings-proxy-actions .proxy-copy:not(:disabled) {
+  color: #315f58;
+  background: #edf5f3;
+}
+
+.settings-proxy-actions .proxy-save:not(:disabled) {
+  color: #ffffff;
+  background: #1f6f62;
+}
+
+.settings-proxy-result {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.settings-proxy-result.success {
+  color: #267545;
+}
+
+.settings-proxy-result.warning {
+  color: #855d18;
+}
+
+.settings-proxy-result.error {
+  color: #b73838;
 }
 
 .release-notes-overlay {

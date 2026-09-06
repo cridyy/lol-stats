@@ -724,6 +724,11 @@ pub struct MatchDetailPlayer {
     pub summoner_name: String,
     pub team_id: u32,
     pub player_subteam_id: u32,
+    /// 与实时战绩使用同一套规则得到的组队标记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premade: Option<LivePremadeMarker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summoner_level: Option<u32>,
     #[serde(flatten)]
     pub record: RecentGame,
 }

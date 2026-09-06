@@ -2,6 +2,7 @@ import { createApp } from "vue";
 import App from "./App.vue";
 import { applyTheme } from "./theme";
 import { DARK_MODE_ENABLED_KEY, readBooleanSetting } from "./toolSettings";
+import { installFrontendLogging } from "./logging";
 
 const FUNCTION_KEY_PATTERN = /^F([1-9]|1[0-2])$/;
 
@@ -40,4 +41,6 @@ window.addEventListener(
 );
 
 applyTheme(readBooleanSetting(DARK_MODE_ENABLED_KEY));
-createApp(App).mount("#app");
+const app = createApp(App);
+installFrontendLogging(app);
+app.mount("#app");

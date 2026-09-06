@@ -1,28 +1,34 @@
 use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{async_runtime, AppHandle, Emitter, State};
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Semaphore;
 
 use crate::services::client_discovery::discover_primary_client;
 use crate::services::error::{AppError, AppResult};
 use crate::services::global_baselines::{load_current_dataset, GlobalBaselineDataset};
+use crate::services::hex_winrate::{AramkitConnectionTest, AramkitProxySettings};
 use crate::services::lcu::{LcuClient, RiotClient};
 use crate::services::local_api::LocalApiState;
 use crate::services::models::{
     ChampSelectPlayer, ChampionSummaryItem, ChatMe, ClientAuth, ConnectionStatus, FriendToolEntry,
-    GameAssetBundle, GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer,
-    LivePremadeMarker, LiveTeam, MatchDetailResponse, PlayerEloEstimateResponse,
-    PlayerEloEstimateTaskStatus, PlayerStatsResponse, PlayerSummary, RankedQueueEntry,
-    RankedStatsResponse, RecentGame, SafeClientInfo, SummonerInfo, SummonerSearchCandidate,
+    GameAssetBundle, GameflowPlayer, GameflowSession, LiveGameResponse, LivePlayer, LiveTeam,
+    MatchDetailResponse, PlayerEloEstimateResponse, PlayerEloEstimateTaskStatus,
+    PlayerStatsResponse, PlayerSummary, RankedQueueEntry, RankedStatsResponse, RecentGame,
+    SafeClientInfo, SummonerInfo, SummonerSearchCandidate,
 };
+use crate::services::premade::assign_live_premade_markers;
+use crate::services::runtime_log::{self, FrontendLogEntry, LogStatus};
 use crate::services::stats::{
     clear_player_elo_cache as clear_player_elo_cache_service, estimate_player_elo,
-    load_cached_player_elo, load_match_detail as load_match_detail_service, load_player_stats,
+    load_cached_player_elo, load_match_detail as load_match_detail_service,
+    load_match_detail_with_premades as load_match_detail_premades_service, load_player_stats,
     load_player_stats_with_progress, load_transient_player_stats_with_progress, normalize_depth,
+    refresh_player_recent_stats,
 };
 use crate::services::tools::{
     game_settings_locked, set_game_settings_locked as set_settings_locked,
@@ -35,8 +41,6 @@ const LIVE_SCAN_BATCH_DEPTH: usize = 20;
 const LIVE_MAX_SCAN_DEPTH: usize = 150;
 const LIVE_MATCH_LIMIT: usize = 50;
 const LIVE_MIN_VALID_GAME_DURATION_SECONDS: i64 = 8 * 60;
-const PREMADE_HISTORY_THRESHOLD: usize = 3;
-const PREMADE_GROUP_IDS: [&str; 10] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 const UPDATE_MANIFEST_URL: &str = "https://gitee.com/Crescenre/lol-stats/raw/main/update.json";
 const UPDATE_DOWNLOAD_PAGE_URL: &str = "https://crescendum.lanzout.com/b00rp145sh";
 const ALL_SEARCH_SERVER_ID: &str = "ALL";
@@ -176,6 +180,60 @@ fn store_player_elo_job(status: PlayerEloEstimateTaskStatus) {
 #[tauri::command]
 pub fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
+pub fn runtime_log_status() -> Result<LogStatus, String> {
+    runtime_log::status()
+}
+
+#[tauri::command]
+pub fn set_detailed_logging(enabled: bool) -> Result<LogStatus, String> {
+    runtime_log::set_detailed(enabled)
+}
+
+#[tauri::command]
+pub fn write_frontend_logs(entries: Vec<FrontendLogEntry>) -> Result<(), String> {
+    runtime_log::write_frontend(entries)
+}
+
+#[tauri::command]
+pub async fn open_log_directory(app: AppHandle) -> Result<(), String> {
+    let directory = runtime_log::status()?.directory;
+    async_runtime::spawn_blocking(move || {
+        app.opener()
+            .open_path(directory, None::<&str>)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticExport {
+    path: String,
+    revealed: bool,
+}
+
+#[tauri::command]
+pub async fn export_diagnostic_logs(app: AppHandle) -> Result<DiagnosticExport, String> {
+    async_runtime::spawn_blocking(move || {
+        let path = runtime_log::export_diagnostics()?;
+        let revealed = match app.opener().reveal_item_in_dir(&path) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(target: "lol_stats::log", %error, "诊断包已导出，但无法打开文件所在目录");
+                false
+            }
+        };
+        Ok(DiagnosticExport {
+            path: path.to_string_lossy().into_owned(),
+            revealed,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -521,6 +579,7 @@ pub async fn connection_status() -> Result<ConnectionStatus, String> {
 pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let http = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|error| app_error(AppError::Http(error)))?;
@@ -592,6 +651,22 @@ pub async fn load_self_stats(
         force_refresh.unwrap_or(false),
         persist_cache.unwrap_or(true),
         |_, _| true,
+    )
+    .await
+    .map_err(app_error)
+}
+
+/// 轻量刷新当前战绩：先探测最近几局，只有发现变化时才重新拉取当前深度。
+#[tauri::command]
+pub async fn refresh_self_recent_stats(depth: usize) -> Result<PlayerStatsResponse, String> {
+    let clients = create_clients().map_err(app_error)?;
+    let summoner = clients.lcu.current_summoner().await.map_err(app_error)?;
+    refresh_player_recent_stats(
+        &clients.lcu,
+        Some(&clients.auth),
+        None,
+        summoner,
+        normalize_depth(depth),
     )
     .await
     .map_err(app_error)
@@ -675,6 +750,28 @@ pub fn set_hex_winrate_recognition_enabled(enabled: bool) -> Result<(), String> 
 #[tauri::command]
 pub fn set_hex_winrate_capture_mode(mode: String) -> Result<(), String> {
     crate::services::hex_winrate::set_capture_mode(&mode)
+}
+
+#[tauri::command]
+pub fn set_hex_winrate_detection_mode(mode: String) -> Result<(), String> {
+    crate::services::hex_winrate::set_detection_mode(&mode)
+}
+
+#[tauri::command]
+pub fn set_hex_winrate_recognition_text_visible(visible: bool) {
+    crate::services::hex_winrate::set_recognition_text_visible(visible);
+}
+
+#[tauri::command]
+pub fn set_aramkit_proxy(settings: AramkitProxySettings) -> Result<AramkitProxySettings, String> {
+    crate::services::hex_winrate::set_aramkit_proxy(settings)
+}
+
+#[tauri::command]
+pub async fn test_aramkit_connection(
+    settings: AramkitProxySettings,
+) -> Result<AramkitConnectionTest, String> {
+    crate::services::hex_winrate::test_aramkit_connection(settings).await
 }
 
 /// 开关顶部备战席英雄的快速交换。
@@ -1021,6 +1118,24 @@ pub async fn load_match_detail(
     .map_err(app_error)
 }
 
+/// 异步补全详细战绩中的组队标签。基础对局详情由 `load_match_detail` 单独返回，
+/// 组队历史查询不会阻塞详细战绩主体的展示。
+#[tauri::command]
+pub async fn load_match_detail_premades(
+    game_id: u64,
+    sgp_server_id: Option<String>,
+) -> Result<MatchDetailResponse, String> {
+    let clients = create_clients().map_err(app_error)?;
+    load_match_detail_premades_service(
+        &clients.lcu,
+        Some(&clients.auth),
+        sgp_server_id.as_deref(),
+        game_id,
+    )
+    .await
+    .map_err(app_error)
+}
+
 #[tauri::command]
 pub async fn load_player_elo_estimate(
     puuid: String,
@@ -1266,7 +1381,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
                 },
             ]
         };
-        assign_premade_markers(&mut teams);
+        assign_live_premade_markers(&mut teams);
 
         return Ok(LiveGameResponse {
             phase,
@@ -1356,7 +1471,7 @@ pub async fn load_live_game(depth: usize) -> Result<LiveGameResponse, String> {
                 },
             ]
         };
-        assign_premade_markers(&mut teams);
+        assign_live_premade_markers(&mut teams);
 
         return Ok(LiveGameResponse {
             phase,
@@ -1543,232 +1658,6 @@ fn player_list_contains_puuid(players: &[LivePlayerSeed], puuid: &str) -> bool {
     players
         .iter()
         .any(|player| player.puuid.eq_ignore_ascii_case(puuid))
-}
-
-#[derive(Clone)]
-struct PremadeCandidate {
-    puuids: Vec<String>,
-    source: &'static str,
-    together_times: usize,
-}
-
-fn assign_premade_markers(teams: &mut [LiveTeam]) {
-    let mut marked = HashSet::<String>::new();
-    let mut group_index = 0usize;
-
-    for team in teams.iter_mut() {
-        for group in explicit_premade_groups(team) {
-            if assign_premade_group(team, group, &mut marked, &mut group_index) {
-                continue;
-            }
-        }
-    }
-
-    for team in teams.iter_mut() {
-        for group in inferred_premade_groups(team, &marked) {
-            let _ = assign_premade_group(team, group, &mut marked, &mut group_index);
-        }
-    }
-}
-
-fn explicit_premade_groups(team: &LiveTeam) -> Vec<PremadeCandidate> {
-    let mut groups = BTreeMap::<u32, Vec<String>>::new();
-
-    for player in &team.players {
-        let Some(team_participant_id) = player.team_participant_id else {
-            continue;
-        };
-
-        if !is_real_puuid(&player.puuid) {
-            continue;
-        }
-
-        groups
-            .entry(team_participant_id)
-            .or_default()
-            .push(normalize_puuid(&player.puuid));
-    }
-
-    groups
-        .into_values()
-        .filter(|puuids| puuids.len() >= 2)
-        .map(|mut puuids| {
-            puuids.sort();
-            puuids.dedup();
-            PremadeCandidate {
-                puuids,
-                source: "客户端分组",
-                together_times: 0,
-            }
-        })
-        .collect()
-}
-
-fn inferred_premade_groups(team: &LiveTeam, marked: &HashSet<String>) -> Vec<PremadeCandidate> {
-    let current_players = team
-        .players
-        .iter()
-        .filter(|player| player.premade.is_none() && is_real_puuid(&player.puuid))
-        .map(|player| normalize_puuid(&player.puuid))
-        .collect::<BTreeSet<_>>();
-
-    if current_players.len() < 2 || current_players.len() > 10 {
-        return Vec::new();
-    }
-
-    let current_players = current_players
-        .into_iter()
-        .filter(|puuid| !marked.contains(puuid))
-        .collect::<Vec<_>>();
-
-    if current_players.len() < 2 {
-        return Vec::new();
-    }
-
-    let current_set = current_players.iter().cloned().collect::<HashSet<_>>();
-    let mut pair_games = HashMap::<(String, String), HashSet<u64>>::new();
-
-    for player in &team.players {
-        let Some(stats) = &player.stats else {
-            continue;
-        };
-
-        for game in &stats.recent_games {
-            let same_side = game
-                .team_puuids
-                .iter()
-                .map(|puuid| normalize_puuid(puuid))
-                .filter(|puuid| current_set.contains(puuid) && !marked.contains(puuid))
-                .collect::<BTreeSet<_>>();
-
-            if same_side.len() < 2 {
-                continue;
-            }
-
-            let same_side = same_side.into_iter().collect::<Vec<_>>();
-            for i in 0..same_side.len().saturating_sub(1) {
-                for j in (i + 1)..same_side.len() {
-                    pair_games
-                        .entry((same_side[i].clone(), same_side[j].clone()))
-                        .or_default()
-                        .insert(game.game_id);
-                }
-            }
-        }
-    }
-
-    let mut candidates = Vec::<PremadeCandidate>::new();
-    let total_masks = 1usize << current_players.len();
-    for mask in 0..total_masks {
-        if mask.count_ones() < 2 {
-            continue;
-        }
-
-        let puuids = current_players
-            .iter()
-            .enumerate()
-            .filter_map(|(index, puuid)| ((mask & (1usize << index)) != 0).then_some(puuid.clone()))
-            .collect::<Vec<_>>();
-
-        let Some(times) = premade_subset_times(&puuids, &pair_games) else {
-            continue;
-        };
-
-        if times >= PREMADE_HISTORY_THRESHOLD {
-            candidates.push(PremadeCandidate {
-                puuids,
-                source: "历史同队",
-                together_times: times,
-            });
-        }
-    }
-
-    candidates.sort_by(|a, b| {
-        b.puuids
-            .len()
-            .cmp(&a.puuids.len())
-            .then_with(|| b.together_times.cmp(&a.together_times))
-            .then_with(|| a.puuids.cmp(&b.puuids))
-    });
-
-    let mut selected = Vec::<PremadeCandidate>::new();
-    let mut used = HashSet::<String>::new();
-    for candidate in candidates {
-        if candidate.puuids.iter().any(|puuid| used.contains(puuid)) {
-            continue;
-        }
-
-        for puuid in &candidate.puuids {
-            used.insert(puuid.clone());
-        }
-        selected.push(candidate);
-    }
-
-    selected
-}
-
-fn premade_subset_times(
-    puuids: &[String],
-    pair_games: &HashMap<(String, String), HashSet<u64>>,
-) -> Option<usize> {
-    let mut min_times = usize::MAX;
-
-    for i in 0..puuids.len().saturating_sub(1) {
-        for j in (i + 1)..puuids.len() {
-            let key = if puuids[i] <= puuids[j] {
-                (puuids[i].clone(), puuids[j].clone())
-            } else {
-                (puuids[j].clone(), puuids[i].clone())
-            };
-            let times = pair_games.get(&key)?.len();
-            min_times = min_times.min(times);
-        }
-    }
-
-    Some(min_times)
-}
-
-fn assign_premade_group(
-    team: &mut LiveTeam,
-    group: PremadeCandidate,
-    marked: &mut HashSet<String>,
-    group_index: &mut usize,
-) -> bool {
-    if group.puuids.len() < 2 || group.puuids.iter().any(|puuid| marked.contains(puuid)) {
-        return false;
-    }
-
-    let group_id = PREMADE_GROUP_IDS
-        .get(*group_index)
-        .copied()
-        .unwrap_or("Z")
-        .to_string();
-    let label = format!("{}队 · {}黑", group_id, group.puuids.len());
-    let member_set = group.puuids.iter().cloned().collect::<HashSet<_>>();
-    let marker = LivePremadeMarker {
-        group_id,
-        label,
-        source: group.source.to_string(),
-        together_times: group.together_times,
-        member_puuids: group.puuids.clone(),
-    };
-    let mut assigned = false;
-
-    for player in &mut team.players {
-        if member_set.contains(&normalize_puuid(&player.puuid)) {
-            player.premade = Some(marker.clone());
-            assigned = true;
-        }
-    }
-
-    if assigned {
-        for puuid in group.puuids {
-            marked.insert(puuid);
-        }
-        *group_index += 1;
-    }
-
-    assigned
 }
 
 fn normalize_puuid(puuid: &str) -> String {
@@ -2148,10 +2037,14 @@ mod tests {
                 game.game_id, game.champion_id, game.queue_id, game.game_mode, game.game_creation
             );
 
-            let detail =
-                load_match_detail_service(&clients.lcu, Some(&clients.auth), None, game.game_id)
-                    .await
-                    .expect("应能读取样本局详情");
+            let detail = crate::services::stats::load_match_detail(
+                &clients.lcu,
+                Some(&clients.auth),
+                None,
+                game.game_id,
+            )
+            .await
+            .expect("应能读取样本局详情");
 
             for team in detail.teams {
                 for player in team.players {

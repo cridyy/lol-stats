@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_METRICS,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -50,9 +50,16 @@ pub(crate) enum OverlayLabelTone {
 }
 
 #[derive(Clone)]
+pub(crate) struct OverlayTitle {
+    pub(crate) text: String,
+    pub(crate) max_width: i32,
+}
+
+#[derive(Clone)]
 pub(crate) struct OverlayLabel {
     pub(crate) center_x: i32,
     pub(crate) y: i32,
+    pub(crate) title: Option<OverlayTitle>,
     pub(crate) text: String,
     pub(crate) tone: OverlayLabelTone,
 }
@@ -168,7 +175,9 @@ struct RenderResources {
     render_target: ID2D1DCRenderTarget,
     dwrite_factory: IDWriteFactory,
     text_format: IDWriteTextFormat,
+    title_format: IDWriteTextFormat,
     outline_brush: ID2D1SolidColorBrush,
+    title_brush: ID2D1SolidColorBrush,
     positive_brush: ID2D1SolidColorBrush,
     negative_brush: ID2D1SolidColorBrush,
     unavailable_brush: ID2D1SolidColorBrush,
@@ -239,6 +248,15 @@ impl RenderResources {
             },
             None,
         )?;
+        let title_brush = render_target.CreateSolidColorBrush(
+            &D2D1_COLOR_F {
+                r: 0.95,
+                g: 0.95,
+                b: 0.95,
+                a: 1.0,
+            },
+            None,
+        )?;
         let positive_brush = render_target.CreateSolidColorBrush(
             &D2D1_COLOR_F {
                 r: 0.27,
@@ -269,12 +287,15 @@ impl RenderResources {
 
         let dwrite_factory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
         let text_format = create_text_format(&dwrite_factory, font_size)?;
+        let title_format = create_text_format(&dwrite_factory, (font_size - 6).clamp(14, 22))?;
 
         Ok(Self {
             render_target,
             dwrite_factory,
             text_format,
+            title_format,
             outline_brush,
+            title_brush,
             positive_brush,
             negative_brush,
             unavailable_brush,
@@ -486,26 +507,78 @@ unsafe fn draw_label(resources: &RenderResources, label: &OverlayLabel) -> Resul
         Y: label.y as f32 - metrics.height / 2.0,
     };
 
+    if let Some(title) = label
+        .title
+        .as_ref()
+        .filter(|title| !title.text.trim().is_empty() && title.max_width > 0)
+    {
+        let (title_layout, title_metrics) =
+            create_title_layout(&resources.dwrite_factory, &resources.title_format, title)?;
+        draw_outlined_layout(
+            resources,
+            &title_layout,
+            Vector2 {
+                X: label.center_x as f32 - title_metrics.width / 2.0,
+                Y: origin.Y - title_metrics.height - 3.0,
+            },
+            &resources.title_brush,
+        );
+    }
+
+    let brush = match label.tone {
+        OverlayLabelTone::Positive => &resources.positive_brush,
+        OverlayLabelTone::Negative => &resources.negative_brush,
+        OverlayLabelTone::Unavailable => &resources.unavailable_brush,
+    };
+    draw_outlined_layout(resources, &layout, origin, brush);
+    Ok(())
+}
+
+unsafe fn create_title_layout(
+    factory: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    title: &OverlayTitle,
+) -> Result<(IDWriteTextLayout, DWRITE_TEXT_METRICS)> {
+    let text = title.text.trim().encode_utf16().collect::<Vec<_>>();
+    let max_width = title.max_width.max(1) as f32;
+    let layout = factory.CreateTextLayout(&text, format, max_width, LABEL_LAYOUT_HEIGHT)?;
+    layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+    let mut metrics = DWRITE_TEXT_METRICS::default();
+    layout.GetMetrics(&mut metrics)?;
+    // 长名称限制在本张卡的标题宽度内，收益率仍保留原来的字号和位置。
+    if metrics.width > max_width {
+        layout.SetFontSize(
+            format.GetFontSize() * max_width / metrics.width,
+            DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: text.len() as u32,
+            },
+        )?;
+        layout.GetMetrics(&mut metrics)?;
+    }
+    Ok((layout, metrics))
+}
+
+unsafe fn draw_outlined_layout(
+    resources: &RenderResources,
+    layout: &IDWriteTextLayout,
+    origin: Vector2,
+    brush: &ID2D1SolidColorBrush,
+) {
     for (offset_x, offset_y) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
         resources.render_target.DrawTextLayout(
             Vector2 {
                 X: origin.X + offset_x,
                 Y: origin.Y + offset_y,
             },
-            &layout,
+            layout,
             &resources.outline_brush,
             Default::default(),
         );
     }
-    let brush = match label.tone {
-        OverlayLabelTone::Positive => &resources.positive_brush,
-        OverlayLabelTone::Negative => &resources.negative_brush,
-        OverlayLabelTone::Unavailable => &resources.unavailable_brush,
-    };
     resources
         .render_target
-        .DrawTextLayout(origin, &layout, brush, Default::default());
-    Ok(())
+        .DrawTextLayout(origin, layout, brush, Default::default());
 }
 
 extern "system" fn window_proc(
@@ -525,6 +598,105 @@ extern "system" fn window_proc(
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ocr_titles_fit_the_card_width_on_one_line() {
+        unsafe {
+            let factory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let format = create_text_format(&factory, 22).unwrap();
+            for max_width in [96, 210, 280] {
+                for text in ["暴击飞弹", "灵巧", "任务：沃格勒特的巫师帽", "回力OK镖"]
+                {
+                    let (_, metrics) = create_title_layout(
+                        &factory,
+                        &format,
+                        &OverlayTitle {
+                            text: text.to_string(),
+                            max_width,
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(metrics.lineCount, 1, "{text}");
+                    assert!(metrics.width > 0.0 && metrics.height > 0.0);
+                    assert!(metrics.width <= max_width as f32 + 0.1, "{text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "手动生成原生叠层预览，不显示窗口或操作游戏"]
+    fn manual_render_ocr_overlay_preview() {
+        use windows::Win32::Graphics::Gdi::{GetObjectW, BITMAP};
+
+        unsafe {
+            let snapshot = OverlaySnapshot {
+                width: 960,
+                height: 180,
+                labels: [
+                    ("暴击飞弹", "+2.0%", OverlayLabelTone::Positive),
+                    ("灵巧", "-1.5%", OverlayLabelTone::Negative),
+                    ("升级：耀光", "选取率过低", OverlayLabelTone::Unavailable),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, (title, text, tone))| OverlayLabel {
+                    center_x: 160 + index as i32 * 320,
+                    y: 120,
+                    title: Some(OverlayTitle {
+                        text: title.to_string(),
+                        max_width: 210,
+                    }),
+                    text: text.to_string(),
+                    tone,
+                })
+                .collect(),
+                ..Default::default()
+            };
+            let mut resources = RenderResources::new(snapshot.width, snapshot.height, 30).unwrap();
+            render_snapshot(&mut resources, &snapshot).unwrap();
+
+            let mut bitmap = BITMAP::default();
+            assert_ne!(
+                GetObjectW(
+                    resources.memory_bitmap.into(),
+                    std::mem::size_of::<BITMAP>() as i32,
+                    Some((&mut bitmap as *mut BITMAP).cast()),
+                ),
+                0
+            );
+            assert!(!bitmap.bmBits.is_null());
+            let pixels = std::slice::from_raw_parts(
+                bitmap.bmBits.cast::<u8>(),
+                (snapshot.width * snapshot.height * 4) as usize,
+            );
+            for left in [0, 320, 640] {
+                for (top, bottom) in [(55, 98), (99, 145)] {
+                    assert!((top..bottom).any(|y| (left..left + 320)
+                        .any(|x| pixels[((y * snapshot.width + x) * 4 + 3) as usize] > 0)));
+                }
+            }
+            let mut preview = image::RgbImage::new(snapshot.width as u32, snapshot.height as u32);
+            for (pixel, bgra) in preview.pixels_mut().zip(pixels.chunks_exact(4)) {
+                let background = 31 * (255 - bgra[3] as u16) / 255;
+                *pixel = image::Rgb([
+                    (bgra[2] as u16 + background).min(255) as u8,
+                    (bgra[1] as u16 + background).min(255) as u8,
+                    (bgra[0] as u16 + background).min(255) as u8,
+                ]);
+            }
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/ocr-overlay-preview.png");
+            preview.save(&path).unwrap();
+            resources.destroy();
+            println!("叠层渲染预览：{}", path.display());
         }
     }
 }

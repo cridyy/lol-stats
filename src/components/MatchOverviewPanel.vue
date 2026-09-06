@@ -17,6 +17,7 @@ import type {
   GameAssetEntry,
   MatchDetailPlayer,
   MatchDetailResponse,
+  RankedQueueEntry,
   RecentGame,
   RecentGameParticipantRecord,
 } from "../types"
@@ -29,6 +30,19 @@ const PLAYER_ABILITY_SCAN_DEPTH = 150
 const PLAYER_ABILITY_DISPLAY_DEPTH = 100
 const PLAYER_ABILITY_CONCURRENCY = 3
 const MIN_VALID_GAME_DURATION_SECONDS = 8 * 60
+const APEX_RANK_TIERS = new Set(["MASTER", "GRANDMASTER", "CHALLENGER"])
+const RANK_TIER_LABELS: Record<string, string> = {
+  IRON: "坚韧黑铁",
+  BRONZE: "英勇黄铜",
+  SILVER: "不屈白银",
+  GOLD: "荣耀黄金",
+  PLATINUM: "华贵铂金",
+  EMERALD: "流光翡翠",
+  DIAMOND: "璀璨钻石",
+  MASTER: "超凡大师",
+  GRANDMASTER: "傲世宗师",
+  CHALLENGER: "最强王者",
+}
 
 type PlayerAbilityState = {
   loading: boolean
@@ -42,6 +56,8 @@ const props = defineProps<{
   game: RecentGame
   matchDetail: MatchDetailResponse | null
   loading: boolean
+  premadeLoading: boolean
+  rankedLoading: boolean
   error: string
   champions: Record<number, ChampionSummaryItem>
   gameAssets: GameAssetBundle
@@ -203,6 +219,65 @@ function chartBarWidth(player: MatchDetailPlayer) {
 function playerLabel(player: MatchDetailPlayer) {
   if (player.gameName && player.tagLine) return `${player.gameName}#${player.tagLine}`
   return player.summonerName || player.puuid || "未知玩家"
+}
+
+function rankedEntryHasTier(entry?: RankedQueueEntry) {
+  const tier = entry?.tier.trim().toUpperCase() || ""
+  return Boolean(tier && tier !== "NONE" && tier !== "NA" && tier !== "UNRANKED")
+}
+
+function playerRankEntry(player: MatchDetailPlayer) {
+  const ranked = player.rankedStats
+  if (!ranked || ranked.unavailableReason) return null
+
+  const solo = ranked.queueMap?.RANKED_SOLO_5x5
+  const flex = ranked.queueMap?.RANKED_FLEX_SR
+  if (rankedEntryHasTier(solo)) return solo || null
+  if (rankedEntryHasTier(flex)) return flex || null
+  return null
+}
+
+function playerRankText(player: MatchDetailPlayer) {
+  const ranked = player.rankedStats
+  if (!ranked) return ""
+  if (ranked.unavailableReason) return "不同服"
+
+  const entry = playerRankEntry(player)
+  if (!entry) return "未定级"
+
+  const normalizedTier = entry.tier.trim().toUpperCase()
+  const tierLabel = RANK_TIER_LABELS[normalizedTier] || normalizedTier
+  const shortTierLabel = RANK_TIER_LABELS[normalizedTier]
+    ? tierLabel.slice(2)
+    : tierLabel
+  const division = APEX_RANK_TIERS.has(normalizedTier)
+    ? ""
+    : normalizeRankDivision(entry.division)
+  return `${shortTierLabel}${division}`
+}
+
+function playerLevelText(player: MatchDetailPlayer) {
+  const level = player.summonerLevel
+  return typeof level === "number" && level > 0 ? `${level}级` : ""
+}
+
+function normalizeRankDivision(division: string) {
+  const normalized = division.trim().toUpperCase()
+  if (!normalized || normalized === "NA" || normalized === "NONE") return ""
+  return ({ I: "1", II: "2", III: "3", IV: "4" } as Record<string, string>)[normalized] || normalized
+}
+
+function playerPremadeMarker(player: MatchDetailPlayer) {
+  return player.premade || null
+}
+
+function playerPremadeLabel(player: MatchDetailPlayer) {
+  return playerPremadeMarker(player)?.label || ""
+}
+
+function playerPremadeClass(player: MatchDetailPlayer) {
+  const marker = playerPremadeMarker(player)
+  return marker ? `premade-${marker.groupId.toLowerCase()}` : ""
 }
 
 function teamSummary(team: MatchDetailResponse["teams"][number]) {
@@ -561,7 +636,40 @@ async function copyImage() {
               >
                 <div class="chart-player">
                   <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="34" />
-                  <span>{{ playerLabel(player) }}</span>
+                  <div class="detail-player-identity">
+                    <span class="detail-player-name">{{ playerLabel(player) }}</span>
+                    <div class="detail-player-meta">
+                      <span v-if="playerLevelText(player)" class="detail-level-tag">
+                        {{ playerLevelText(player) }}
+                      </span>
+                      <span
+                        v-if="playerRankText(player)"
+                        :class="['detail-rank-tag', { 'detail-rank-unranked': playerRankText(player) === '未定级' }]"
+                      >
+                        {{ playerRankText(player) }}
+                      </span>
+                      <span
+                        v-else-if="rankedLoading"
+                        class="detail-rank-loading"
+                        aria-label="正在读取段位"
+                      >
+                        <LoaderCircle class="spin" :size="11" />
+                      </span>
+                      <span
+                        v-if="playerPremadeMarker(player)"
+                        :class="['detail-premade-tag', playerPremadeClass(player)]"
+                      >
+                        {{ playerPremadeLabel(player) }}
+                      </span>
+                      <span
+                        v-else-if="premadeLoading"
+                        class="detail-premade-loading"
+                        aria-label="正在识别组队"
+                      >
+                        <LoaderCircle class="spin" :size="11" />
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div class="chart-track">
                   <div class="chart-bar-rail">
@@ -625,14 +733,45 @@ async function copyImage() {
           >
             <div class="champion-cell">
               <ChampionAvatar :champion-id="player.championId" :champions="champions" :size="42" />
-              <span
-                v-if="!showPlayerAbility"
-              >
-                {{ playerLabel(player) }}
-              </span>
-              <span v-else :class="['player-ability-cell', playerAbilityTone(player)]">
-                {{ playerAbilityLabel(player) }}
-              </span>
+              <div class="detail-player-identity">
+                <span v-if="!showPlayerAbility" class="detail-player-name">
+                  {{ playerLabel(player) }}
+                </span>
+                <span v-else :class="['player-ability-cell', playerAbilityTone(player)]">
+                  {{ playerAbilityLabel(player) }}
+                </span>
+                <div class="detail-player-meta">
+                  <span v-if="playerLevelText(player)" class="detail-level-tag">
+                    {{ playerLevelText(player) }}
+                  </span>
+                  <span
+                    v-if="playerRankText(player)"
+                    :class="['detail-rank-tag', { 'detail-rank-unranked': playerRankText(player) === '未定级' }]"
+                  >
+                    {{ playerRankText(player) }}
+                  </span>
+                  <span
+                    v-else-if="rankedLoading"
+                    class="detail-rank-loading"
+                    aria-label="正在读取段位"
+                  >
+                    <LoaderCircle class="spin" :size="11" />
+                  </span>
+                  <span
+                    v-if="playerPremadeMarker(player)"
+                    :class="['detail-premade-tag', playerPremadeClass(player)]"
+                  >
+                    {{ playerPremadeLabel(player) }}
+                  </span>
+                  <span
+                    v-else-if="premadeLoading"
+                    class="detail-premade-loading"
+                    aria-label="正在识别组队"
+                  >
+                    <LoaderCircle class="spin" :size="11" />
+                  </span>
+                </div>
+              </div>
             </div>
 
             <div class="spell-column">
@@ -726,9 +865,8 @@ async function copyImage() {
             >
               <div
                 :class="['score-cell', `score-${displayedRatingLevel(player)}`]"
-                :title="outputRatingHint(player)"
               >
-                <strong>{{ scoreText(player) }}</strong>
+                <strong :title="outputRatingHint(player)">{{ scoreText(player) }}</strong>
                 <span>{{ outputRating(player).role.label }} · {{ displayTitle(player) }}</span>
               </div>
             </GameTitlePopover>
@@ -900,13 +1038,151 @@ async function copyImage() {
   gap: 7px;
 }
 
-.chart-player > span {
+.detail-player-identity {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.detail-player-name {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: #324950;
   font-size: 12px;
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.detail-player-meta {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.detail-rank-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #e3c878;
+  border-radius: 4px;
+  color: #805b17;
+  background: #fff0bd;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1.1;
+  padding: 2px 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-level-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid #a9d6b4;
+  border-radius: 4px;
+  color: #2f7143;
+  background: #def2e3;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1.1;
+  padding: 2px 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-rank-tag.detail-rank-unranked {
+  border-color: #c8ced0;
+  color: #667176;
+  background: #e5e8e9;
+}
+
+.detail-rank-loading {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: #7b878c;
+}
+
+.detail-premade-tag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 100%;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 4px;
+  color: #1d2730;
+  font-size: 10px;
+  font-weight: 950;
+  line-height: 1.1;
+  padding: 2px 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 6px 14px rgba(20, 35, 45, 0.1);
+}
+
+.detail-premade-loading {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  color: #7b878c;
+}
+
+.detail-premade-tag.premade-a {
+  color: #24103d;
+  background: linear-gradient(135deg, #d8b4fe, #7e22ce);
+}
+
+.detail-premade-tag.premade-b {
+  color: #071827;
+  background: linear-gradient(135deg, #bfdbfe, #3b82f6);
+}
+
+.detail-premade-tag.premade-c {
+  background: linear-gradient(135deg, #bbf7d0, #22c55e);
+}
+
+.detail-premade-tag.premade-d {
+  background: linear-gradient(135deg, #fecdd3, #fb7185);
+}
+
+.detail-premade-tag.premade-e {
+  color: #120b24;
+  background: linear-gradient(135deg, #ddd6fe, #8b5cf6);
+}
+
+.detail-premade-tag.premade-f,
+.detail-premade-tag.premade-g,
+.detail-premade-tag.premade-h,
+.detail-premade-tag.premade-i,
+.detail-premade-tag.premade-j,
+.detail-premade-tag.premade-z {
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
 }
 
 .chart-track {
@@ -1126,7 +1402,11 @@ async function copyImage() {
   gap: 6px;
 }
 
-.champion-cell span {
+.champion-cell .detail-player-identity {
+  flex: 1 1 auto;
+}
+
+.champion-cell > span {
   min-width: 0;
   overflow: hidden;
   color: #53666c;

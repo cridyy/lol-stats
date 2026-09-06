@@ -464,9 +464,8 @@ async function openMatchDetail(game: RecentGame) {
       >
         <div
           :class="['score-cell', `score-${displayedRatingLevel(game)}`]"
-          :title="outputRatingHint(game)"
         >
-          <strong>{{ scoreText(game) }}</strong>
+          <strong :title="outputRatingHint(game)">{{ scoreText(game) }}</strong>
           <span>{{ outputRating(game).role.label }} · {{ displayTitle(game) }}</span>
         </div>
       </GameTitlePopover>
@@ -645,9 +644,8 @@ async function openMatchDetail(game: RecentGame) {
                 >
                   <div
                     :class="['score-cell', 'detail-score-cell', `score-${displayedRatingLevel(player)}`]"
-                    :title="outputRatingHint(player)"
                   >
-                    <strong>{{ scoreText(player) }}</strong>
+                    <strong :title="outputRatingHint(player)">{{ scoreText(player) }}</strong>
                     <span>{{ outputRating(player).role.label }} · {{ displayTitle(player) }}</span>
                   </div>
                 </GameTitlePopover>
