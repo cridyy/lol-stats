@@ -156,3 +156,15 @@ export function loadMatchDetail(gameId: number, sgpServerId?: string) {
 export function loadLiveGame(depth: number) {
   return invoke<LiveGameResponse>("load_live_game", { depth })
 }
+
+export function getDbPath() {
+  return invoke<string>("get_db_path")
+}
+
+export function setDbPath(newDir: string) {
+  return invoke<string>("set_db_path", { newDir })
+}
+
+export function resetDbPath() {
+  return invoke<string>("reset_db_path")
+}

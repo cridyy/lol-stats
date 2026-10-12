@@ -16,8 +16,8 @@ use crate::services::models::{
     SummonerSearchCandidate,
 };
 use crate::services::stats::{
-    load_match_detail as load_match_detail_service, load_player_stats,
-    load_player_stats_with_progress, normalize_depth,
+    get_database_path, load_match_detail as load_match_detail_service, load_player_stats,
+    load_player_stats_with_progress, normalize_depth, reset_database_path, set_database_path,
 };
 use crate::services::tools::{
     game_settings_locked, set_game_settings_locked as set_settings_locked,
@@ -1724,4 +1724,19 @@ fn fallback_live_summoner(seed: &LivePlayerSeed) -> SummonerInfo {
         summoner_id: seed.summoner_id,
         ..Default::default()
     }
+}
+
+#[tauri::command]
+pub fn get_db_path() -> Result<String, String> {
+    get_database_path().ok_or_else(|| "无法获取数据库路径".to_string())
+}
+
+#[tauri::command]
+pub fn set_db_path(new_dir: String) -> Result<String, String> {
+    set_database_path(&new_dir)
+}
+
+#[tauri::command]
+pub fn reset_db_path() -> Result<String, String> {
+    reset_database_path()
 }

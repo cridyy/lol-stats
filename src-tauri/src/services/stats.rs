@@ -27,6 +27,7 @@ const STATS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DATABASE_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const CACHE_SCHEMA_VERSION: i64 = 12;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
+const DB_PATH_CONFIG_FILE_NAME: &str = "db-path.cfg";
 
 static STATS_CACHE: LazyLock<Mutex<HashMap<StatsCacheKey, StatsCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -436,7 +437,10 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn cache_db_path() -> Option<PathBuf> {
-    let mut base = if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+    let custom_dir = read_custom_db_dir();
+    let mut base = if let Some(dir) = custom_dir {
+        PathBuf::from(dir)
+    } else if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
         let mut path = PathBuf::from(local_app_data);
         path.push("lol-stats");
         path
@@ -448,6 +452,148 @@ fn cache_db_path() -> Option<PathBuf> {
 
     base.push(DATABASE_FILE_NAME);
     Some(base)
+}
+
+fn default_config_dir() -> Option<PathBuf> {
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let mut path = PathBuf::from(local_app_data);
+        path.push("lol-stats");
+        Some(path)
+    } else {
+        let mut path = std::env::current_dir().ok()?;
+        path.push(".lol-stats");
+        Some(path)
+    }
+}
+
+fn config_file_path() -> Option<PathBuf> {
+    default_config_dir().map(|mut dir| {
+        dir.push(DB_PATH_CONFIG_FILE_NAME);
+        dir
+    })
+}
+
+fn read_custom_db_dir() -> Option<String> {
+    let path = config_file_path()?;
+    let content = fs::read_to_string(&path).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+pub fn get_database_path() -> Option<String> {
+    cache_db_path().map(|p| p.to_string_lossy().to_string())
+}
+
+pub fn set_database_path(new_dir: &str) -> Result<String, String> {
+    let new_dir = new_dir.trim();
+    if new_dir.is_empty() {
+        return Err("目录路径不能为空".to_string());
+    }
+
+    let new_dir_path = PathBuf::from(new_dir);
+    if !new_dir_path.is_dir() {
+        fs::create_dir_all(&new_dir_path)
+            .map_err(|e| format!("无法创建目录：{e}"))?;
+    }
+
+    let old_db_path = cache_db_path();
+    let mut new_db_path = new_dir_path.clone();
+    new_db_path.push(DATABASE_FILE_NAME);
+
+    if let Some(ref old_path) = old_db_path {
+        if old_path == &new_db_path {
+            return Ok(new_db_path.to_string_lossy().to_string());
+        }
+
+        if old_path.exists() {
+            if new_db_path.exists() {
+                return Err("目标目录已存在数据库文件，请先手动处理".to_string());
+            }
+            fs::copy(old_path, &new_db_path)
+                .map_err(|e| format!("移动数据库文件失败：{e}"))?;
+
+            let mut wal_path = old_path.clone();
+            wal_path.set_extension("sqlite3-wal");
+            if wal_path.exists() {
+                let mut new_wal = new_db_path.clone();
+                new_wal.set_extension("sqlite3-wal");
+                let _ = fs::copy(&wal_path, &new_wal);
+            }
+
+            let mut shm_path = old_path.clone();
+            shm_path.set_extension("sqlite3-shm");
+            if shm_path.exists() {
+                let mut new_shm = new_db_path.clone();
+                new_shm.set_extension("sqlite3-shm");
+                let _ = fs::copy(&shm_path, &new_shm);
+            }
+
+            let _ = fs::remove_file(old_path);
+            let _ = fs::remove_file(wal_path);
+            let _ = fs::remove_file(shm_path);
+        }
+    }
+
+    let cfg_path = config_file_path()
+        .ok_or("无法确定配置文件路径")?;
+    if let Some(parent) = cfg_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(&cfg_path, new_dir)
+        .map_err(|e| format!("写入配置文件失败：{e}"))?;
+
+    Ok(new_db_path.to_string_lossy().to_string())
+}
+
+pub fn reset_database_path() -> Result<String, String> {
+    let cfg_path = config_file_path()
+        .ok_or("无法确定配置文件路径")?;
+
+    let custom_dir = read_custom_db_dir();
+    if custom_dir.is_none() {
+        let default_path = default_config_dir()
+            .map(|mut d| { d.push(DATABASE_FILE_NAME); d })
+            .map(|p| p.to_string_lossy().to_string());
+        return Ok(default_path.unwrap_or_default());
+    }
+
+    let default_db_dir = default_config_dir()
+        .ok_or("无法确定默认目录")?;
+    let mut default_db_path = default_db_dir.clone();
+    default_db_path.push(DATABASE_FILE_NAME);
+
+    let mut old_db_path = PathBuf::from(custom_dir.unwrap());
+    old_db_path.push(DATABASE_FILE_NAME);
+
+    if old_db_path.exists() && !default_db_path.exists() {
+        let _ = fs::create_dir_all(&default_db_dir);
+        fs::copy(&old_db_path, &default_db_path)
+            .map_err(|e| format!("恢复数据库文件失败：{e}"))?;
+
+        let mut wal_path = old_db_path.clone();
+        wal_path.set_extension("sqlite3-wal");
+        if wal_path.exists() {
+            let mut new_wal = default_db_path.clone();
+            new_wal.set_extension("sqlite3-wal");
+            let _ = fs::copy(&wal_path, &new_wal);
+        }
+
+        let mut shm_path = old_db_path.clone();
+        shm_path.set_extension("sqlite3-shm");
+        if shm_path.exists() {
+            let mut new_shm = default_db_path.clone();
+            new_shm.set_extension("sqlite3-shm");
+            let _ = fs::copy(&shm_path, &new_shm);
+        }
+
+        let _ = fs::remove_file(&old_db_path);
+        let _ = fs::remove_file(wal_path);
+        let _ = fs::remove_file(shm_path);
+    }
+
+    let _ = fs::remove_file(&cfg_path);
+
+    Ok(default_db_path.to_string_lossy().to_string())
 }
 
 fn cache_age(stored_at_ms: i64) -> Option<Duration> {

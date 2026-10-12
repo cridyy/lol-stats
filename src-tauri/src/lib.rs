@@ -5,6 +5,7 @@ mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
             commands::accept_ready_check,
@@ -33,7 +34,10 @@ pub fn run() {
             commands::set_chat_availability,
             commands::set_chat_status_message,
             commands::set_game_settings_locked,
-            commands::send_alt_left_shortcut
+            commands::send_alt_left_shortcut,
+            commands::get_db_path,
+            commands::set_db_path,
+            commands::reset_db_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

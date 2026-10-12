@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window"
 import {
   ArrowLeft,
@@ -35,6 +36,9 @@ import {
   searchPlayer,
   searchPlayerWithProgress,
   searchSummonerCandidates,
+  getDbPath,
+  setDbPath,
+  resetDbPath,
 } from "./api"
 import LiveGamePanel from "./components/LiveGamePanel.vue"
 import MatchOverviewPanel from "./components/MatchOverviewPanel.vue"
@@ -221,6 +225,8 @@ const settingsOpen = ref(false)
 const shareSettings = ref<ShareSettings>(loadShareSettings())
 const liveCardExtraHeight = ref(loadLiveCardExtraHeight())
 const savedStartupSize = ref<WindowStartupSize>(loadStartupWindowSize())
+const databasePath = ref("")
+const databasePathLoading = ref(false)
 const appCurrentVersion = ref("")
 const releaseNotesDialog = ref<ReleaseNotesDialog | null>(null)
 const updateDialog = ref<AppUpdateInfo | null>(null)
@@ -459,6 +465,40 @@ function persistShareSettings() {
     mobileShareLayout: Boolean(shareSettings.value.mobileShareLayout),
   }
   localStorage.setItem(SHARE_SETTINGS_KEY, JSON.stringify(shareSettings.value))
+}
+
+async function loadDatabasePath() {
+  try {
+    databasePath.value = await getDbPath()
+  } catch {
+    databasePath.value = ""
+  }
+}
+
+async function selectDatabaseDir() {
+  databasePathLoading.value = true
+  try {
+    const selected = await openDialog({ directory: true, title: "选择数据库存放目录" })
+    if (!selected) return
+    const newPath = await setDbPath(selected)
+    databasePath.value = newPath
+  } catch (e) {
+    alert(typeof e === "string" ? e : "修改数据库路径失败")
+  } finally {
+    databasePathLoading.value = false
+  }
+}
+
+async function resetDatabaseDir() {
+  databasePathLoading.value = true
+  try {
+    const newPath = await resetDbPath()
+    databasePath.value = newPath
+  } catch (e) {
+    alert(typeof e === "string" ? e : "重置数据库路径失败")
+  } finally {
+    databasePathLoading.value = false
+  }
 }
 
 function loadStartupWindowSize(): WindowStartupSize {
@@ -1840,7 +1880,7 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="sidebar-footer">
-        <button class="settings-entry" @click="settingsOpen = true">
+        <button class="settings-entry" @click="settingsOpen = true; loadDatabasePath()">
           <Settings :size="18" />
           设置
         </button>
@@ -2168,6 +2208,23 @@ onUnmounted(() => {
               @change="persistShareSettings"
             />
           </label>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">
+            <span>数据存储</span>
+            <strong>数据库文件位置</strong>
+          </div>
+
+          <label class="settings-db-path">
+            <span>当前路径</span>
+            <b>{{ databasePath || '加载中…' }}</b>
+          </label>
+
+          <div class="settings-actions">
+            <button :disabled="databasePathLoading" @click="selectDatabaseDir">选择目录</button>
+            <button :disabled="databasePathLoading" @click="resetDatabaseDir">恢复默认</button>
+          </div>
         </section>
       </section>
     </div>
@@ -3236,5 +3293,19 @@ button:disabled {
 
 .settings-toggle {
   cursor: pointer;
+}
+
+.settings-db-path {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.settings-db-path b {
+  font-size: 12px;
+  font-weight: 700;
+  color: #37474f;
+  word-break: break-all;
+  line-height: 1.4;
 }
 </style>
