@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">LOL Stats - Hex LS</title>
+  <desc id="description">An angular LS monogram in antique gold and violet, enclosed by a hexagonal crest.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#1F1F1F" stroke="#424242" stroke-width="2"/>
+  <path d="M256 80 408 168V344L256 432 104 344V168Z" fill="#181818" stroke="#A68B5E" stroke-width="20" stroke-linejoin="round"/>
+  <path d="M156 166H200V304H234V348H156Z" fill="#DDC79D"/>
+  <path d="M352 166H284L258 192V244L282 268H312V304H258V348H330L356 322V270L332 246H302V210H352Z" fill="#B09BCF"/>
+</svg>

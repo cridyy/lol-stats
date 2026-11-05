@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">LOL Stats - Match Record</title>
+  <desc id="description">Two stacked match records, with an angular victory seal on a matte-gold front card.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#1F1F1F" stroke="#424242" stroke-width="2"/>
+  <path d="M126 98H276L316 138V346L288 374H126L100 348V124Z" transform="rotate(-10 208 236)" fill="#9F86BC"/>
+  <path d="M196 116H338L378 156V376L350 404H196L170 378V142Z" fill="#D7BE8E" stroke="#1F1F1F" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M274 158 324 187V245L274 274 224 245V187Z" fill="#262626"/>
+  <path d="M246 215 264 233 300 195" stroke="#E3D0AB" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M220 310H328M220 350H294" stroke="#514A3E" stroke-width="18" stroke-linecap="round"/>
+</svg>

@@ -248,6 +248,12 @@ const DEFAULT_SHARE_SETTINGS: ShareSettings = {
   mobileShareLayout: true,
 }
 const LOCAL_RELEASE_NOTES: Record<string, string[]> = {
+  "0.8.3": [
+    "这是 0.8.3 测试版，源码已在 GitHub 开放。",
+    "战绩主数据库最大为 1 GB；接近上限时自动清理最旧缓存，保留较新的战绩。",
+    "已有超限数据库会清理并回收空间，减少长期使用产生的缓存占用。",
+    "如果遇到 bug，请在反馈帖子中留言。",
+  ],
   "0.8.1": [
     "这是 0.8.1 测试版，继续用于功能验证，暂未公开源代码。",
     "优化当前战绩刷新：首次加载最多请求 20 局，刷新时先探测最近 3 局。",

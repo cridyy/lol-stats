@@ -1,6 +1,6 @@
 [package]
 name = "lol-stats"
-version = "0.8.1"
+version = "0.8.3"
 description = "国服英雄联盟战绩统计工具"
 authors = ["local"]
 edition = "2021"
@@ -75,6 +75,7 @@ windows = { version = "0.61", features = [
   "Win32_System_WinRT",
   "Win32_System_WinRT_Direct3D11",
   "Win32_System_WinRT_Graphics_Capture",
+  "Win32_UI_Accessibility",
   "Win32_UI_HiDpi",
   "Win32_UI_WindowsAndMessaging"
 ] }

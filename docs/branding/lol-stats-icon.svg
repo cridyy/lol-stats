@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">LOL Stats</title>
+  <desc id="description">An original hexagonal emblem with three ascending data columns, in antique gold and violet on charcoal.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#1F1F1F" stroke="#424242" stroke-width="2"/>
+  <path d="M256 78 410 167V345L256 434 102 345V167Z" fill="#181818" stroke="#BA9E6B" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M256 78 410 167" stroke="#A98BD0" stroke-width="24" stroke-linecap="round"/>
+  <path d="M158 280 198 257V344H158Z" fill="#AD9263"/>
+  <path d="M236 232 276 209V344H236Z" fill="#CBB17E"/>
+  <path d="M314 184 354 161V344H314Z" fill="#E2CEAA"/>
+</svg>

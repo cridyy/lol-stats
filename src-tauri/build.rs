@@ -4,5 +4,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", ncnn_lib_dir.display());
     println!("cargo:rustc-link-lib=static=ncnn");
     println!("cargo:rerun-if-changed=ncnn/lib/ncnn.lib");
+    // Rebuild the embedded Windows icon when the ICO changes.
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     tauri_build::build()
 }

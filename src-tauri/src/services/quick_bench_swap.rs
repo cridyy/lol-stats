@@ -2,7 +2,7 @@
 //!
 //! 客户端自己的顶部英雄按钮会在一次交换后进入短暂 CD。优先使用覆盖整个顶部备战区
 //! 的透明点击层直接调用 LCU，从而不触发客户端按钮自身的视觉冷却；低级鼠标钩子仍
-//! 保留作诊断和透明层不可用时的兼容兜底。
+//! 保留作诊断和透明层不可用时的兼容兜底。两条路径都仅在客户端位于前台时生效。
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::LazyLock;
@@ -52,13 +52,15 @@ const BENCH_STEP_X_RATIO: f32 = 0.04575;
 const BENCH_HIT_HALF_WIDTH_RATIO: f32 = 0.0215;
 #[cfg(target_os = "windows")]
 const BENCH_HIT_HALF_HEIGHT_RATIO: f32 = 0.04;
-// 鼠标状态轮询与 LCU 请求在后台线程中运行。原始点击从不被修改或吞掉。
+// 鼠标观察路径保留原始点击；透明层路径接管点击并直接交换。
 #[cfg(target_os = "windows")]
 const CLICK_DECISION_RECEIVED: u32 = 1;
 #[cfg(target_os = "windows")]
 const CLICK_DECISION_NO_SNAPSHOT: u32 = 2;
 #[cfg(target_os = "windows")]
 const CLICK_DECISION_SNAPSHOT_EXPIRED: u32 = 3;
+#[cfg(target_os = "windows")]
+const CLICK_DECISION_NOT_FOREGROUND: u32 = 4;
 #[cfg(target_os = "windows")]
 const CLICK_DECISION_OUTSIDE_BENCH: u32 = 5;
 #[cfg(target_os = "windows")]
@@ -67,6 +69,8 @@ const CLICK_DECISION_PREVIOUS_PENDING: u32 = 6;
 const CLICK_DECISION_SWAP_QUEUED: u32 = 7;
 #[cfg(target_os = "windows")]
 const CLICK_DECISION_OVERLAY_SWAP_QUEUED: u32 = 8;
+#[cfg(target_os = "windows")]
+const CLICK_DECISION_DISABLED: u32 = 9;
 
 static CONTROLLER: LazyLock<QuickBenchSwapController> =
     LazyLock::new(QuickBenchSwapController::new);
@@ -110,6 +114,8 @@ struct QuickBenchSwapController {
     #[cfg(target_os = "windows")]
     last_click_at_ms: AtomicU64,
     #[cfg(target_os = "windows")]
+    observed_foreground_hwnd: AtomicIsize,
+    #[cfg(target_os = "windows")]
     last_click_x: AtomicI32,
     #[cfg(target_os = "windows")]
     last_click_y: AtomicI32,
@@ -127,6 +133,8 @@ struct QuickBenchSwapController {
     pending_slot: AtomicU32,
     #[cfg(target_os = "windows")]
     pending_champion_id: AtomicU32,
+    #[cfg(target_os = "windows")]
+    pending_client_hwnd: AtomicIsize,
     #[cfg(target_os = "windows")]
     pending_request_sequence: AtomicU64,
     #[cfg(target_os = "windows")]
@@ -171,6 +179,8 @@ impl QuickBenchSwapController {
             #[cfg(target_os = "windows")]
             last_click_at_ms: AtomicU64::new(0),
             #[cfg(target_os = "windows")]
+            observed_foreground_hwnd: AtomicIsize::new(0),
+            #[cfg(target_os = "windows")]
             last_click_x: AtomicI32::new(0),
             #[cfg(target_os = "windows")]
             last_click_y: AtomicI32::new(0),
@@ -188,6 +198,8 @@ impl QuickBenchSwapController {
             pending_slot: AtomicU32::new(0),
             #[cfg(target_os = "windows")]
             pending_champion_id: AtomicU32::new(0),
+            #[cfg(target_os = "windows")]
+            pending_client_hwnd: AtomicIsize::new(0),
             #[cfg(target_os = "windows")]
             pending_request_sequence: AtomicU64::new(0),
             #[cfg(target_os = "windows")]
@@ -298,42 +310,57 @@ impl QuickBenchSwapController {
     }
 
     #[cfg(target_os = "windows")]
+    fn interaction_rejection(
+        &self,
+        foreground_hwnd: isize,
+        observed_foreground_hwnd: Option<isize>,
+    ) -> Option<u32> {
+        if !self.enabled.load(Ordering::SeqCst) {
+            return Some(CLICK_DECISION_DISABLED);
+        }
+        if !self.click_snapshot_ready.load(Ordering::Acquire) {
+            return Some(CLICK_DECISION_NO_SNAPSHOT);
+        }
+        let updated_at_ms = self.click_snapshot_updated_ms.load(Ordering::Acquire);
+        if elapsed_since_ms(updated_at_ms) > BENCH_SNAPSHOT_GRACE {
+            return Some(CLICK_DECISION_SNAPSHOT_EXPIRED);
+        }
+        let client_hwnd = self.click_snapshot_hwnd.load(Ordering::Acquire);
+        if client_hwnd == 0
+            || foreground_hwnd != client_hwnd
+            || observed_foreground_hwnd.is_some_and(|observed| observed != client_hwnd)
+        {
+            return Some(CLICK_DECISION_NOT_FOREGROUND);
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
     fn queue_swap_at(
         &self,
         screen_x: i32,
         screen_y: i32,
         observed_at_ms: u64,
+        observed_foreground_hwnd: Option<isize>,
         click_overlay: bool,
     ) -> bool {
-        if !self.enabled.load(Ordering::SeqCst) {
-            return false;
-        }
-
-        if !self.click_snapshot_ready.load(Ordering::Acquire) {
-            self.last_click_decision
-                .store(CLICK_DECISION_NO_SNAPSHOT, Ordering::Release);
-            return false;
-        }
-
-        let updated_at_ms = self.click_snapshot_updated_ms.load(Ordering::Acquire);
-        if elapsed_since_ms(updated_at_ms) > BENCH_SNAPSHOT_GRACE {
-            self.last_click_decision
-                .store(CLICK_DECISION_SNAPSHOT_EXPIRED, Ordering::Release);
-            return false;
-        }
-
         let (foreground_hwnd, foreground_pid) = foreground_window_identity();
-        let (target_hwnd, target_pid) = window_at_identity(screen_x, screen_y);
         self.last_click_foreground_hwnd
             .store(foreground_hwnd, Ordering::Release);
         self.last_click_foreground_pid
             .store(foreground_pid, Ordering::Release);
+        if let Some(reason) = self.interaction_rejection(foreground_hwnd, observed_foreground_hwnd) {
+            self.last_click_decision.store(reason, Ordering::Release);
+            return false;
+        }
+
+        let (target_hwnd, target_pid) = window_at_identity(screen_x, screen_y);
         self.last_click_target_hwnd
             .store(target_hwnd, Ordering::Release);
         self.last_click_target_pid
             .store(target_pid, Ordering::Release);
-        // WindowFromPoint 与前台窗口在全屏、置顶层和跨完整性级别场景下可能不可靠，
-        // 只作为日志诊断。实际命中由已经确认的 ChampSelect 快照和客户区坐标决定。
+        // 透明层不激活窗口，前台必须仍为客户端；WindowFromPoint 仅用于诊断，
+        // 因为命中的窗口可能是我们自己的透明层。
 
         let origin_x = self.click_snapshot_origin_x.load(Ordering::Acquire);
         let origin_y = self.click_snapshot_origin_y.load(Ordering::Acquire);
@@ -374,6 +401,8 @@ impl QuickBenchSwapController {
             .store((index + 1) as u32, Ordering::Relaxed);
         self.pending_champion_id
             .store(champion_id, Ordering::Relaxed);
+        self.pending_client_hwnd
+            .store(foreground_hwnd, Ordering::Relaxed);
         self.pending_from_click_overlay
             .store(click_overlay, Ordering::Relaxed);
         let not_before_ms = if click_overlay {
@@ -400,8 +429,13 @@ impl QuickBenchSwapController {
 
     #[cfg(target_os = "windows")]
     fn record_hook_left_down(&self, screen_x: i32, screen_y: i32) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
         self.last_click_x.store(screen_x, Ordering::Relaxed);
         self.last_click_y.store(screen_y, Ordering::Relaxed);
+        // 记录点击发生时的窗口，避免后台点击延迟处理时被误当成客户端点击。
+        self.observed_foreground_hwnd
+            .store(unsafe { GetForegroundWindow() } as isize, Ordering::Relaxed);
         self.last_click_at_ms
             .store(now_epoch_millis(), Ordering::Relaxed);
         self.raw_left_down_count.fetch_add(1, Ordering::Release);
@@ -485,6 +519,13 @@ pub(crate) fn set_enabled(enabled: bool) {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn can_handle_click_overlay() -> bool {
+    CONTROLLER
+        .interaction_rejection(foreground_window_identity().0, None)
+        .is_none()
+}
+
 /// 透明备战区点击层收到左键后直接调用此入口。
 ///
 /// 这条路径的原始点击已经被透明窗口截获，因此不再等待客户端自行处理，后台线程会在
@@ -498,8 +539,11 @@ pub(crate) fn handle_click_overlay_left_down(screen_x: i32, screen_y: i32) {
     runtime_log(format!(
         "透明备战区点击层收到左键：屏幕坐标=({screen_x}, {screen_y})"
     ));
-    if !CONTROLLER.queue_swap_at(screen_x, screen_y, now_epoch_millis(), true) {
-        runtime_log("透明备战区点击层未登记交换：点击不在当前可用英雄卡位或已有请求在处理");
+    if !CONTROLLER.queue_swap_at(screen_x, screen_y, now_epoch_millis(), None, true) {
+        runtime_log(format!(
+            "透明备战区点击层未登记交换：{}",
+            click_decision_text(CONTROLLER.last_click_decision.load(Ordering::Acquire))
+        ));
     }
 }
 
@@ -638,7 +682,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: usize, lparam: isiz
         && lparam != 0
         && CONTROLLER.enabled.load(Ordering::Relaxed)
     {
-        // 低级钩子在系统输入路径上运行。这里仅写原子数据，后续处理全部交给后台线程。
+        // 低级钩子只记录坐标和当前前台窗口，命中判断与请求交给后台线程。
         let mouse = &*(lparam as *const MSLLHOOKSTRUCT);
         CONTROLLER.record_hook_left_down(mouse.pt.x, mouse.pt.y);
     }
@@ -707,13 +751,21 @@ async fn windows_worker_loop() {
 
         let observed_click_count = CONTROLLER.raw_left_down_count.load(Ordering::Acquire);
         if observed_click_count > processed_observed_click_count {
-            // 低级钩子回调只写入原子变量；在此处才做坐标换算、窗口诊断和候选判断。
+            // 在后台线程中做坐标换算、窗口诊断和候选判断。
             processed_observed_click_count = observed_click_count;
             let screen_x = CONTROLLER.last_click_x.load(Ordering::Acquire);
             let screen_y = CONTROLLER.last_click_y.load(Ordering::Acquire);
             let observed_at_ms = CONTROLLER.last_click_at_ms.load(Ordering::Acquire);
+            let observed_foreground_hwnd =
+                CONTROLLER.observed_foreground_hwnd.load(Ordering::Acquire);
             CONTROLLER.prepare_observed_click();
-            let _ = CONTROLLER.queue_swap_at(screen_x, screen_y, observed_at_ms, false);
+            let _ = CONTROLLER.queue_swap_at(
+                screen_x,
+                screen_y,
+                observed_at_ms,
+                Some(observed_foreground_hwnd),
+                false,
+            );
         }
         report_observed_click_diagnostics(&mut reported_observed_click);
 
@@ -725,10 +777,11 @@ async fn windows_worker_loop() {
             processed_request_sequence = request_sequence;
             let slot = CONTROLLER.pending_slot.load(Ordering::Acquire);
             let champion_id = CONTROLLER.pending_champion_id.load(Ordering::Acquire);
+            let client_hwnd = CONTROLLER.pending_client_hwnd.load(Ordering::Acquire);
             let from_click_overlay = CONTROLLER
                 .pending_from_click_overlay
                 .load(Ordering::Acquire);
-            execute_swap_request(&mut lcu, slot, champion_id, from_click_overlay).await;
+            execute_swap_request(&mut lcu, slot, champion_id, client_hwnd, from_click_overlay).await;
             CONTROLLER.swap_pending.store(false, Ordering::SeqCst);
             CONTROLLER.pending_not_before_ms.store(0, Ordering::SeqCst);
             CONTROLLER
@@ -766,8 +819,12 @@ async fn execute_swap_request(
     lcu: &mut Option<LcuClient>,
     slot: u32,
     champion_id: u32,
+    client_hwnd: isize,
     from_click_overlay: bool,
 ) {
+    if reject_inactive_swap_request(client_hwnd) {
+        return;
+    }
     if from_click_overlay {
         runtime_log(format!(
             "透明备战区点击层命中顶部第 {slot} 格英雄 {champion_id}，直接调用 LCU 交换"
@@ -832,6 +889,10 @@ async fn execute_swap_request(
         return;
     }
 
+    // 上面的 LCU 查询可能等待到用户已切走或关闭功能，发送前必须重新确认。
+    if reject_inactive_swap_request(client_hwnd) {
+        return;
+    }
     runtime_log(format!(
         "顶部第 {slot} 格英雄 {champion_id} 在 100ms 后仍在备战席；客户端可能处于 CD，调用 LCU 兜底交换"
     ));
@@ -851,6 +912,17 @@ async fn execute_swap_request(
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn reject_inactive_swap_request(client_hwnd: isize) -> bool {
+    let Some(reason) =
+        CONTROLLER.interaction_rejection(foreground_window_identity().0, Some(client_hwnd))
+    else {
+        return false;
+    };
+    runtime_log(format!("取消排队中的英雄交换：{}", click_decision_text(reason)));
+    true
 }
 
 #[cfg(target_os = "windows")]
@@ -890,10 +962,12 @@ fn click_decision_text(decision: u32) -> &'static str {
         CLICK_DECISION_RECEIVED => "已收到原始点击，尚未完成命中判定",
         CLICK_DECISION_NO_SNAPSHOT => "未处理：当前没有有效备战席快照",
         CLICK_DECISION_SNAPSHOT_EXPIRED => "未处理：备战席快照已过期",
+        CLICK_DECISION_NOT_FOREGROUND => "未处理：点击发生时或处理时客户端不在前台",
         CLICK_DECISION_OUTSIDE_BENCH => "未处理：坐标未命中顶部备战席",
-        CLICK_DECISION_PREVIOUS_PENDING => "未处理：上一点击仍在等待 100ms 结果",
+        CLICK_DECISION_PREVIOUS_PENDING => "未处理：上一点击的交换请求仍在处理中",
         CLICK_DECISION_SWAP_QUEUED => "已登记：等待客户端自行处理，100ms 后再检查",
         CLICK_DECISION_OVERLAY_SWAP_QUEUED => "已登记：透明备战区点击层将直接调用 LCU 交换",
+        CLICK_DECISION_DISABLED => "未处理：快速交换已关闭",
         _ => "已收到点击，状态未知",
     }
 }
@@ -1271,9 +1345,81 @@ fn click_overlay_bounds(snapshot: &BenchSnapshot) -> BenchClickOverlayBounds {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
 
-    use super::{click_overlay_bounds, top_bench_index_at, BenchSnapshot};
+    use super::{
+        click_overlay_bounds, now_epoch_millis, top_bench_index_at, BenchSnapshot,
+        QuickBenchSwapController, BENCH_SNAPSHOT_GRACE, CLICK_DECISION_DISABLED,
+        CLICK_DECISION_NOT_FOREGROUND, CLICK_DECISION_NO_SNAPSHOT, CLICK_DECISION_SNAPSHOT_EXPIRED,
+    };
+
+    fn foreground_test_controller() -> QuickBenchSwapController {
+        let controller = QuickBenchSwapController::new();
+        controller.enabled.store(true, Ordering::SeqCst);
+        controller.click_snapshot_ready.store(true, Ordering::SeqCst);
+        controller.click_snapshot_hwnd.store(100, Ordering::SeqCst);
+        controller
+            .click_snapshot_updated_ms
+            .store(now_epoch_millis(), Ordering::SeqCst);
+        controller
+    }
+
+    #[test]
+    fn switching_away_blocks_overlay_and_pending_swaps_and_returning_restores_new_clicks() {
+        let controller = foreground_test_controller();
+        assert_eq!(controller.interaction_rejection(100, None), None);
+        assert_eq!(controller.interaction_rejection(100, Some(100)), None);
+
+        // 同一个有效快照在其他程序前台时，透明层和已排队的请求都必须暂停。
+        assert_eq!(
+            controller.interaction_rejection(200, None),
+            Some(CLICK_DECISION_NOT_FOREGROUND)
+        );
+        assert_eq!(
+            controller.interaction_rejection(200, Some(100)),
+            Some(CLICK_DECISION_NOT_FOREGROUND)
+        );
+        assert_eq!(controller.interaction_rejection(100, None), None);
+    }
+
+    #[test]
+    fn background_click_is_rejected_even_when_client_is_foreground_during_processing() {
+        let controller = foreground_test_controller();
+        assert_eq!(
+            controller.interaction_rejection(100, Some(200)),
+            Some(CLICK_DECISION_NOT_FOREGROUND)
+        );
+        assert_eq!(
+            controller.interaction_rejection(100, Some(0)),
+            Some(CLICK_DECISION_NOT_FOREGROUND)
+        );
+    }
+
+    #[test]
+    fn returning_to_foreground_does_not_reactivate_disabled_missing_or_expired_snapshots() {
+        let controller = foreground_test_controller();
+        controller.enabled.store(false, Ordering::SeqCst);
+        assert_eq!(
+            controller.interaction_rejection(100, None),
+            Some(CLICK_DECISION_DISABLED)
+        );
+        controller.enabled.store(true, Ordering::SeqCst);
+        controller.click_snapshot_ready.store(false, Ordering::SeqCst);
+        assert_eq!(
+            controller.interaction_rejection(100, None),
+            Some(CLICK_DECISION_NO_SNAPSHOT)
+        );
+        controller.click_snapshot_ready.store(true, Ordering::SeqCst);
+        controller.click_snapshot_updated_ms.store(
+            now_epoch_millis() - BENCH_SNAPSHOT_GRACE.as_millis() as u64 - 1,
+            Ordering::SeqCst,
+        );
+        assert_eq!(
+            controller.interaction_rejection(100, None),
+            Some(CLICK_DECISION_SNAPSHOT_EXPIRED)
+        );
+    }
 
     #[test]
     fn maps_top_bench_card_centers_to_their_index() {

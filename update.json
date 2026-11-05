@@ -1,9 +1,10 @@
 {
-  "version": "0.8.1",
-  "title": "LOL Stats 0.8.1 测试版",
-  "message": "这是 0.8.1 测试版，继续用于功能验证，待bug稳定后开源。下载密码：djvm",
+  "version": "0.8.3",
+  "title": "LOL Stats 0.8.3 测试版",
+  "message": "这是 0.8.3 测试版，继续用于功能验证。源码已在 GitHub 开放：https://github.com/cridyy/lol-stats 。下载密码：djvm",
   "downloadUrl": "https://crescendum.lanzout.com/b00rp145sh",
   "notes": [
+    "战绩主数据库最大为 1 GB，接近上限时自动清理最旧缓存，已有超限数据库会清理并回收空间",
     "新增局内海克斯胜率以及选人阶段英雄胜率显示（实验性功能）",
     "修复组队标记不显示bug",
     "优化了实时战绩页面显示，新增段位和等级显示",

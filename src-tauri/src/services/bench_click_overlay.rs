@@ -1,8 +1,8 @@
 //! 顶部备战区的透明点击层。
 //!
 //! 客户端与本程序属于不同进程，普通 Win32 窗口无法把 hover 事件可靠地转交给客户端。
-//! 因此这个窗口只在快速交换开启且备战席可用时覆盖顶部英雄区：它不绘制内容、显示手型
-//! 光标，并直接接管点击以绕开客户端按钮的视觉冷却。
+//! 因此这个窗口只在快速交换开启、备战席可用且客户端位于前台时覆盖顶部英雄区：
+//! 它不绘制内容、显示手型光标，并直接接管点击以绕开客户端按钮的视觉冷却。
 
 #![cfg(target_os = "windows")]
 
@@ -14,19 +14,22 @@ use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostMessageW,
-    RegisterClassW, SetCursor, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    TranslateMessage, HWND_TOPMOST, IDC_HAND, LWA_ALPHA, MA_NOACTIVATE, MSG, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_LBUTTONDOWN,
-    WM_MOUSEACTIVATE, WM_PAINT, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, IsWindowVisible, KillTimer,
+    LoadCursorW, PostMessageW, RegisterClassW, SetCursor, SetLayeredWindowAttributes, SetTimer,
+    SetWindowPos, ShowWindow, TranslateMessage, EVENT_SYSTEM_FOREGROUND, HTTRANSPARENT, HWND_TOPMOST,
+    IDC_HAND, LWA_ALPHA, MA_NOACTIVATE, MSG, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_SHOWWINDOW,
+    SW_HIDE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
+    WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 const UPDATE_MESSAGE: u32 = WM_APP + 0x57;
+const VISIBILITY_TIMER: usize = 1;
 
 /// 一个覆盖整个备战区的屏幕坐标矩形。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,6 +170,22 @@ fn click_overlay_thread() {
         CLICK_OVERLAY.hwnd.store(hwnd.0 as isize, Ordering::Release);
         apply_bounds(hwnd);
 
+        // 在窗口消息线程监听前台切换，不依赖后台 LCU 请求是否完成。
+        let foreground_hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if foreground_hook.is_invalid() {
+            tracing::warn!(target: "lol_stats::quick_bench", "前台窗口监听不可用，使用可见性定时检查");
+        }
+        // 同时处理快照过期，以及系统未送达前台事件的情况。
+        let _ = SetTimer(Some(hwnd), VISIBILITY_TIMER, 100, None);
+
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
             if message.message == UPDATE_MESSAGE {
@@ -176,8 +195,32 @@ fn click_overlay_thread() {
                 DispatchMessageW(&message);
             }
         }
+        let _ = KillTimer(Some(hwnd), VISIBILITY_TIMER);
+        if !foreground_hook.is_invalid() {
+            let _ = UnhookWinEvent(foreground_hook);
+        }
         CLICK_OVERLAY.hwnd.store(0, Ordering::Release);
     }
+}
+
+unsafe extern "system" fn foreground_changed(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: HWND,
+    _object_id: i32,
+    _child_id: i32,
+    _thread_id: u32,
+    _time: u32,
+) {
+    let raw = CLICK_OVERLAY.hwnd.load(Ordering::Acquire);
+    if raw > 0 {
+        apply_bounds(HWND(raw as *mut _));
+    }
+}
+
+fn should_show_overlay() -> bool {
+    CLICK_OVERLAY.bounds().is_some_and(|bounds| bounds.is_valid())
+        && crate::services::quick_bench_swap::can_handle_click_overlay()
 }
 
 unsafe fn apply_bounds(hwnd: HWND) {
@@ -185,7 +228,7 @@ unsafe fn apply_bounds(hwnd: HWND) {
         let _ = ShowWindow(hwnd, SW_HIDE);
         return;
     };
-    if !bounds.is_valid() {
+    if !bounds.is_valid() || !crate::services::quick_bench_swap::can_handle_click_overlay() {
         let _ = ShowWindow(hwnd, SW_HIDE);
         return;
     }
@@ -205,11 +248,21 @@ unsafe fn apply_bounds(hwnd: HWND) {
 extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
-    _wparam: WPARAM,
+    wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
         match message {
+            WM_TIMER if wparam.0 == VISIBILITY_TIMER => {
+                if IsWindowVisible(hwnd).as_bool() != should_show_overlay() {
+                    apply_bounds(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_NCHITTEST if !should_show_overlay() => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(HTTRANSPARENT as isize)
+            }
             WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
             WM_SETCURSOR => {
                 if let Ok(cursor) = LoadCursorW(None, IDC_HAND) {
@@ -218,6 +271,10 @@ extern "system" fn window_proc(
                 LRESULT(1)
             }
             WM_LBUTTONDOWN => {
+                if !should_show_overlay() {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    return LRESULT(0);
+                }
                 let local_x = signed_low_word(lparam.0);
                 let local_y = signed_high_word(lparam.0);
                 if let Some(bounds) = CLICK_OVERLAY.bounds() {
@@ -234,7 +291,7 @@ extern "system" fn window_proc(
                 let _ = EndPaint(hwnd, &paint);
                 LRESULT(0)
             }
-            _ => DefWindowProcW(hwnd, message, _wparam, lparam),
+            _ => DefWindowProcW(hwnd, message, wparam, lparam),
         }
     }
 }

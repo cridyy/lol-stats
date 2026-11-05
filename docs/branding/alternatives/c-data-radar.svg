@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">LOL Stats - Performance Radar</title>
+  <desc id="description">A six-axis performance radar, with a violet data profile and an antique-gold perimeter.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#1F1F1F" stroke="#424242" stroke-width="2"/>
+  <circle cx="256" cy="256" r="164" fill="#181818" stroke="#BA9E6B" stroke-width="24"/>
+  <circle cx="256" cy="256" r="88" stroke="#444444" stroke-width="10"/>
+  <path d="M256 104V408M124 180 388 332M124 332 388 180" stroke="#444444" stroke-width="10"/>
+  <path d="M256 152 370 190 320 293 256 374 169 306 203 225Z" fill="#594B6C" stroke="#B7A0D0" stroke-width="22" stroke-linejoin="round"/>
+  <path d="M370 172 388 190 370 208 352 190Z" fill="#E3D0AB"/>
+</svg>

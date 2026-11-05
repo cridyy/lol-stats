@@ -265,7 +265,7 @@ async function saveSignature() {
     <div class="tool-row">
       <div class="tool-title">
         <strong>快速交换备战英雄</strong>
-        <span>{{ quickBenchSwapEnabled ? "保留原点击，100ms 后自动兜底交换" : "已关闭" }}</span>
+        <span>{{ quickBenchSwapEnabled ? "点击备战英雄即可快速交换，仅客户端前台时生效" : "已关闭" }}</span>
       </div>
       <button
         class="switch-control"

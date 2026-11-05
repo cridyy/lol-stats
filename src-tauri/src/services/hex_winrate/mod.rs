@@ -577,13 +577,13 @@ async fn recognition_loop() {
             overlay_visible = Some(false);
         }
 
-        // 每帧重新实测间距并更新区域，不锁定整局布局。检测短暂失败时，已确认
+        // 每帧按所选方案检测布局，不锁定整局位置。检测短暂失败时，已确认
         // 槽位仍由原有 OCR 连续失败机制退出，避免光效导致全部标签同时闪动。
         if let Some(detection) =
             detector::detect_cards(frame.bgra, frame.width, frame.height, detection_mode)
         {
             for (slot, card) in cards.iter_mut().enumerate() {
-                card.update_measured_area(
+                card.update_detected_area(
                     detection.title_rects[slot],
                     detection.label_centers[slot],
                 );
@@ -592,8 +592,12 @@ async fn recognition_loop() {
                 let spacing =
                     (detection.label_centers[2].0 - detection.label_centers[0].0) as f32 / 2.0;
                 let card = detection.card_rects[1];
+                let layout_method = match detection_mode {
+                    DetectionMode::HighPrecision => "按画面高度缩放",
+                    DetectionMode::Compatibility => "深色区域实测定位",
+                };
                 runtime_log(format!(
-                    "三张海克斯卡片定位成功：{}，实测间距={spacing:.1}px，卡片区域={}x{}",
+                    "三张海克斯卡片定位成功：{}，{layout_method}，间距={spacing:.1}px，卡片区域={}x{}",
                     detection_mode.label(),
                     card.width(),
                     card.height(),
@@ -1308,7 +1312,7 @@ struct TrackedCard {
 
 #[cfg(target_os = "windows")]
 impl TrackedCard {
-    fn update_measured_area(&mut self, title_rect: detector::Rect, label_center: (i32, i32)) {
+    fn update_detected_area(&mut self, title_rect: detector::Rect, label_center: (i32, i32)) {
         self.default_title_rect = Some(title_rect);
         self.label_center = Some(label_center);
     }
@@ -1579,7 +1583,7 @@ impl AugmentNameIndex {
                 second_best = score;
             }
         }
-        best.filter(|(score, _)| *score >= 0.82 && *score - second_best >= 0.08)
+        best.filter(|(score, _)| *score >= 0.65 && *score - second_best >= 0.08)
             .map(|(_, id)| id)
     }
 
@@ -1611,7 +1615,7 @@ impl AugmentNameIndex {
                 second_best = score;
             }
         }
-        best.filter(|(score, _)| *score >= 0.82 && *score - second_best >= 0.08)
+        best.filter(|(score, _)| *score >= 0.65 && *score - second_best >= 0.08)
             .map(|(_, id)| id)
     }
 }
@@ -1761,7 +1765,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn tracked_card_updates_measured_area_and_requires_two_failures_to_unlock() {
+    fn tracked_card_updates_detected_area_and_requires_two_failures_to_unlock() {
         use super::detector::Rect;
         use super::overlay::OverlayLabelTone;
 
@@ -1778,7 +1782,7 @@ mod tests {
             bottom: 250,
         };
         let mut card = TrackedCard::default();
-        card.update_measured_area(first_area, (200, 430));
+        card.update_detected_area(first_area, (200, 430));
 
         let first = CardResolution {
             augment_id: 1,
@@ -1791,7 +1795,7 @@ mod tests {
             tone: OverlayLabelTone::Negative,
         };
         assert!(card.accept_resolution(first.clone(), "暴击飞弹"));
-        card.update_measured_area(updated_area, (200, 420));
+        card.update_detected_area(updated_area, (200, 420));
         assert_eq!(card.default_title_rect, Some(updated_area));
         assert_eq!(card.label_center, Some((200, 420)));
         assert!(!card.accept_resolution(first, " 暴击飞弹 "));
@@ -1820,7 +1824,7 @@ mod tests {
 
         assert!(!card.record_invalid_result());
         assert!(card.resolution.is_some());
-        card.update_measured_area(updated_area, (200, 420));
+        card.update_detected_area(updated_area, (200, 420));
         assert!(card.record_invalid_result());
         assert!(card.default_title_rect.is_none());
         assert!(card.resolution.is_none());

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">LOL Stats - Matchup</title>
+  <desc id="description">Two crossed, faceted blades representing opposing teams, in muted violet and antique gold.</desc>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#1F1F1F" stroke="#424242" stroke-width="2"/>
+  <g transform="rotate(-43 256 256)">
+    <path d="M256 74 282 124V270H314V300H276V372L256 392 236 372V300H198V270H230V124Z" fill="#A48CBC" stroke="#1F1F1F" stroke-width="12" stroke-linejoin="round"/>
+    <path d="M256 74 282 124V270H256Z" fill="#C7B6DC"/>
+    <path d="M246 316H266V360H246Z" fill="#53485F"/>
+  </g>
+  <g transform="rotate(43 256 256)">
+    <path d="M256 74 282 124V270H314V300H276V372L256 392 236 372V300H198V270H230V124Z" fill="#BA9B67" stroke="#1F1F1F" stroke-width="12" stroke-linejoin="round"/>
+    <path d="M256 74 282 124V270H256Z" fill="#E3D0AB"/>
+    <path d="M246 316H266V360H246Z" fill="#67583E"/>
+  </g>
+</svg>

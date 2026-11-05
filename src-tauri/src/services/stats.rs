@@ -41,6 +41,10 @@ const DETAIL_PREMADE_HISTORY_DEPTH: usize = 50;
 const DETAIL_PREMADE_QUERY_CONCURRENCY: usize = 4;
 const CACHE_SCHEMA_VERSION: i64 = 17;
 const DATABASE_FILE_NAME: &str = "lol-stats.sqlite3";
+const DATABASE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+const DATABASE_CLEANUP_TRIGGER_PERCENT: u64 = 90;
+const DATABASE_CLEANUP_TARGET_PERCENT: u64 = 80;
+const DATABASE_EVICTION_BATCH_SIZE: i64 = 128;
 const HISTORY_PREMADE_THRESHOLD: usize = 3;
 const PLAYER_ELO_SAMPLE_TARGET: usize = 10;
 const PLAYER_ELO_BATCH_DEPTH: usize = 100;
@@ -1321,11 +1325,15 @@ fn open_cache_db() -> Option<Connection> {
     fs::create_dir_all(parent).ok()?;
 
     let conn = Connection::open(path).ok()?;
-    initialize_cache_schema(&conn).ok()?;
+    if let Err(error) = initialize_cache_schema(&conn) {
+        tracing::warn!(%error, "初始化或维护战绩缓存数据库失败");
+        return None;
+    }
     Some(conn)
 }
 
 fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
+    set_cache_page_limit(conn, DATABASE_MAX_BYTES)?;
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
@@ -1466,6 +1474,119 @@ fn initialize_cache_schema(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    enforce_cache_capacity(conn, DATABASE_MAX_BYTES)
+}
+
+fn set_cache_page_limit(conn: &Connection, max_bytes: u64) -> rusqlite::Result<u64> {
+    let page_size: u64 = conn.pragma_query_value(None, "page_size", |row| row.get(0))?;
+    let max_pages = (max_bytes / page_size).max(1);
+    // max_page_count 是连接级限制，每次打开都设置；旧库过大时 SQLite 会先返回现有页数。
+    conn.pragma_update(None, "max_page_count", max_pages)?;
+    let wal_pages = (4 * 1024 * 1024 / page_size).max(1);
+    conn.pragma_update(None, "wal_autocheckpoint", wal_pages)?;
+    conn.pragma_update(None, "journal_size_limit", 4 * 1024 * 1024)?;
+    Ok(max_pages)
+}
+
+fn cache_live_pages(conn: &Connection) -> rusqlite::Result<u64> {
+    let pages: u64 = conn.pragma_query_value(None, "page_count", |row| row.get(0))?;
+    let free_pages: u64 = conn.pragma_query_value(None, "freelist_count", |row| row.get(0))?;
+    Ok(pages.saturating_sub(free_pages))
+}
+
+fn enforce_cache_capacity(conn: &Connection, max_bytes: u64) -> rusqlite::Result<()> {
+    let max_pages = set_cache_page_limit(conn, max_bytes)?;
+    let pages_before: u64 = conn.pragma_query_value(None, "page_count", |row| row.get(0))?;
+    let needs_shrink = pages_before > max_pages;
+    if !needs_shrink && cache_live_pages(conn)? < max_pages * DATABASE_CLEANUP_TRIGGER_PERCENT / 100
+    {
+        return Ok(());
+    }
+
+    // 仅容量紧张时扫描旧缓存。立即事务防止多个维护连接同时淘汰同一批记录。
+    let transaction =
+        rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let changes_before = transaction.total_changes();
+    transaction.execute(
+        "DELETE FROM player_match_index WHERE NOT EXISTS (
+            SELECT 1 FROM match_cache m
+            WHERE m.sgp_server_id = player_match_index.sgp_server_id
+              AND m.game_id = player_match_index.game_id
+        )",
+        [],
+    )?;
+    let target_pages = max_pages * DATABASE_CLEANUP_TARGET_PERCENT / 100;
+    while cache_live_pages(&transaction)? > target_pages {
+        let oldest = {
+            let mut stmt = transaction.prepare(
+                "SELECT cache_table, cache_rowid FROM (
+                    SELECT 0 AS cache_table, rowid AS cache_rowid, stored_at_ms FROM stats_cache
+                    UNION ALL SELECT 1, rowid, stored_at_ms FROM match_cache
+                    UNION ALL SELECT 2, rowid, stored_at_ms FROM quick_match_cache
+                    UNION ALL SELECT 3, rowid, stored_at_ms FROM player_elo_cache
+                    UNION ALL SELECT 4, rowid, stored_at_ms FROM external_elo_cache
+                    UNION ALL SELECT 5, rowid, stored_at_ms FROM elo_area_cache
+                ) ORDER BY stored_at_ms, cache_table, cache_rowid LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![DATABASE_EVICTION_BATCH_SIZE], |row| {
+                Ok((row.get::<_, u8>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if oldest.is_empty() {
+            break;
+        }
+        for (cache_table, rowid) in oldest {
+            let table = match cache_table {
+                0 => "stats_cache",
+                1 => {
+                    transaction.execute(
+                        "DELETE FROM player_match_index WHERE (sgp_server_id, game_id) = (
+                            SELECT sgp_server_id, game_id FROM match_cache WHERE rowid = ?1
+                        )",
+                        params![rowid],
+                    )?;
+                    "match_cache"
+                }
+                2 => "quick_match_cache",
+                3 => "player_elo_cache",
+                4 => "external_elo_cache",
+                5 => "elo_area_cache",
+                _ => unreachable!("cache table comes from literal SQL selectors"),
+            };
+            transaction.execute(
+                &format!("DELETE FROM {table} WHERE rowid = ?1"),
+                params![rowid],
+            )?;
+            if cache_live_pages(&transaction)? <= target_pages {
+                break;
+            }
+        }
+    }
+    transaction.execute(
+        "DELETE FROM quick_player_cache WHERE NOT EXISTS (
+            SELECT 1 FROM quick_match_cache m
+            WHERE m.sgp_server_id = quick_player_cache.sgp_server_id
+              AND m.puuid = quick_player_cache.puuid
+        )",
+        [],
+    )?;
+    let removed_rows = transaction.total_changes() - changes_before;
+    transaction.commit()?;
+
+    // 普通清理复用空闲页，只有升级前已经超限的文件需要重写并缩小。
+    if needs_shrink {
+        conn.execute_batch("VACUUM;")?;
+    }
+    set_cache_page_limit(conn, max_bytes)?;
+    // checkpoint 忙时保留活动 WAL，不能删除仍被其他连接使用的日志。
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    tracing::info!(
+        removed_rows,
+        pages_before,
+        max_bytes,
+        "已清理最旧的战绩缓存"
+    );
     Ok(())
 }
 
@@ -2006,8 +2127,9 @@ fn store_db_cached_games(key: &StatsCacheKey, games: &[Game]) -> CachedGameStore
             continue;
         };
 
-        let _ = conn.execute(
-            r#"
+        if conn
+            .execute(
+                r#"
             INSERT INTO match_cache (
                 sgp_server_id,
                 game_id,
@@ -2025,16 +2147,21 @@ fn store_db_cached_games(key: &StatsCacheKey, games: &[Game]) -> CachedGameStore
                 stored_at_ms = excluded.stored_at_ms,
                 game_json = excluded.game_json
             "#,
-            params![
-                &key.sgp_server_id,
-                game.game_id as i64,
-                game.game_creation,
-                game.game_duration,
-                game.queue_id as i64,
-                stored_at_ms,
-                game_json
-            ],
-        );
+                params![
+                    &key.sgp_server_id,
+                    game.game_id as i64,
+                    game.game_creation,
+                    game.game_duration,
+                    game.queue_id as i64,
+                    stored_at_ms,
+                    game_json
+                ],
+            )
+            .is_err()
+        {
+            // 容量上限或磁盘错误时，不为未保存的对局创建索引。
+            continue;
+        }
 
         let _ = conn.execute(
             r#"
@@ -4046,6 +4173,199 @@ mod tests {
     use super::*;
     use crate::services::client_discovery::discover_primary_client;
     use crate::services::lcu::LcuClient;
+
+    const TEST_CACHE_MAX_BYTES: u64 = 1024 * 1024;
+
+    struct CapacityTestFile(PathBuf);
+
+    impl CapacityTestFile {
+        fn new() -> Self {
+            static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(std::env::temp_dir().join(format!(
+                "lol-stats-capacity-{}-{}-{id}.sqlite3",
+                std::process::id(),
+                unix_time_ms(),
+            )))
+        }
+
+        fn open(&self) -> Connection {
+            Connection::open(&self.0).unwrap()
+        }
+    }
+
+    impl Drop for CapacityTestFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_file(format!("{}-wal", self.0.display()));
+            let _ = fs::remove_file(format!("{}-shm", self.0.display()));
+        }
+    }
+
+    fn insert_capacity_fixture(conn: &Connection, index: i64) {
+        conn.execute(
+            "INSERT INTO stats_cache VALUES ('fixture', ?1, 20, ?2, ?3, ?4)",
+            params![
+                format!("player-{index}"),
+                CACHE_SCHEMA_VERSION,
+                index,
+                "x".repeat(16 * 1024)
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cache_capacity_production_limit_is_one_gib() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_cache_schema(&conn).unwrap();
+        let max_pages: u64 = conn
+            .pragma_query_value(None, "max_page_count", |r| r.get(0))
+            .unwrap();
+        let page_size: u64 = conn
+            .pragma_query_value(None, "page_size", |r| r.get(0))
+            .unwrap();
+        assert_eq!(max_pages * page_size, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn cache_capacity_hard_limit_rejects_large_writes_after_reopen() {
+        let file = CapacityTestFile::new();
+        for _ in 0..2 {
+            let conn = file.open();
+            initialize_cache_schema(&conn).unwrap();
+            enforce_cache_capacity(&conn, TEST_CACHE_MAX_BYTES).unwrap();
+            let error = conn.execute(
+                "INSERT INTO stats_cache VALUES ('fixture', 'oversized', 20, ?1, 0, zeroblob(?2))",
+                params![CACHE_SCHEMA_VERSION, TEST_CACHE_MAX_BYTES + 4096],
+            ).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DiskFull)
+            );
+            let integrity: String = conn
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(integrity, "ok");
+            let rows: i64 = conn
+                .query_row("SELECT COUNT(*) FROM stats_cache", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0);
+            drop(conn);
+            assert!(fs::metadata(&file.0).unwrap().len() <= TEST_CACHE_MAX_BYTES);
+        }
+    }
+
+    #[test]
+    fn cache_capacity_evicts_oldest_and_removes_linked_metadata() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_cache_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO match_cache VALUES ('old-server', 1, 0, 600, 2400, -3, '{}');
+             INSERT INTO match_cache VALUES ('new-server', 1, 0, 600, 2400, 1000, '{}');
+             INSERT INTO player_match_index VALUES ('old-server', 'old', 1, 0, 2400, -3);
+             INSERT INTO player_match_index VALUES ('new-server', 'new', 1, 0, 2400, 1000);
+             INSERT INTO player_match_index VALUES ('orphan-server', 'orphan', 2, 0, 2400, -3);
+             INSERT INTO quick_match_cache VALUES ('fixture', 'quick', 2, 0, -2, 9999999999999, '{}');
+             INSERT INTO quick_player_cache VALUES ('fixture', 'quick', 0, 9999999999999);
+             INSERT INTO player_elo_cache VALUES ('fixture', 'old-elo', -4, '{}');
+             INSERT INTO external_elo_cache VALUES ('old-elo', -5, 1, 100);
+             INSERT INTO elo_area_cache VALUES ('old-area', 1, -6);",
+        ).unwrap();
+        for index in 0..80 {
+            insert_capacity_fixture(&conn, index);
+        }
+        enforce_cache_capacity(&conn, TEST_CACHE_MAX_BYTES).unwrap();
+        let (oldest, newest): (i64, i64) = conn
+            .query_row(
+                "SELECT MIN(stored_at_ms), MAX(stored_at_ms) FROM stats_cache",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(oldest > 0);
+        assert_eq!(newest, 79);
+        let indexes: Vec<String> = conn
+            .prepare("SELECT sgp_server_id FROM player_match_index")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(indexes, vec!["new-server"]);
+        for table in [
+            "quick_match_cache",
+            "quick_player_cache",
+            "player_elo_cache",
+            "external_elo_cache",
+            "elo_area_cache",
+        ] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "old rows remain in {table}");
+        }
+        let page_size: u64 = conn
+            .pragma_query_value(None, "page_size", |r| r.get(0))
+            .unwrap();
+        assert!(cache_live_pages(&conn).unwrap() * page_size <= TEST_CACHE_MAX_BYTES * 80 / 100);
+    }
+
+    #[test]
+    fn cache_capacity_shrinks_existing_oversized_file() {
+        let file = CapacityTestFile::new();
+        let conn = file.open();
+        initialize_cache_schema(&conn).unwrap();
+        for index in 0..80 {
+            insert_capacity_fixture(&conn, index);
+        }
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        assert!(fs::metadata(&file.0).unwrap().len() > TEST_CACHE_MAX_BYTES);
+        enforce_cache_capacity(&conn, TEST_CACHE_MAX_BYTES).unwrap();
+        drop(conn);
+        assert!(fs::metadata(&file.0).unwrap().len() <= TEST_CACHE_MAX_BYTES);
+        let conn = file.open();
+        let newest: i64 = conn
+            .query_row("SELECT MAX(stored_at_ms) FROM stats_cache", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, 79);
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+    }
+
+    #[test]
+    fn cache_capacity_reuses_free_pages_without_evicting_recent_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_cache_schema(&conn).unwrap();
+        for index in 0..80 {
+            insert_capacity_fixture(&conn, index);
+        }
+        conn.execute("DELETE FROM stats_cache WHERE stored_at_ms < 79", [])
+            .unwrap();
+        enforce_cache_capacity(&conn, TEST_CACHE_MAX_BYTES).unwrap();
+        insert_capacity_fixture(&conn, 80);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stats_cache", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn cache_capacity_below_threshold_preserves_old_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_cache_schema(&conn).unwrap();
+        insert_capacity_fixture(&conn, 0);
+        enforce_cache_capacity(&conn, TEST_CACHE_MAX_BYTES).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stats_cache", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
 
     fn sample_recent_game(game_id: u64, champion_id: u32) -> RecentGame {
         RecentGame {
